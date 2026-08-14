@@ -1,0 +1,21 @@
+[project]
+name = "financial-semantic-agent"
+version = "0.1.0"
+description = "Evaluation API baseline for a financial semantic agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "httpx>=0.28.0,<1.0.0",
+    "uvicorn[standard]>=0.34.0,<1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0,<10.0.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
