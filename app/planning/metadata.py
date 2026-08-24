@@ -1,0 +1,118 @@
+from dataclasses import dataclass
+from enum import Enum
+
+from app.domain.models import QueryOperation, RetrievalSource
+
+
+class FieldCapability(str, Enum):
+    FILTER = "filter"
+    SORT = "sort"
+    PROJECT = "project"
+
+
+@dataclass(frozen=True)
+class CanonicalFieldMetadata:
+    canonical_field: str
+    preferred_sources: tuple[RetrievalSource, ...]
+    supported_capabilities: frozenset[FieldCapability]
+
+
+class RoutingMetadataRegistry:
+    """Central M4 routing metadata, independent from dataset column names."""
+
+    def __init__(self) -> None:
+        all_capabilities = frozenset(
+            {
+                FieldCapability.FILTER,
+                FieldCapability.SORT,
+                FieldCapability.PROJECT,
+            }
+        )
+        filter_and_project = frozenset(
+            {FieldCapability.FILTER, FieldCapability.PROJECT}
+        )
+        self._fields = {
+            "product.aum": CanonicalFieldMetadata(
+                "product.aum",
+                (RetrievalSource.RDB,),
+                all_capabilities,
+            ),
+            "product.expense_ratio": CanonicalFieldMetadata(
+                "product.expense_ratio",
+                (RetrievalSource.RDB,),
+                all_capabilities,
+            ),
+            "product.region": CanonicalFieldMetadata(
+                "product.region",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+            "product.asset_type": CanonicalFieldMetadata(
+                "product.asset_type",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+            "product.product_type": CanonicalFieldMetadata(
+                "product.product_type",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+            "product.price": CanonicalFieldMetadata(
+                "product.price",
+                (RetrievalSource.RDB,),
+                all_capabilities,
+            ),
+            "product.nav": CanonicalFieldMetadata(
+                "product.nav",
+                (RetrievalSource.RDB,),
+                all_capabilities,
+            ),
+            "product.ticker": CanonicalFieldMetadata(
+                "product.ticker",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+            "product.isin": CanonicalFieldMetadata(
+                "product.isin",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+        }
+        self._source_operations = {
+            RetrievalSource.RDB: frozenset(
+                {
+                    QueryOperation.SEARCH_PRODUCTS,
+                    QueryOperation.FILTER_CANDIDATES,
+                    QueryOperation.RANK_CANDIDATES,
+                }
+            ),
+            RetrievalSource.GRAPH: frozenset(
+                {QueryOperation.RELATIONSHIP_SEARCH}
+            ),
+            RetrievalSource.VECTOR: frozenset({QueryOperation.SEMANTIC_SEARCH}),
+            RetrievalSource.BM25: frozenset({QueryOperation.SEMANTIC_SEARCH}),
+            RetrievalSource.INTERNAL: frozenset(
+                {
+                    QueryOperation.FILTER_CANDIDATES,
+                    QueryOperation.RANK_CANDIDATES,
+                }
+            ),
+        }
+
+    def field(self, canonical_field: str) -> CanonicalFieldMetadata | None:
+        return self._fields.get(canonical_field)
+
+    def supports_field(
+        self,
+        canonical_field: str,
+        capability: FieldCapability,
+    ) -> bool:
+        metadata = self.field(canonical_field)
+        return metadata is not None and capability in metadata.supported_capabilities
+
+    def supports_operation(
+        self,
+        source: RetrievalSource,
+        operation: QueryOperation,
+    ) -> bool:
+        return operation in self._source_operations.get(source, frozenset())

@@ -1,0 +1,28 @@
+[
+  {
+    "name": "covered-call-lexical",
+    "backend": "bm25",
+    "query": "covered call",
+    "expected_entity_ids": ["etf_gl:IQQQ.O"],
+    "top_k": 10
+  },
+  {
+    "name": "korean-ai-to-english-strategy",
+    "backend": "vector",
+    "query": "머신러닝과 AI 기술 관련 기업에 투자",
+    "expected_entity_ids": [
+      "etf_gl:IVES.K",
+      "etf_gl:DRGN.K",
+      "etf_gl:AGIQ.K",
+      "etf_gl:ALAI.K"
+    ],
+    "top_k": 10
+  },
+  {
+    "name": "korean-us-treasury-to-english-strategy",
+    "backend": "vector",
+    "query": "미국 국채에 투자",
+    "expected_entity_ids": ["etf_gl:TMF", "etf_gl:TYD", "etf_gl:UBT"],
+    "top_k": 10
+  }
+]
