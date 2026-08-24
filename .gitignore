@@ -10,4 +10,4 @@ material/
 data/*.db
 data/*.db-*
 .env.example
-.tests/
+tests/
