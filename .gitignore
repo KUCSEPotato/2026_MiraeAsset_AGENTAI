@@ -1,5 +1,4 @@
 .env
-.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -8,4 +7,7 @@ __pycache__/
 htmlcov/
 .DS_Store
 material/
-
+data/*.db
+data/*.db-*
+.env.example
+.tests/
