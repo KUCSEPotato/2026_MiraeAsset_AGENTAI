@@ -323,6 +323,10 @@ uv run python -m app.data.ingest \
 
 동일 dataset snapshot은 replace-snapshot transaction으로 다시 적재됩니다. 따라서 command를 반복해도 logical row가 중복되지 않습니다. 치명적인 schema 오류는 dataset transaction을 rollback하며, 개별 invalid row는 source file/row/reason/raw payload와 함께 `quarantine_records`에 보존합니다.
 
+온톨로지의 280개 칼럼 매핑을 실행 명세로 사용하는 evidence-first 옵션,
+dataset 선택, dry-run, SHACL gate, Graph projection 및 검색 문서 준비 방법은
+[`docs/ontology_ingestion.md`](docs/ontology_ingestion.md)를 참고하세요.
+
 ## Database Setup
 
 Production PostgreSQL 예시:
