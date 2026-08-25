@@ -296,6 +296,19 @@ M6의 `StaticFieldQualityProvider`는 validation architecture 테스트용 fixtu
 
 Excel은 API request에서 읽지 않습니다. 원본 `material/1.금융상품` 파일은 수정하지 않으며 다음 offline command가 schema validation, cleaning, canonical mapping, quarantine, quality profiling을 한 transaction 흐름으로 실행합니다.
 
+원본 Excel은 저장소에 커밋하지 않습니다(`material/`은 `.gitignore`에 포함). 각 팀원은 로컬의 `material/1.금융상품/`에 아래 이름으로 파일을 배치합니다. `YYYYMMDD`는 데이터 스냅샷 날짜입니다.
+
+```text
+PRBD01N001_YYYYMMDD_datarows.xlsx
+PRBD01N001_YYYYMMDD_schema.xlsx
+PREF01N001_YYYYMMDD_datarows.xlsx
+PREF01N001_YYYYMMDD_schema.xlsx
+PREF02N001_YYYYMMDD_datarows.xlsx
+PREF02N001_YYYYMMDD_schema.xlsx
+PRFD01N001_YYYYMMDD_datarows.xlsx
+PRFD01N001_YYYYMMDD_schema.xlsx
+```
+
 ```bash
 uv run python -m app.data.ingest
 ```
