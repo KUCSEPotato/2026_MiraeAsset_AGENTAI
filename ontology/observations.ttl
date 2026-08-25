@@ -1,0 +1,28 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fin:MetricObservation a owl:Class ; rdfs:label "Metric observation"@en, "지표 관측값"@ko .
+fin:PriceObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:NAVObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:AUMObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:ReturnObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:YieldObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:VolatilityObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:LiquidityObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:FeeObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:DistributionObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:CreditRatingObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+fin:AssetAllocationObservation a owl:Class ; rdfs:subClassOf fin:MetricObservation .
+
+fin:hasObservation a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:MetricObservation .
+fin:observedProduct a owl:ObjectProperty ; rdfs:domain fin:MetricObservation ; rdfs:range fin:FinancialProduct ; owl:inverseOf fin:hasObservation .
+fin:observationCurrency a owl:ObjectProperty ; rdfs:domain fin:MetricObservation ; rdfs:range fin:Currency .
+fin:metricType a owl:DatatypeProperty ; rdfs:domain fin:MetricObservation ; rdfs:range xsd:string .
+fin:metricValue a owl:DatatypeProperty ; rdfs:domain fin:MetricObservation ; rdfs:range xsd:decimal .
+fin:unit a owl:DatatypeProperty ; rdfs:domain fin:MetricObservation ; rdfs:range xsd:string .
+fin:asOfDate a owl:DatatypeProperty ; rdfs:domain fin:MetricObservation ; rdfs:range xsd:date .
+fin:returnPeriod a owl:DatatypeProperty ; rdfs:domain fin:ReturnObservation ; rdfs:range xsd:string .
+fin:calculationMethod a owl:DatatypeProperty ; rdfs:domain fin:MetricObservation ; rdfs:range xsd:string .
+fin:rawNumericValue a owl:DatatypeProperty ; rdfs:domain fin:MetricObservation ; rdfs:range xsd:decimal .

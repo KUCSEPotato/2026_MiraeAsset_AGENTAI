@@ -1,0 +1,6 @@
+PREFIX fin: <https://miraeasset.com/ontology/financial-product#>
+SELECT ?index ?etf1 ?name1 ?etf2 ?name2 WHERE {
+  ?etf1 a fin:ETF ; fin:tracks ?index ; fin:productName ?name1 .
+  ?etf2 a fin:ETF ; fin:tracks ?index ; fin:productName ?name2 .
+  FILTER (STR(?etf1) < STR(?etf2))
+}

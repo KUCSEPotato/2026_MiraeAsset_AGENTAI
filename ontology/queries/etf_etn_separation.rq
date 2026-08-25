@@ -1,0 +1,5 @@
+PREFIX fin: <https://miraeasset.com/ontology/financial-product#>
+SELECT ?product ?kind ?name WHERE {
+  VALUES (?class ?kind) { (fin:ETF "ETF") (fin:ETN "ETN") }
+  ?product a ?class ; fin:productName ?name .
+}

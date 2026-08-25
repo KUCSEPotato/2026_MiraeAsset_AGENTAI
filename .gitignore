@@ -11,4 +11,3 @@ data/*.db
 data/*.db-*
 .env.example
 tests/
-ontology/
