@@ -1,0 +1,35 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix ex: <https://miraeasset.com/data/example/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:dataset-bond a fin:SourceDataset ; fin:datasetCode "PRBD01N001" .
+ex:dataset-etp-kr a fin:SourceDataset ; fin:datasetCode "PREF01N001" .
+ex:dataset-etp-gl a fin:SourceDataset ; fin:datasetCode "PREF02N001" .
+ex:dataset-fund a fin:SourceDataset ; fin:datasetCode "PRFD01N001" .
+
+ex:bond-KR60143NEFC6 a fin:Bond ;
+  fin:internalProductID "bond_kr:KR60143NEFC6" ;
+  fin:productName "퍼스트파이브지제팔십사차유동화전문1-14" ;
+  fin:hasIdentifier ex:id-bond-KR60143NEFC6 ; fin:hasSourceRecord ex:record-bond-2 ;
+  fin:hasOfferLot ex:lot-bond-2 ; fin:hasObservation ex:obs-bond-applied-yield .
+ex:id-bond-KR60143NEFC6 a fin:ProductIdentifier ; fin:identifierType "ISIN" ; fin:identifierValue "KR60143NEFC6" ; fin:namespace "ISO-6166" ; fin:isPrimaryInSource true ; fin:validationStatus "FORMAT_ONLY" .
+ex:record-bond-2 a fin:SourceRecord ; fin:sourcePrimaryKey "KR60143NEFC6|장내|20260821|1" ; fin:sourceRowNumber "2"^^xsd:positiveInteger ; fin:snapshotDate "2026-08-24"^^xsd:date ; fin:inDataset ex:dataset-bond ; fin:describesProduct ex:bond-KR60143NEFC6 .
+ex:lot-bond-2 a fin:BondOfferLot ; fin:lotSequence 1 ; fin:supportedByRecord ex:record-bond-2 .
+ex:obs-bond-applied-yield a fin:YieldObservation, fin:MetricObservation ; fin:metricType "APPLIED_YIELD" ; fin:metricValue 3.714 ; fin:unit "PERCENT" ; fin:asOfDate "2026-08-21"^^xsd:date ; fin:sourceColumn "applied_yield" ; fin:supportedByRecord ex:record-bond-2 .
+
+ex:etf-kr-KR70000Z0003 a fin:ETF ; fin:internalProductID "etf_kr:KR70000Z0003" ; fin:productName "KB RISE 바이오TOP10액티브증권상장지수투자신탁(주식)" ; fin:hasIdentifier ex:id-etf-kr ; fin:hasSourceRecord ex:record-etf-kr ; fin:hasObservation ex:obs-etf-kr-close .
+ex:id-etf-kr a fin:ProductIdentifier ; fin:identifierType "ISIN" ; fin:identifierValue "KR70000Z0003" ; fin:namespace "ISO-6166" ; fin:isPrimaryInSource true ; fin:validationStatus "FORMAT_ONLY" .
+ex:record-etf-kr a fin:SourceRecord ; fin:sourcePrimaryKey "KR70000Z0003" ; fin:sourceRowNumber "2"^^xsd:positiveInteger ; fin:snapshotDate "2026-08-24"^^xsd:date ; fin:inDataset ex:dataset-etp-kr ; fin:describesProduct ex:etf-kr-KR70000Z0003 .
+ex:obs-etf-kr-close a fin:PriceObservation, fin:MetricObservation ; fin:metricType "CLOSING_PRICE" ; fin:metricValue 9050.0 ; fin:unit "KRW" ; fin:asOfDate "2026-08-21"^^xsd:date ; fin:sourceColumn "du_clpr" ; fin:supportedByRecord ex:record-etf-kr .
+
+ex:etf-us-AAUA a fin:ETF ; fin:internalProductID "etf_gl:AAUA.K" ; fin:productName "Alpha Architect US Equity 3 ETF" ; fin:hasIdentifier ex:id-etf-us-ric ; fin:hasSourceRecord ex:record-etf-us .
+ex:id-etf-us-ric a fin:ProductIdentifier ; fin:identifierType "RIC" ; fin:identifierValue "AAUA.K" ; fin:namespace "LSEG-RIC" ; fin:isPrimaryInSource true ; fin:validationStatus "UNKNOWN" .
+ex:record-etf-us a fin:SourceRecord ; fin:sourcePrimaryKey "AAUA.K" ; fin:sourceRowNumber "2"^^xsd:positiveInteger ; fin:snapshotDate "2026-08-24"^^xsd:date ; fin:inDataset ex:dataset-etp-gl ; fin:describesProduct ex:etf-us-AAUA .
+
+ex:etn-kr-KRG520000438 a fin:ETN ; fin:internalProductID "etn_kr:KRG520000438" ; fin:productName "미래에셋증권 미래에셋 S&P 유럽탄소배출권 선물 상장지수증권 제58호" ; fin:hasIdentifier ex:id-etn-kr ; fin:hasSourceRecord ex:record-etn-kr .
+ex:id-etn-kr a fin:ProductIdentifier ; fin:identifierType "ISIN" ; fin:identifierValue "KRG520000438" ; fin:namespace "ISO-6166" ; fin:isPrimaryInSource true ; fin:validationStatus "FORMAT_ONLY" .
+ex:record-etn-kr a fin:SourceRecord ; fin:sourcePrimaryKey "KRG520000438" ; fin:sourceRowNumber "9"^^xsd:positiveInteger ; fin:snapshotDate "2026-08-24"^^xsd:date ; fin:inDataset ex:dataset-etp-kr ; fin:describesProduct ex:etn-kr-KRG520000438 .
+
+ex:fund-class-KR5010101611 a fin:FundShareClass ; fin:internalProductID "fund_pub:KR5010101611" ; fin:productName "크리스탈신종MMFE1-1비주식" ; fin:hasIdentifier ex:id-fund ; fin:hasSourceRecord ex:record-fund ; fin:hasOfferingType fin:PUBLIC ; fin:uncertaintyNote "최신 스키마에는 prfd_attr_cd가 없어 itm_no를 원천 클래스 식별자로 사용한다." .
+ex:id-fund a fin:ProductIdentifier ; fin:identifierType "SOURCE_ID" ; fin:identifierValue "KR5010101611" ; fin:namespace "PRFD01N001" ; fin:isPrimaryInSource true ; fin:validationStatus "UNKNOWN" .
+ex:record-fund a fin:SourceRecord ; fin:sourcePrimaryKey "KR5010101611" ; fin:sourceRowNumber "2"^^xsd:positiveInteger ; fin:snapshotDate "2026-08-24"^^xsd:date ; fin:inDataset ex:dataset-fund ; fin:describesProduct ex:fund-class-KR5010101611 .

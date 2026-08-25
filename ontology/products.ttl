@@ -1,0 +1,55 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fin:FinancialProduct a owl:Class ; rdfs:label "Financial product"@en, "금융상품"@ko .
+fin:DebtSecurity a owl:Class ; rdfs:subClassOf fin:FinancialProduct ; rdfs:label "Debt security"@en, "채무증권"@ko .
+fin:FundProduct a owl:Class ; rdfs:subClassOf fin:FinancialProduct ; rdfs:label "Fund product"@en, "펀드상품"@ko .
+fin:ExchangeTradedProduct a owl:Class ; rdfs:subClassOf fin:FinancialProduct ; rdfs:label "Exchange-traded product"@en, "상장지수상품"@ko .
+fin:Bond a owl:Class ; rdfs:subClassOf fin:DebtSecurity ;
+  rdfs:label "Bond"@en, "채권"@ko ; fin:canonicalName "FinancialProduct.Bond" ; fin:conceptCategory "product_type" ; fin:alias "채권" .
+fin:ETF a owl:Class ; rdfs:subClassOf fin:FundProduct, fin:ExchangeTradedProduct ;
+  rdfs:label "ETF"@en, "상장지수펀드"@ko ; fin:canonicalName "FinancialProduct.ETF" ; fin:conceptCategory "product_type" ; fin:alias "상장지수펀드" .
+fin:ETN a owl:Class ; rdfs:subClassOf fin:DebtSecurity, fin:ExchangeTradedProduct ;
+  rdfs:label "ETN"@en, "상장지수증권"@ko ; fin:canonicalName "FinancialProduct.ETN" ; fin:conceptCategory "product_type" ; fin:alias "상장지수증권" .
+fin:ETF owl:disjointWith fin:ETN .
+fin:Fund a owl:Class ; rdfs:subClassOf fin:FundProduct ;
+  rdfs:label "Fund"@en, "펀드"@ko ; fin:canonicalName "FinancialProduct.Fund" ; fin:conceptCategory "product_type" .
+fin:FundPortfolio a owl:Class ; rdfs:subClassOf fin:Fund ; rdfs:label "Fund portfolio"@en, "펀드 포트폴리오"@ko .
+fin:FundClass a owl:Class ; rdfs:subClassOf fin:FundProduct ; rdfs:label "Fund class"@en, "펀드 클래스"@ko .
+fin:FundShareClass a owl:Class ; rdfs:subClassOf fin:FundClass ;
+  rdfs:label "Fund share class"@en, "펀드 판매 클래스"@ko ; fin:canonicalName "FinancialProduct.PublicFund" ; fin:conceptCategory "product_type" ; fin:alias "공모펀드" .
+fin:BondOfferLot a owl:Class ; rdfs:label "Bond offer lot"@en, "채권 판매 LOT"@ko .
+fin:ProductIdentifier a owl:Class ; rdfs:label "Product identifier"@en, "상품 식별자"@ko .
+fin:IdentifierType a owl:Class .
+fin:ValidationStatus a owl:Class .
+fin:OfferingType a owl:Class .
+
+fin:hasIdentifier a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:ProductIdentifier .
+fin:hasClass a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:FundClass ; fin:canonicalName "hasClass" ; fin:conceptCategory "relation" ; fin:alias "펀드 클래스" .
+fin:hasOfferLot a owl:ObjectProperty ; rdfs:domain fin:Bond ; rdfs:range fin:BondOfferLot .
+fin:hasOfferingType a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:OfferingType .
+
+fin:internalProductID a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:productName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:abbreviatedName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:englishName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:englishAbbreviatedName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:issueDate a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:date .
+fin:maturityOrFirstCallDate a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:date ;
+  rdfs:comment "일반채권은 상환일, 영구채는 1차 콜행사개시일일 수 있다."@ko .
+fin:totalIssueAmount a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:decimal .
+fin:sourceProductKind a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
+fin:strategyDescription a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
+fin:replicationMethod a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
+fin:leverageFactor a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:decimal .
+fin:identifierType a owl:DatatypeProperty ; rdfs:domain fin:ProductIdentifier ; rdfs:range xsd:string .
+fin:identifierValue a owl:DatatypeProperty ; rdfs:domain fin:ProductIdentifier ; rdfs:range xsd:string .
+fin:namespace a owl:DatatypeProperty ; rdfs:domain fin:ProductIdentifier ; rdfs:range xsd:string .
+fin:isPrimaryInSource a owl:DatatypeProperty ; rdfs:domain fin:ProductIdentifier ; rdfs:range xsd:boolean .
+fin:validationStatus a owl:DatatypeProperty ; rdfs:domain fin:ProductIdentifier ; rdfs:range xsd:string .
+fin:lotSequence a owl:DatatypeProperty ; rdfs:domain fin:BondOfferLot ; rdfs:range xsd:positiveInteger .
+
+fin:PUBLIC a fin:OfferingType ; rdfs:label "Public"@en, "공모"@ko .
+fin:PRIVATE a fin:OfferingType ; rdfs:label "Private"@en, "사모"@ko .

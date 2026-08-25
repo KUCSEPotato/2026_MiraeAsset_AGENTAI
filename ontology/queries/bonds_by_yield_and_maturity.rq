@@ -1,0 +1,7 @@
+PREFIX fin: <https://miraeasset.com/ontology/financial-product#>
+SELECT ?bond ?name ?yield ?maturityDate WHERE {
+  ?bond a fin:Bond ; fin:productName ?name ; fin:hasObservation ?y .
+  ?y a fin:YieldObservation ; fin:metricType "BUY_YIELD" ; fin:metricValue ?yield .
+  OPTIONAL { ?bond fin:hasObservation ?m . ?m fin:metricType "MATURITY_DATE" ; fin:rawValue ?maturityDate }
+  FILTER (?yield >= 3.0)
+} ORDER BY DESC(?yield)

@@ -1,0 +1,11 @@
+PREFIX fin: <https://miraeasset.com/ontology/financial-product#>
+SELECT ?product ?name ?dataset ?sourceKey ?row ?snapshot ?metric ?value ?asOf WHERE {
+  ?product a fin:FinancialProduct ; fin:productName ?name ; fin:hasSourceRecord ?record .
+  ?record fin:inDataset ?dataset ; fin:sourcePrimaryKey ?sourceKey ;
+          fin:sourceRowNumber ?row ; fin:snapshotDate ?snapshot .
+  OPTIONAL {
+    ?product fin:hasObservation ?obs .
+    ?obs fin:metricType ?metric ; fin:metricValue ?value .
+    OPTIONAL { ?obs fin:asOfDate ?asOf }
+  }
+}

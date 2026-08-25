@@ -1,0 +1,13 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+fin:FieldAUM a owl:NamedIndividual ; fin:canonicalName "product.aum" ; fin:canonicalField "product.aum" ; fin:conceptCategory "field" ; fin:alias "AUM", "순자산", "운용규모" .
+fin:FieldExpenseRatio a owl:NamedIndividual ; fin:canonicalName "product.expense_ratio" ; fin:canonicalField "product.expense_ratio" ; fin:conceptCategory "field" ; fin:alias "보수", "총보수", "expense ratio" .
+fin:FieldRegion a owl:NamedIndividual ; fin:canonicalName "product.region" ; fin:canonicalField "product.region" ; fin:conceptCategory "field" ; fin:alias "지역", "투자지역" .
+fin:FieldAssetType a owl:NamedIndividual ; fin:canonicalName "product.asset_type" ; fin:canonicalField "product.asset_type" ; fin:conceptCategory "field" ; fin:alias "자산군", "자산유형" .
+fin:FieldProductType a owl:NamedIndividual ; fin:canonicalName "product.product_type" ; fin:canonicalField "product.product_type" ; fin:conceptCategory "field" ; fin:alias "상품유형", "상품종류" .
+fin:FieldPrice a owl:NamedIndividual ; fin:canonicalName "product.price" ; fin:canonicalField "product.price" ; fin:conceptCategory "field" ; fin:alias "가격", "종가", "현재가" .
+fin:FieldNAV a owl:NamedIndividual ; fin:canonicalName "product.nav" ; fin:canonicalField "product.nav" ; fin:conceptCategory "field" ; fin:alias "NAV", "기준가" .
+fin:FieldTicker a owl:NamedIndividual ; fin:canonicalName "product.ticker" ; fin:canonicalField "product.ticker" ; fin:conceptCategory "field" ; fin:alias "티커" .
+fin:FieldISIN a owl:NamedIndividual ; fin:canonicalName "product.isin" ; fin:canonicalField "product.isin" ; fin:conceptCategory "field" ; fin:alias "ISIN", "종목번호" .

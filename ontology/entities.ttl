@@ -1,0 +1,58 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fin:Organization a owl:Class ; rdfs:label "Organization"@en, "기관"@ko .
+fin:AssetManager a owl:Class ; rdfs:subClassOf fin:Organization ; rdfs:label "Asset manager"@en, "운용사"@ko .
+fin:Issuer a owl:Class ; rdfs:subClassOf fin:Organization ; rdfs:label "Issuer"@en, "발행사"@ko .
+fin:Trustee a owl:Class ; rdfs:subClassOf fin:Organization ; rdfs:label "Trustee"@en, "수탁사"@ko .
+fin:Exchange a owl:Class ; rdfs:label "Exchange"@en, "거래소"@ko .
+fin:Listing a owl:Class ; rdfs:label "Listing"@en, "상장"@ko .
+fin:Index a owl:Class ; rdfs:label "Index"@en, "지수"@ko .
+fin:Benchmark a owl:Class ; rdfs:label "Benchmark"@en, "벤치마크"@ko .
+fin:Region a owl:Class ; rdfs:label "Region"@en, "지역"@ko .
+fin:AssetType a owl:Class ; rdfs:label "Asset type"@en, "자산유형"@ko .
+fin:RiskGrade a owl:Class ; rdfs:label "Investment risk grade"@en, "투자위험등급"@ko .
+fin:CreditRating a owl:Class ; rdfs:label "Credit rating"@en, "신용등급"@ko .
+fin:Currency a owl:Class ; rdfs:label "Currency"@en, "통화"@ko .
+fin:RawCodeValue a owl:Class ; rdfs:label "Raw code value"@en, "원본 코드값"@ko .
+
+fin:managedBy a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:AssetManager ; fin:canonicalName "managedBy" ; fin:conceptCategory "relation" ; fin:alias "운용사", "운용하는" .
+fin:issuedBy a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:Issuer ; fin:canonicalName "issuedBy" ; fin:conceptCategory "relation" ; fin:alias "발행사", "발행한" .
+fin:heldInTrustBy a owl:ObjectProperty ; rdfs:domain fin:FundProduct ; rdfs:range fin:Trustee .
+fin:hasListing a owl:ObjectProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range fin:Listing .
+fin:listedOn a owl:ObjectProperty ; rdfs:domain fin:Listing ; rdfs:range fin:Exchange .
+fin:tracks a owl:ObjectProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range fin:Index ; fin:canonicalName "tracks" ; fin:conceptCategory "relation" ; fin:alias "추종지수", "기초지수", "추종하는" .
+fin:referencesBenchmark a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:Benchmark ; fin:canonicalName "referencesBenchmark" ; fin:conceptCategory "relation" ; fin:alias "벤치마크" .
+fin:investsInRegion a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:Region ; fin:canonicalName "investsInRegion" ; fin:conceptCategory "relation" ; fin:alias "투자하는 지역" .
+fin:hasAssetType a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:AssetType ; fin:canonicalName "hasAssetType" ; fin:conceptCategory "relation" ; fin:alias "투자자산 관계" .
+fin:hasRiskGrade a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:RiskGrade ; fin:canonicalName "hasRiskGrade" ; fin:conceptCategory "relation" ; fin:alias "위험등급" .
+fin:hasCreditRating a owl:ObjectProperty ; rdfs:domain fin:DebtSecurity ; rdfs:range fin:CreditRating .
+fin:denominatedIn a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:Currency ; fin:canonicalName "denominatedIn" ; fin:conceptCategory "relation" ; fin:alias "표시통화" .
+fin:tradesInCurrency a owl:ObjectProperty ; rdfs:domain fin:Listing ; rdfs:range fin:Currency .
+fin:hasRawCode a owl:ObjectProperty ; rdfs:domain fin:EvidenceBearingEntity ; rdfs:range fin:RawCodeValue .
+
+fin:organizationName a owl:DatatypeProperty ; rdfs:domain fin:Organization ; rdfs:range xsd:string .
+fin:organizationCode a owl:DatatypeProperty ; rdfs:domain fin:Organization ; rdfs:range xsd:string .
+fin:benchmarkEnglishName a owl:DatatypeProperty ; rdfs:domain fin:Benchmark ; rdfs:range xsd:string .
+fin:listingStartDate a owl:DatatypeProperty ; rdfs:domain fin:Listing ; rdfs:range xsd:date .
+fin:listingEndDate a owl:DatatypeProperty ; rdfs:domain fin:Listing ; rdfs:range xsd:date .
+fin:codeValue a owl:DatatypeProperty ; rdfs:domain fin:RawCodeValue ; rdfs:range xsd:string .
+fin:codeScheme a owl:DatatypeProperty ; rdfs:domain fin:RawCodeValue ; rdfs:range xsd:string .
+
+fin:RegionKR a fin:Region ; fin:canonicalName "Region.KR" ; fin:conceptCategory "region" ; fin:alias "국내", "한국", "KR" .
+fin:RegionUS a fin:Region ; fin:canonicalName "Region.US" ; fin:conceptCategory "region" ; fin:alias "미국", "US" .
+fin:RegionJP a fin:Region ; fin:canonicalName "Region.JP" ; fin:conceptCategory "region" ; fin:alias "일본", "JP" .
+fin:RegionCN a fin:Region ; fin:canonicalName "Region.CN" ; fin:conceptCategory "region" ; fin:alias "중국", "CN" .
+fin:RegionGlobal a fin:Region ; fin:canonicalName "Region.Global" ; fin:conceptCategory "region" ; fin:alias "글로벌", "Global" .
+fin:RegionAsia a fin:Region ; fin:canonicalName "Region.Asia" ; fin:conceptCategory "region" ; fin:alias "아시아", "Asia" .
+fin:AssetEquity a fin:AssetType ; fin:canonicalName "AssetType.Equity" ; fin:conceptCategory "asset_type" ; fin:alias "주식" .
+fin:AssetBond a fin:AssetType ; fin:canonicalName "AssetType.Bond" ; fin:conceptCategory "asset_type" ; fin:alias "채권형" .
+fin:AssetCommodity a fin:AssetType ; fin:canonicalName "AssetType.Commodity" ; fin:conceptCategory "asset_type" ; fin:alias "원자재" .
+fin:AssetMixed a fin:AssetType ; fin:canonicalName "AssetType.Mixed" ; fin:conceptCategory "asset_type" ; fin:alias "혼합자산" .
+fin:AssetMoneyMarket a fin:AssetType ; fin:canonicalName "AssetType.MoneyMarket" ; fin:conceptCategory "asset_type" ; fin:alias "MMF" .
+fin:AssetCurrency a fin:AssetType ; fin:canonicalName "AssetType.Currency" ; fin:conceptCategory "asset_type" ; fin:alias "통화" .
+fin:AssetRealEstate a fin:AssetType ; fin:canonicalName "AssetType.RealEstate" ; fin:conceptCategory "asset_type" ; fin:alias "부동산" .
+fin:AssetAlternative a fin:AssetType ; fin:canonicalName "AssetType.Alternative" ; fin:conceptCategory "asset_type" ; fin:alias "대체투자" .
+fin:AssetOther a fin:AssetType ; fin:canonicalName "AssetType.Other" ; fin:conceptCategory "asset_type" ; fin:alias "기타" .

@@ -1,0 +1,50 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://miraeasset.com/ontology/financial-product> a owl:Ontology ;
+  rdfs:label "Mirae Asset Financial Product Ontology"@en,
+             "미래에셋 금융상품 온톨로지"@ko ;
+  rdfs:comment "2026-08-24 source snapshot에 근거한 추천 Agent용 스키마. 원본 행, 상품, 관측값을 분리한다."@ko .
+
+fin:canonicalName a owl:AnnotationProperty .
+fin:canonicalField a owl:AnnotationProperty .
+fin:alias a owl:AnnotationProperty .
+fin:conceptCategory a owl:AnnotationProperty .
+fin:sourceColumn a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:rawValue a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:normalizedValue a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:qualityStatus a owl:DatatypeProperty ; rdfs:range xsd:string .
+
+fin:EvidenceBearingEntity a owl:Class ;
+  rdfs:label "Evidence-bearing entity"@en, "근거 보유 개체"@ko .
+fin:SourceDataset a owl:Class ; rdfs:label "Source dataset"@en, "원천 데이터셋"@ko .
+fin:SourceRecord a owl:Class ; rdfs:label "Source record"@en, "원본 행"@ko .
+fin:SourceFieldAssertion a owl:Class ;
+  rdfs:label "Source field assertion"@en, "원본 칼럼 주장"@ko ;
+  rdfs:comment "정규화 의미가 확인되지 않은 값까지 손실 없이 보존하는 구조."@ko .
+fin:SameProductCandidate a owl:Class ;
+  rdfs:label "Same-product candidate"@en, "동일상품 후보"@ko .
+
+fin:inDataset a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:SourceDataset .
+fin:describesProduct a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:FinancialProduct .
+fin:hasSourceRecord a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:SourceRecord ; owl:inverseOf fin:describesProduct .
+fin:hasFieldAssertion a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:SourceFieldAssertion .
+fin:supportedByRecord a owl:ObjectProperty ; rdfs:range fin:SourceRecord .
+fin:candidateProduct a owl:ObjectProperty ; rdfs:domain fin:SameProductCandidate ; rdfs:range fin:FinancialProduct .
+
+fin:datasetCode a owl:DatatypeProperty ; rdfs:domain fin:SourceDataset ; rdfs:range xsd:string .
+fin:snapshotDate a owl:DatatypeProperty ; rdfs:range xsd:date .
+fin:sourcePrimaryKey a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:string .
+fin:sourceRowNumber a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:positiveInteger .
+fin:rawPayloadHash a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:string .
+fin:uncertaintyNote a owl:DatatypeProperty ; rdfs:range xsd:string .
+
+fin:VALID a fin:QualityStatus ; rdfs:label "Valid"@en, "유효"@ko .
+fin:MISSING a fin:QualityStatus ; rdfs:label "Missing"@en, "결측"@ko .
+fin:UNKNOWN a fin:QualityStatus ; rdfs:label "Unknown"@en, "미확인"@ko .
+fin:UNMAPPED_CODE a fin:QualityStatus ; rdfs:label "Unmapped code"@en, "미매핑 코드"@ko .
+fin:SOURCE_ZERO a fin:QualityStatus ; rdfs:label "Source zero"@en, "원본 0"@ko .
+fin:QualityStatus a owl:Class .
