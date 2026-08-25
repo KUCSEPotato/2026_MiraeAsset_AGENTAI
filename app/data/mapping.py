@@ -124,48 +124,48 @@ def _map_bond(
     canonical_id: str,
     snapshot: str,
 ) -> tuple[MappedProduct, None]:
-    issue_date, issue_quality = normalized_date(row.get("ISU_DT"))
-    maturity_date, maturity_quality = normalized_date(row.get("MAT_DT"))
+    issue_date, issue_quality = normalized_date(row.get("isu_dt"))
+    maturity_date, maturity_quality = normalized_date(row.get("mat_dt"))
     observed_at, observed_quality = normalized_date(
-        row.get("PD_STD_INFO_UPDATE")
+        row.get("pd_std_info_update")
     )
     annotations = {
         key: value
         for key, value in {
-            "ISU_DT": issue_quality,
-            "MAT_DT": maturity_quality,
-            "PD_STD_INFO_UPDATE": observed_quality,
+            "isu_dt": issue_quality,
+            "mat_dt": maturity_quality,
+            "pd_std_info_update": observed_quality,
         }.items()
         if value is not None
     }
-    isin = row.get("PD_NO")
+    isin = row.get("pd_no")
     return (
         MappedProduct(
             canonical=_common(
                 canonical_id,
                 snapshot,
                 product_type=CanonicalConcept.FINANCIAL_PRODUCT_BOND.value,
-                product_name=row.get("PD_NM"),
-                short_name=row.get("PD_ABRV_NM"),
+                product_name=row.get("pd_nm"),
+                short_name=row.get("pd_abrv_nm"),
                 isin=isin,
-                issuer=row.get("PD_PBCM"),
+                issuer=row.get("pd_pbcm"),
                 asset_type=CanonicalConcept.ASSET_TYPE_BOND.value,
-                region=canonical_region(row.get("PD_CTRY_CD")),
-                risk_grade=row.get("PD_RISK_GCD"),
-                currency=row.get("CURR_CD"),
-                price=row.get("EVAL_PRICE"),
+                region=canonical_region(row.get("pd_ctry_cd")),
+                risk_grade=row.get("pd_risk_nm"),
+                currency=row.get("curr_cd"),
+                price=row.get("eval_price"),
                 observed_at=observed_at,
             ),
             identifiers=[_identifier("isin", isin, "domestic_bond")],
             bond_attributes={
                 "canonical_product_id": canonical_id,
                 "dataset_snapshot": snapshot,
-                "issue_balance": as_float(row.get("ISU_BAL_AMT")),
+                "issue_balance": as_float(row.get("isu_bal_amt")),
                 "issue_date": issue_date,
                 "maturity_date": maturity_date,
-                "buy_yield": as_float(row.get("BUY_YIELD")),
-                "major_category": row.get("STD_PD_MCLS_NM"),
-                "minor_category": row.get("STD_PD_SCLS_NM"),
+                "buy_yield": as_float(row.get("buy_yield")),
+                "major_category": row.get("std_pd_mcls_nm"),
+                "minor_category": row.get("std_pd_scls_nm"),
             },
             quality_annotations=annotations,
         ),
@@ -252,7 +252,7 @@ def _map_foreign_etf(
         _identifier("isin", isin, "foreign_etf"),
         _identifier("ticker", ticker, "foreign_etf"),
         _identifier("lipper_id", row.get("pd_lipper_id"), "foreign_etf"),
-        _identifier("ma_id", row.get("pd_itm_no_ma"), "foreign_etf"),
+        _identifier("ric", row.get("pd_itm_no"), "foreign_etf"),
     ]
     annotations = {"cu_base_index": base_quality} if base_quality else {}
     return (
@@ -299,24 +299,17 @@ def _map_public_fund(
     snapshot: str,
 ) -> tuple[MappedProduct, None]:
     source_fund_id = str(row["itm_no"])
-    fund_id = f"fund_pub:{source_fund_id}"
-    class_code = str(row["prfd_attr_cd"])
     is_public = row.get("prvo_pbff_desc") == "공모"
     product_type = (
         CanonicalConcept.FINANCIAL_PRODUCT_PUBLIC_FUND.value
         if is_public
         else CanonicalConcept.FINANCIAL_PRODUCT_FUND.value
     )
-    isin = row.get("std_itm_no") or row.get("itm_no")
+    isin = row.get("std_itm_no")
     identifiers = [
         _identifier("source_fund_id", source_fund_id, "public_fund"),
         _identifier("isin", isin, "public_fund"),
         _identifier("ksd_id", row.get("ksd_itm_no"), "public_fund"),
-        _identifier(
-            "representative_ksd_id",
-            row.get("rptt_ksd_itm_no"),
-            "public_fund",
-        ),
         _identifier("ma_id", row.get("mtco_itm_no"), "public_fund"),
         _identifier("fss_id", row.get("fss_itm_no"), "public_fund"),
     ]
@@ -338,21 +331,8 @@ def _map_public_fund(
                 base_index=row.get("bmrk_nm"),
             ),
             identifiers=identifiers,
-            fund={
-                "fund_id": fund_id,
-                "dataset_snapshot": snapshot,
-                "source_fund_id": source_fund_id,
-                "fund_name": row.get("itm_nm"),
-                "representative_ksd_id": row.get("rptt_ksd_itm_no"),
-            },
-            fund_class={
-                "canonical_product_id": canonical_id,
-                "dataset_snapshot": snapshot,
-                "fund_id": fund_id,
-                "class_code": class_code,
-                "raw_asset_category": row.get("or_attr_desc"),
-                "public_private": row.get("prvo_pbff_desc"),
-            },
+            fund=None,
+            fund_class=None,
         ),
         None,
     )
