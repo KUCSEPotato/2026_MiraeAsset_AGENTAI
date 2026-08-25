@@ -1,0 +1,69 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fin:FinancialProductShape a sh:NodeShape ;
+  sh:targetClass fin:FinancialProduct ;
+  sh:property [ sh:path fin:internalProductID ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+  sh:property [ sh:path fin:productName ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+  sh:property [ sh:path fin:hasIdentifier ; sh:minCount 1 ; sh:class fin:ProductIdentifier ] ;
+  sh:property [ sh:path fin:hasSourceRecord ; sh:minCount 1 ; sh:class fin:SourceRecord ] .
+
+fin:ETFShape a sh:NodeShape ;
+  sh:targetClass fin:ETF ;
+  sh:not [ sh:class fin:ETN ] ;
+  sh:property [ sh:path fin:hasListing ; sh:maxCount 1 ; sh:class fin:Listing ] .
+
+fin:ETNShape a sh:NodeShape ;
+  sh:targetClass fin:ETN ;
+  sh:not [ sh:class fin:ETF ] ;
+  sh:property [ sh:path fin:hasListing ; sh:maxCount 1 ; sh:class fin:Listing ] .
+
+fin:FundShareClassShape a sh:NodeShape ;
+  sh:targetClass fin:FundShareClass ;
+  sh:property [ sh:path fin:hasOfferingType ; sh:maxCount 1 ; sh:class fin:OfferingType ] .
+
+fin:ProductIdentifierShape a sh:NodeShape ;
+  sh:targetClass fin:ProductIdentifier ;
+  sh:property [ sh:path fin:identifierType ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:in ("SOURCE_ID" "ISIN" "TICKER" "RIC" "LIPPER_ID" "MA_ID" "KSD_ID" "REPRESENTATIVE_KSD_ID" "FSS_ID") ] ;
+  sh:property [ sh:path fin:identifierValue ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+  sh:property [ sh:path fin:namespace ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+  sh:property [ sh:path fin:isPrimaryInSource ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path fin:validationStatus ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:in ("VALIDATED" "FORMAT_ONLY" "UNKNOWN" "CONFLICT" "INVALID_FORMAT") ] .
+
+fin:ISINIdentifierShape a sh:NodeShape ;
+  sh:target [ a sh:SPARQLTarget ; sh:select """
+    SELECT ?this WHERE { ?this fin:identifierType "ISIN" . }
+  """ ] ;
+  sh:property [ sh:path fin:identifierValue ; sh:pattern "^[A-Z]{2}[A-Z0-9]{9}[0-9]$" ; sh:flags "i" ] .
+
+fin:SourceRecordShape a sh:NodeShape ;
+  sh:targetClass fin:SourceRecord ;
+  sh:property [ sh:path fin:sourcePrimaryKey ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+  sh:property [ sh:path fin:sourceRowNumber ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:positiveInteger ] ;
+  sh:property [ sh:path fin:snapshotDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+  sh:property [ sh:path fin:inDataset ; sh:minCount 1 ; sh:maxCount 1 ; sh:class fin:SourceDataset ] ;
+  sh:property [ sh:path fin:describesProduct ; sh:minCount 1 ; sh:maxCount 1 ; sh:class fin:FinancialProduct ] .
+
+fin:MetricObservationShape a sh:NodeShape ;
+  sh:targetClass fin:MetricObservation ;
+  sh:property [ sh:path fin:metricType ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path fin:metricValue ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:decimal ] ;
+  sh:property [ sh:path fin:sourceColumn ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path fin:supportedByRecord ; sh:minCount 1 ; sh:maxCount 1 ; sh:class fin:SourceRecord ] ;
+  sh:property [ sh:path fin:asOfDate ; sh:maxCount 1 ; sh:datatype xsd:date ] .
+
+fin:IdentifierCollisionShape a sh:NodeShape ;
+  sh:targetClass fin:ProductIdentifier ;
+  sh:sparql [
+    sh:message "동일 namespace/type/value 식별자가 서로 다른 상품에 연결되어 있습니다."@ko ;
+    sh:select """
+      SELECT $this WHERE {
+        $this fin:identifierType ?type ; fin:identifierValue ?value ; fin:namespace ?namespace .
+        ?p1 fin:hasIdentifier $this .
+        ?other fin:identifierType ?type ; fin:identifierValue ?value ; fin:namespace ?namespace .
+        ?p2 fin:hasIdentifier ?other .
+        FILTER ($this != ?other && ?p1 != ?p2)
+      }
+    """
+  ] .

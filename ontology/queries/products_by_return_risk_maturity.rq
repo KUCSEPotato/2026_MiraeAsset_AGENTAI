@@ -1,0 +1,7 @@
+PREFIX fin: <https://miraeasset.com/ontology/financial-product#>
+SELECT ?product ?name ?return ?risk WHERE {
+  ?product a fin:FinancialProduct ; fin:productName ?name ; fin:hasObservation ?r .
+  ?r a fin:ReturnObservation ; fin:returnPeriod "1Y" ; fin:metricValue ?return .
+  OPTIONAL { ?product fin:hasRiskGrade ?risk }
+  FILTER (?return > 0)
+} ORDER BY DESC(?return)
