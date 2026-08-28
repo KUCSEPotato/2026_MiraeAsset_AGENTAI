@@ -27,9 +27,18 @@ _PRODUCT_LABELS = {
 class CanonicalGraphExtractor:
     """Build graph-shaped records from the canonical relational snapshot."""
 
-    def __init__(self, engine: Engine, *, snapshot: str) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        snapshot: str,
+        version: str = "legacy",
+    ) -> None:
+        if version not in {"legacy", "v7"}:
+            raise ValueError("graph extractor version must be 'legacy' or 'v7'")
         self._engine = engine
         self._snapshot = snapshot
+        self._version = version
         self._nodes: dict[str, GraphNode] = {}
         self._edges: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._stats = GraphBuildStats()
@@ -134,6 +143,28 @@ class CanonicalGraphExtractor:
         source_dataset = str(row["source_dataset"])
         source_key = str(row["source_record_key"])
 
+        if self._version == "v7":
+            if label == "ETF":
+                self._name_relation(
+                    product_id,
+                    "MANAGED_BY",
+                    "AssetManagementCompany",
+                    row["asset_manager"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.asset_manager",
+                )
+                self._name_relation(
+                    product_id,
+                    "TRACKS_INDEX",
+                    "Index",
+                    row["base_index"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.base_index",
+                )
+            return
+
         if label in {"ETF", "ETN"}:
             self._name_relation(
                 product_id,
@@ -224,6 +255,40 @@ class CanonicalGraphExtractor:
         fund_id = str(row["fund_id"])
         class_id = str(row["canonical_product_id"])
         source_key = str(row["source_record_key"])
+        if self._version == "v7":
+            self._add_node(
+                fund_id,
+                "Fund",
+                ("M10Entity", "FinancialProduct", "Fund"),
+                {
+                    "display_name": row["fund_name"],
+                    "source_dataset": "public_fund",
+                    "source_record_key": row["source_fund_id"],
+                },
+            )
+            self._add_node(
+                class_id,
+                "FundShareClass",
+                ("M10Entity", "FundShareClass"),
+                {
+                    "display_name": (
+                        f"{row['fund_name']} ({row['class_code']})"
+                    ),
+                    "class_code": row["class_code"],
+                    "source_dataset": "public_fund",
+                    "source_record_key": source_key,
+                },
+            )
+            self._add_edge(
+                fund_id,
+                "HAS_SHARE_CLASS",
+                class_id,
+                "public_fund",
+                source_key,
+                "fund_classes.fund_id",
+            )
+            return
+
         self._add_node(
             fund_id,
             "Fund",
