@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from app.ontology.index import FP, OntologyIndex
 from app.ontology.models import OntologyLoadError
 
+LEGACY_RUNTIME_MAPPING_FILE = "mappings/column_mapping.csv"
+V7_RUNTIME_MAPPING_FILE = "mappings/v7_runtime_mapping.csv"
+
 
 @dataclass(frozen=True, slots=True)
 class GraphSourceBinding:
@@ -23,8 +26,66 @@ class GraphRelationMapping:
 class GraphMappingRegistry:
     """One allow-list for ontology relations, Cypher edges and node types."""
 
-    def __init__(self, ontology_index: OntologyIndex | None = None) -> None:
-        mappings = (
+    def __init__(
+        self,
+        ontology_index: OntologyIndex | None = None,
+        *,
+        version: str = "legacy",
+    ) -> None:
+        if version not in {"legacy", "v7"}:
+            raise ValueError("graph mapping version must be 'legacy' or 'v7'")
+        mappings = _v7_mappings() if version == "v7" else _legacy_mappings()
+        self.version = version
+        self.runtime_mapping_file = (
+            V7_RUNTIME_MAPPING_FILE
+            if version == "v7"
+            else LEGACY_RUNTIME_MAPPING_FILE
+        )
+        self._by_relation = {item.canonical_relation: item for item in mappings}
+        self._by_uri = {item.ontology_uri: item for item in mappings}
+        self._by_edge = {item.edge_type: item for item in mappings}
+        if ontology_index is not None:
+            self.validate_ontology(ontology_index)
+
+    @property
+    def mappings(self) -> tuple[GraphRelationMapping, ...]:
+        return tuple(self._by_relation.values())
+
+    @property
+    def edge_types(self) -> frozenset[str]:
+        return frozenset(self._by_edge)
+
+    def get(self, relation: str) -> GraphRelationMapping:
+        mapping = self._by_relation.get(relation) or self._by_uri.get(relation)
+        if mapping is None:
+            raise ValueError(f"unsupported graph relation: {relation}")
+        return mapping
+
+    def by_edge(self, edge_type: str) -> GraphRelationMapping:
+        mapping = self._by_edge.get(edge_type)
+        if mapping is None:
+            raise ValueError(f"unsupported graph edge type: {edge_type}")
+        return mapping
+
+    def validate_ontology(self, ontology_index: OntologyIndex) -> None:
+        for mapping in self.mappings:
+            if mapping.ontology_uri not in ontology_index.object_properties:
+                raise OntologyLoadError(
+                    f"graph relation is absent from ontology: {mapping.ontology_uri}"
+                )
+            if not ontology_index.is_compatible(
+                mapping.subject_type,
+                mapping.canonical_relation,
+                mapping.object_type,
+            ):
+                raise OntologyLoadError(
+                    "graph mapping violates ontology domain/range: "
+                    f"{mapping.canonical_relation}"
+                )
+
+
+def _legacy_mappings() -> tuple[GraphRelationMapping, ...]:
+    return (
             GraphRelationMapping(
                 "managedBy", str(FP.managedBy), "MANAGED_BY",
                 "FinancialProduct", "AssetManager",
@@ -120,48 +181,48 @@ class GraphMappingRegistry:
                     ),
                 ),
             ),
-        )
-        self._by_relation = {item.canonical_relation: item for item in mappings}
-        self._by_uri = {item.ontology_uri: item for item in mappings}
-        self._by_edge = {item.edge_type: item for item in mappings}
-        if ontology_index is not None:
-            self.validate_ontology(ontology_index)
+    )
 
-    @property
-    def mappings(self) -> tuple[GraphRelationMapping, ...]:
-        return tuple(self._by_relation.values())
 
-    @property
-    def edge_types(self) -> frozenset[str]:
-        return frozenset(self._by_edge)
-
-    def get(self, relation: str) -> GraphRelationMapping:
-        mapping = self._by_relation.get(relation) or self._by_uri.get(relation)
-        if mapping is None:
-            raise ValueError(f"unsupported graph relation: {relation}")
-        return mapping
-
-    def by_edge(self, edge_type: str) -> GraphRelationMapping:
-        mapping = self._by_edge.get(edge_type)
-        if mapping is None:
-            raise ValueError(f"unsupported graph edge type: {edge_type}")
-        return mapping
-
-    def validate_ontology(self, ontology_index: OntologyIndex) -> None:
-        for mapping in self.mappings:
-            if mapping.ontology_uri not in ontology_index.object_properties:
-                raise OntologyLoadError(
-                    f"graph relation is absent from ontology: {mapping.ontology_uri}"
-                )
-            if not ontology_index.is_compatible(
-                mapping.subject_type,
-                mapping.canonical_relation,
-                mapping.object_type,
-            ):
-                raise OntologyLoadError(
-                    "graph mapping violates ontology domain/range: "
-                    f"{mapping.canonical_relation}"
-                )
+def _v7_mappings() -> tuple[GraphRelationMapping, ...]:
+    return (
+        GraphRelationMapping(
+            "managedBy", str(FP.managedBy), "MANAGED_BY",
+            "ETF", "AssetManagementCompany",
+            (
+                GraphSourceBinding(
+                    "domestic_etp", "canonical_products.asset_manager"
+                ),
+                GraphSourceBinding(
+                    "foreign_etp", "canonical_products.asset_manager"
+                ),
+            ),
+        ),
+        GraphRelationMapping(
+            "tracksIndex", str(FP.tracksIndex), "TRACKS_INDEX",
+            "ETF", "Index",
+            (
+                GraphSourceBinding(
+                    "domestic_etp", "canonical_products.base_index"
+                ),
+                GraphSourceBinding(
+                    "foreign_etp", "canonical_products.base_index"
+                ),
+            ),
+        ),
+        GraphRelationMapping(
+            "hasShareClass", str(FP.hasShareClass), "HAS_SHARE_CLASS",
+            "Fund", "FundShareClass",
+            (
+                GraphSourceBinding("public_fund", "fund_classes.fund_id"),
+            ),
+        ),
+        GraphRelationMapping(
+            "hasSaleLot", str(FP.hasSaleLot), "HAS_SALE_LOT",
+            "Bond", "SaleLot",
+            (),
+        ),
+    )
 
 
 GRAPH_NODE_LABELS = frozenset(
@@ -172,9 +233,13 @@ GRAPH_NODE_LABELS = frozenset(
         "ETN",
         "Bond",
         "Fund",
+        "FundShareClass",
+        "SaleLot",
         "FundClass",
         "AssetManager",
+        "AssetManagementCompany",
         "Issuer",
+        "SecuritiesCompany",
         "Index",
         "Benchmark",
         "Region",

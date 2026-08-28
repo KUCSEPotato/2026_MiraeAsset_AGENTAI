@@ -67,11 +67,9 @@ class OntologyIndex:
         relation_uri = URIRef(relation) if "://" in relation else FP[relation]
         domain = self.graph.value(relation_uri, RDFS.domain)
         range_ = self.graph.value(relation_uri, RDFS.range)
-        if domain is None or range_ is None:
-            return False
-        return self._is_class_or_subclass(FP[subject_type], domain) and self._is_class_or_subclass(
-            FP[object_type], range_
-        )
+        subject_ok = domain is None or self._is_class_or_subclass(FP[subject_type], domain)
+        object_ok = range_ is None or self._is_class_or_subclass(FP[object_type], range_)
+        return subject_ok and object_ok
 
     def _is_class_or_subclass(self, candidate: URIRef, expected: URIRef) -> bool:
         if candidate == expected:

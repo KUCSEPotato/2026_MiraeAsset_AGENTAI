@@ -8,9 +8,11 @@ from rdflib import Graph
 from app.ontology.index import FP, OntologyIndex
 from app.ontology.models import OntologyLoadError
 
-MANDATORY_ONTOLOGY_FILES = (
+LEGACY_ONTOLOGY_FILES = (
     "core.ttl", "products.ttl", "entities.ttl", "observations.ttl", "mappings.ttl"
 )
+V7_ONTOLOGY_FILES = ("candidates/new_optical_ontology.ttl",)
+MANDATORY_ONTOLOGY_FILES = LEGACY_ONTOLOGY_FILES
 
 
 @dataclass(frozen=True)
@@ -21,12 +23,22 @@ class LoadedOntology:
 
 
 class OntologyLoader:
-    def __init__(self, root: Path, *, known_canonical_fields: set[str] | frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        known_canonical_fields: set[str] | frozenset[str] = frozenset(),
+        version: str = "legacy",
+    ) -> None:
         self.root = root
         self.known_canonical_fields = frozenset(known_canonical_fields)
+        if version not in {"legacy", "v7"}:
+            raise ValueError("ontology version must be 'legacy' or 'v7'")
+        self.version = version
 
     def load(self) -> LoadedOntology:
-        files = tuple(self.root / name for name in MANDATORY_ONTOLOGY_FILES)
+        names = V7_ONTOLOGY_FILES if self.version == "v7" else LEGACY_ONTOLOGY_FILES
+        files = tuple(self.root / name for name in names)
         missing = [path.name for path in files if not path.is_file()]
         if missing:
             raise OntologyLoadError(f"missing mandatory ontology files: {missing}")

@@ -206,7 +206,7 @@ class Neo4jGraphBackend:
                 await self._execute(query, {"rows": batch})
 
     async def _write_edges(self, data: GraphBuildData) -> None:
-        registry = GraphMappingRegistry()
+        registry = GraphMappingRegistry(version=self._settings.ontology_version)
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for edge in data.edges:
             registry.by_edge(edge.edge_type)

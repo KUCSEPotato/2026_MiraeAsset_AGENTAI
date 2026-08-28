@@ -24,8 +24,9 @@ async def ingest_graph() -> dict:
     ontology = OntologyLoader(
         Path(__file__).resolve().parents[2] / "ontology",
         known_canonical_fields=RDBFieldRegistry().canonical_fields,
+        version=graph_settings.ontology_version,
     ).load()
-    GraphMappingRegistry(ontology.index)
+    GraphMappingRegistry(ontology.index, version=graph_settings.ontology_version)
     engine = create_database_engine(database_settings)
     backend = Neo4jGraphBackend.connect(graph_settings)
     try:
@@ -34,6 +35,7 @@ async def ingest_graph() -> dict:
             CanonicalGraphExtractor(
                 engine,
                 snapshot=database_settings.snapshot_date,
+                version=graph_settings.ontology_version,
             ).extract
         )
         metadata = await backend.build(
