@@ -372,6 +372,7 @@ def create_production_answer_service(
         loader = ontology_loader or OntologyLoader(
             Path(__file__).resolve().parents[2] / "ontology",
             known_canonical_fields=RDBFieldRegistry().canonical_fields,
+            version=resolved_graph_settings.ontology_version,
         )
         ontology_service = RDFOntologyService(loader.load())
 
@@ -422,7 +423,10 @@ def create_production_answer_service(
                 if isinstance(ontology_service, RDFOntologyService)
                 else None
             )
-            graph_mapping = GraphMappingRegistry(ontology_index)
+            graph_mapping = GraphMappingRegistry(
+                ontology_index,
+                version=resolved_graph_settings.ontology_version,
+            )
             graph_compiler = GraphQueryCompiler(
                 graph_mapping,
                 snapshot=settings.snapshot_date,

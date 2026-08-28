@@ -1,0 +1,13 @@
+mapping_version,status,source_dataset,source_field,v7_resource,mapping_kind,primary_store,notes
+v7,active,domestic_etp,canonical_products.asset_manager,managedBy,ObjectProperty,Graph,ETF management role; range is AssetManagementCompany through Organization-compatible validation
+v7,active,foreign_etp,canonical_products.asset_manager,managedBy,ObjectProperty,Graph,ETF management role; range is AssetManagementCompany through Organization-compatible validation
+v7,active,domestic_etp,canonical_products.base_index,tracksIndex,ObjectProperty,Graph,Explicit index-tracking evidence for exchange-traded products
+v7,active,foreign_etp,canonical_products.base_index,tracksIndex,ObjectProperty,Graph,Explicit index-tracking evidence for exchange-traded products
+v7,active,public_fund,fund_classes.fund_id,hasShareClass,ObjectProperty,Graph,Fund to FundShareClass grain link
+v7,deferred,TBD,TBD,hasSaleLot,ObjectProperty,Graph,Ontology capability only; source table/column and SaleLot identity are pending data-owner confirmation
+v7,active,semantic_metric_catalog,price.*,PriceMetric,MetricFamily,RDB,Do not materialize price observations as RDF nodes
+v7,active,semantic_metric_catalog,nav.*,NAVMetric,MetricFamily,RDB,Do not materialize NAV observations as RDF nodes
+v7,active,semantic_metric_catalog,return.*,PerformanceMetric,MetricFamily,RDB,Period-specific returns stay in RDB with observedAt and unit metadata
+v7,active,semantic_metric_catalog,fee|expenseRate,CostMetric,MetricFamily,RDB,Cost metrics stay in RDB with unit metadata
+v7,active,semantic_metric_catalog,buyYield|afterTaxYield|corporateYield,YieldMetric,MetricFamily,RDB,Yield metrics stay in RDB with observedAt and unit metadata
+v7,deferred,TBD,TBD,SaleMetric,MetricFamily,RDB,Sale-lot metrics require SaleLot identity and source mapping before runtime materialization

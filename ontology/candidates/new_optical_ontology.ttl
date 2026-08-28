@@ -1,0 +1,876 @@
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos:<http://www.w3.org/2004/02/skos/core#> .
+
+#################################################################
+# Ontology metadata
+#################################################################
+
+<https://miraeasset.com/ontology/financial-product>
+    a owl:Ontology ;
+    rdfs:label "Mirae Asset Financial Product QA Ontology"@en ;
+    rdfs:comment """
+Merged ontology for the Mirae Asset Agent AI competition.
+This ontology uses the snapshot v7 design as the semantic and runtime backbone:
+stable product, organization, identifier, index, classification, fund share-class,
+and bond sale-lot relations are stored in the graph, while numeric and
+time-varying metrics remain RDB-backed.
+
+The stronger parts of the modular ontology are retained as validation and
+provenance layers: source datasets, source records, source field assertions,
+same-product candidates, strict identifier validation, ISIN format checks, and
+identifier collision detection.
+"""@en ;
+    owl:versionInfo "merged-optical-1.0" .
+
+#################################################################
+# Annotation properties for grounding
+#################################################################
+
+fin:canonicalName a owl:AnnotationProperty .
+fin:canonicalField a owl:AnnotationProperty .
+fin:alias a owl:AnnotationProperty .
+fin:conceptCategory a owl:AnnotationProperty .
+
+#################################################################
+# Core classes
+#################################################################
+
+fin:SemanticEntity a owl:Class .
+
+fin:EvidenceBearingEntity
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Evidence-bearing entity"@en .
+
+fin:FinancialProduct
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Financial product"@en, "금융상품"@ko .
+
+fin:DebtSecurity
+    a owl:Class ;
+    rdfs:subClassOf fin:FinancialProduct ;
+    rdfs:label "Debt security"@en, "채무증권"@ko .
+
+fin:FundProduct
+    a owl:Class ;
+    rdfs:subClassOf fin:FinancialProduct ;
+    rdfs:label "Fund product"@en, "펀드상품"@ko .
+
+fin:ExchangeTradedProduct
+    a owl:Class ;
+    rdfs:subClassOf fin:FinancialProduct ;
+    rdfs:label "Exchange-traded product"@en, "상장지수상품"@ko .
+
+fin:ETF
+    a owl:Class ;
+    rdfs:subClassOf fin:FundProduct, fin:ExchangeTradedProduct ;
+    rdfs:label "ETF"@en, "상장지수펀드"@ko ;
+    fin:canonicalName "FinancialProduct.ETF" ;
+    fin:conceptCategory "product_type" ;
+    fin:alias "ETF", "상장지수펀드"@ko ;
+    owl:disjointWith fin:ETN .
+
+fin:ETN
+    a owl:Class ;
+    rdfs:subClassOf fin:DebtSecurity, fin:ExchangeTradedProduct ;
+    rdfs:label "ETN"@en, "상장지수증권"@ko ;
+    fin:canonicalName "FinancialProduct.ETN" ;
+    fin:conceptCategory "product_type" ;
+    fin:alias "ETN", "상장지수증권"@ko .
+
+fin:Fund
+    a owl:Class ;
+    rdfs:subClassOf fin:FundProduct ;
+    rdfs:label "Fund"@en, "펀드"@ko ;
+    fin:canonicalName "FinancialProduct.Fund" ;
+    fin:conceptCategory "product_type" ;
+    fin:alias "펀드"@ko .
+
+fin:Bond
+    a owl:Class ;
+    rdfs:subClassOf fin:DebtSecurity ;
+    rdfs:label "Bond"@en, "채권"@ko ;
+    fin:canonicalName "FinancialProduct.Bond" ;
+    fin:conceptCategory "product_type" ;
+    fin:alias "채권"@ko .
+
+# Separate grains. These are not independent FinancialProduct subclasses.
+fin:FundShareClass
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Fund share class"@en, "펀드 판매 클래스"@ko .
+
+fin:SaleLot
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Bond sale lot"@en, "채권 판매 LOT"@ko .
+
+#################################################################
+# Reference and organization classes
+#################################################################
+
+fin:Organization
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Organization"@en, "기관"@ko .
+
+fin:AssetManagementCompany
+    a owl:Class ;
+    rdfs:subClassOf fin:Organization ;
+    rdfs:label "Asset management company"@en, "운용사"@ko .
+
+fin:SecuritiesCompany
+    a owl:Class ;
+    rdfs:subClassOf fin:Organization ;
+    rdfs:label "Securities company"@en, "증권사"@ko .
+
+fin:Trustee
+    a owl:Class ;
+    rdfs:subClassOf fin:Organization ;
+    rdfs:label "Trustee"@en, "수탁사"@ko .
+
+fin:Index
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Index"@en, "지수"@ko .
+
+fin:Identifier
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Identifier"@en, "식별자"@ko .
+
+fin:IdentifierScheme
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Identifier scheme"@en, "식별자 체계"@ko .
+
+fin:Currency
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Currency"@en, "통화"@ko .
+
+fin:Country
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Country"@en, "국가"@ko .
+
+fin:Exchange
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Exchange"@en, "거래소"@ko .
+
+fin:Market
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity ;
+    rdfs:label "Market"@en, "시장"@ko .
+
+#################################################################
+# Classification classes
+#################################################################
+
+fin:ClassificationConcept
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:ClassificationScheme
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:AssetClass a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:MarketScope a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:ExposureRegion a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:RiskGrade a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:ManagementStyle a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:IndexExposureMethod a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:ReplicationMethod a owl:Class ; rdfs:subClassOf fin:IndexExposureMethod .
+fin:OfferingType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:FundClassification a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:FundAttribute a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:FundSetupType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:ManagementAttribute a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:InvestorType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:ShareClassFeeType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:BondType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:InterestRateType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:InterestPaymentType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:CreditRating a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:TradingType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:DistributionFrequency a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:IncomeDistributionType a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+
+fin:Channel
+    a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:SalesChannel
+    a owl:Class ;
+    rdfs:subClassOf fin:Channel .
+
+fin:TradingChannel
+    a owl:Class ;
+    rdfs:subClassOf fin:Channel .
+
+#################################################################
+# Provenance and evidence classes
+#################################################################
+
+fin:SourceDataset
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Source dataset"@en, "원천 데이터셋"@ko .
+
+fin:SourceRecord
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Source record"@en, "원본 행"@ko .
+
+fin:SourceFieldAssertion
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Source field assertion"@en, "원본 필드 주장"@ko ;
+    rdfs:comment "Stores raw source field evidence even when normalization is uncertain."@en .
+
+fin:SameProductCandidate
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Same-product candidate"@en, "동일상품 후보"@ko .
+
+fin:QualityStatus a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:ValidationStatus a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+
+#################################################################
+# Object properties
+#################################################################
+
+# Identity
+fin:hasIdentifier
+    a owl:ObjectProperty ;
+    rdfs:domain fin:SemanticEntity ;
+    rdfs:range fin:Identifier .
+
+fin:identifierScheme
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range fin:IdentifierScheme .
+
+# Organization roles
+fin:managedBy
+    a owl:ObjectProperty ;
+    rdfs:range fin:Organization ;
+    fin:canonicalName "managedBy" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "운용사"@ko, "운용하는"@ko ;
+    rdfs:comment "Used for ETF and Fund management roles."@en .
+
+fin:issuedBy
+    a owl:ObjectProperty ;
+    rdfs:range fin:Organization ;
+    fin:canonicalName "issuedBy" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "발행사"@ko, "발행한"@ko ;
+    rdfs:comment "Used for ETN and Bond issuer roles."@en .
+
+fin:hasTrustee
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:Trustee .
+
+# Product grains
+fin:hasShareClass
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:FundShareClass ;
+    fin:canonicalName "hasShareClass" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "펀드 클래스"@ko, "판매 클래스"@ko .
+
+fin:hasSaleLot
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:SaleLot .
+
+# Index
+fin:hasUnderlyingIndex
+    a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Index ;
+    fin:canonicalName "hasUnderlyingIndex" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "기초지수"@ko, "추종지수"@ko .
+
+fin:tracksIndex
+    a owl:ObjectProperty ;
+    rdfs:subPropertyOf fin:hasUnderlyingIndex ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Index ;
+    fin:canonicalName "tracksIndex" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "추종하는"@ko ;
+    rdfs:comment "Assert only with explicit tracking evidence."@en .
+
+fin:hasBenchmark
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:Index ;
+    fin:canonicalName "hasBenchmark" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "벤치마크"@ko .
+
+# Currency, venue, geography
+fin:denominatedIn
+    a owl:ObjectProperty ;
+    rdfs:range fin:Currency ;
+    fin:canonicalName "denominatedIn" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "표시통화"@ko .
+
+fin:tradedInCurrency
+    a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Currency .
+
+fin:listedOnExchange
+    a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Exchange .
+
+fin:listedInMarket
+    a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Market .
+
+fin:listedInCountry
+    a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Country .
+
+fin:establishedInCountry
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:Country .
+
+fin:hasInstrumentCountry
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:Country ;
+    rdfs:comment "Instrument-country semantics only; do not silently reinterpret as issuer country."@en .
+
+# Classification
+fin:hasAssetClass a owl:ObjectProperty ; rdfs:range fin:AssetClass .
+fin:hasMarketScope a owl:ObjectProperty ; rdfs:range fin:MarketScope .
+fin:hasExposureRegion a owl:ObjectProperty ; rdfs:range fin:ExposureRegion .
+fin:hasRiskGrade a owl:ObjectProperty ; rdfs:range fin:RiskGrade .
+fin:hasManagementStyle a owl:ObjectProperty ; rdfs:domain fin:ETF ; rdfs:range fin:ManagementStyle .
+fin:hasIndexExposureMethod a owl:ObjectProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range fin:IndexExposureMethod .
+fin:hasReplicationMethod a owl:ObjectProperty ; rdfs:subPropertyOf fin:hasIndexExposureMethod ; rdfs:domain fin:ETF ; rdfs:range fin:ReplicationMethod .
+fin:hasOfferingType a owl:ObjectProperty ; rdfs:range fin:OfferingType .
+fin:hasFundClassification a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:FundClassification .
+fin:classificationScheme a owl:ObjectProperty ; rdfs:domain fin:FundClassification ; rdfs:range fin:ClassificationScheme .
+fin:hasFundAttribute a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:FundAttribute .
+fin:hasFundSetupType a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:FundSetupType .
+fin:hasManagementAttribute a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:ManagementAttribute .
+fin:hasInvestorType a owl:ObjectProperty ; rdfs:range fin:InvestorType .
+fin:hasShareClassFeeType a owl:ObjectProperty ; rdfs:domain fin:FundShareClass ; rdfs:range fin:ShareClassFeeType .
+fin:hasBondType a owl:ObjectProperty ; rdfs:domain fin:Bond ; rdfs:range fin:BondType .
+fin:hasInterestRateType a owl:ObjectProperty ; rdfs:domain fin:Bond ; rdfs:range fin:InterestRateType .
+fin:hasInterestPaymentType a owl:ObjectProperty ; rdfs:domain fin:Bond ; rdfs:range fin:InterestPaymentType .
+fin:hasCreditRating a owl:ObjectProperty ; rdfs:domain fin:DebtSecurity ; rdfs:range fin:CreditRating .
+fin:hasTradingType a owl:ObjectProperty ; rdfs:domain fin:SaleLot ; rdfs:range fin:TradingType .
+fin:availableThroughSalesChannel a owl:ObjectProperty ; rdfs:domain fin:FundShareClass ; rdfs:range fin:SalesChannel .
+fin:availableThroughTradingChannel a owl:ObjectProperty ; rdfs:domain fin:SaleLot ; rdfs:range fin:TradingChannel .
+fin:hasDistributionFrequency a owl:ObjectProperty ; rdfs:range fin:DistributionFrequency .
+fin:hasIncomeDistributionType a owl:ObjectProperty ; rdfs:range fin:IncomeDistributionType .
+
+# Provenance and evidence
+fin:inDataset a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:SourceDataset .
+fin:describesProduct a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:FinancialProduct .
+fin:hasSourceRecord a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:SourceRecord ; owl:inverseOf fin:describesProduct .
+fin:hasFieldAssertion a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:SourceFieldAssertion .
+fin:supportedByRecord a owl:ObjectProperty ; rdfs:range fin:SourceRecord .
+fin:candidateProduct a owl:ObjectProperty ; rdfs:domain fin:SameProductCandidate ; rdfs:range fin:FinancialProduct .
+
+#################################################################
+# Datatype properties
+#################################################################
+
+fin:identifierValue a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:string .
+fin:identifierNamespace a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:string .
+fin:isPrimaryInSource a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:boolean .
+fin:validationStatus a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:string .
+
+fin:internalProductID a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:productName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:shortName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:englishName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
+fin:investmentStrategyDescription a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
+fin:leverageFactor a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:decimal .
+fin:issueDate a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:date .
+fin:maturityOrFirstCallDate a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:date .
+fin:totalIssueAmount a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:decimal .
+fin:lotSequence a owl:DatatypeProperty ; rdfs:domain fin:SaleLot ; rdfs:range xsd:positiveInteger .
+
+fin:datasetCode a owl:DatatypeProperty ; rdfs:domain fin:SourceDataset ; rdfs:range xsd:string .
+fin:datasetSnapshotDate a owl:DatatypeProperty ; rdfs:range xsd:dateTime .
+fin:snapshotDate a owl:DatatypeProperty ; rdfs:range xsd:date .
+fin:sourcePrimaryKey a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:string .
+fin:sourceRowNumber a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:positiveInteger .
+fin:sourceRowLocator a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:sourceColumn a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:sourceRawValue a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:rawValue a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:normalizedValue a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:qualityStatus a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:rawPayloadHash a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:string .
+fin:uncertaintyNote a owl:DatatypeProperty ; rdfs:range xsd:string .
+
+fin:observedAt a owl:DatatypeProperty ; rdfs:range xsd:dateTime .
+fin:updatedAt a owl:DatatypeProperty ; rdfs:range xsd:dateTime .
+
+#################################################################
+# Controlled vocabulary
+#################################################################
+
+fin:SOURCE_ID a fin:IdentifierScheme ; skos:prefLabel "Source ID"@en .
+fin:ISIN a fin:IdentifierScheme ; skos:prefLabel "ISIN"@en .
+fin:TICKER a fin:IdentifierScheme ; skos:prefLabel "Ticker"@en .
+fin:RIC a fin:IdentifierScheme ; skos:prefLabel "RIC"@en .
+fin:LIPPER_ID a fin:IdentifierScheme ; skos:prefLabel "Lipper ID"@en .
+fin:MA_ID a fin:IdentifierScheme ; skos:prefLabel "Mirae Asset ID"@en .
+fin:KSD_ID a fin:IdentifierScheme ; skos:prefLabel "KSD ID"@en .
+fin:REPRESENTATIVE_KSD_ID a fin:IdentifierScheme ; skos:prefLabel "Representative KSD ID"@en .
+fin:FSS_ID a fin:IdentifierScheme ; skos:prefLabel "FSS ID"@en .
+
+fin:PUBLIC a fin:OfferingType ; skos:prefLabel "Public"@en, "공모"@ko .
+fin:PRIVATE a fin:OfferingType ; skos:prefLabel "Private"@en, "사모"@ko .
+
+fin:VALIDATED a fin:ValidationStatus ; skos:prefLabel "Validated"@en .
+fin:FORMAT_ONLY a fin:ValidationStatus ; skos:prefLabel "Format only"@en .
+fin:UNKNOWN_VALIDATION a fin:ValidationStatus ; skos:prefLabel "Unknown"@en .
+fin:CONFLICT a fin:ValidationStatus ; skos:prefLabel "Conflict"@en .
+fin:INVALID_FORMAT a fin:ValidationStatus ; skos:prefLabel "Invalid format"@en .
+
+fin:VALID a fin:QualityStatus ; skos:prefLabel "Valid"@en .
+fin:MISSING a fin:QualityStatus ; skos:prefLabel "Missing"@en .
+fin:UNKNOWN_QUALITY a fin:QualityStatus ; skos:prefLabel "Unknown"@en .
+fin:UNMAPPED_CODE a fin:QualityStatus ; skos:prefLabel "Unmapped code"@en .
+fin:SOURCE_ZERO a fin:QualityStatus ; skos:prefLabel "Source zero"@en .
+
+#################################################################
+# RDB-backed metric catalog
+#################################################################
+
+fin:RuntimeStore a owl:Class .
+fin:GraphStore a fin:RuntimeStore ; skos:prefLabel "Graph"@en .
+fin:RDBStore a fin:RuntimeStore ; skos:prefLabel "RDB"@en .
+fin:VectorStore a fin:RuntimeStore ; skos:prefLabel "Vector/BM25"@en .
+fin:MetadataStore a fin:RuntimeStore ; skos:prefLabel "Evidence Metadata"@en .
+
+fin:MetricFamily a owl:Class .
+fin:primaryStore a owl:ObjectProperty ; rdfs:range fin:RuntimeStore .
+fin:semanticKey a owl:DatatypeProperty ; rdfs:range xsd:string .
+
+fin:PriceMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "price.close", "price.open", "price.high", "price.low", "price.reference" .
+
+fin:NAVMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "nav.perShare", "nav.yesterday", "nav.reference" .
+
+fin:PerformanceMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "return.1D", "return.1W", "return.1M", "return.3M",
+                    "return.6M", "return.1Y", "return.2Y", "return.3Y",
+                    "return.5Y", "return.YTD" .
+
+fin:LiquidityMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "volume", "tradingValue" .
+
+fin:SizeMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "aum", "netAssets", "outstandingAmount" .
+
+fin:CostMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "fee", "expenseRate" .
+
+fin:VolatilityMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "volatility.1M", "volatility.3M", "volatility.6M", "volatility.1Y" .
+
+fin:TrackingMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "trackingError" .
+
+fin:DistributionMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "distributionYield", "distributionAmount", "lastDistributionRate" .
+
+fin:PortfolioCompositionMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "portfolio.assetCompositionRatio" .
+
+fin:FixedIncomePortfolioMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "avgCoupon", "avgMaturity", "duration", "averageCreditQualityScore" .
+
+fin:YieldMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "buyYield", "afterTaxYield", "corporateYield" .
+
+fin:ValuationMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "evaluatedPrice", "bondClosePrice" .
+
+fin:SaleMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "tradePrice", "buyableQuantity" .
+
+#################################################################
+# Answerability model
+#################################################################
+
+fin:AnswerStatus a owl:Class .
+fin:ReasonCode a owl:Class .
+fin:OperationalConstraint a owl:Class .
+
+fin:ANSWERABLE a fin:AnswerStatus .
+fin:PARTIALLY_ANSWERABLE a fin:AnswerStatus .
+fin:UNANSWERABLE a fin:AnswerStatus .
+fin:AMBIGUOUS a fin:AnswerStatus .
+fin:RETRIEVAL_FAILED a fin:AnswerStatus .
+
+fin:ENTITY_NOT_FOUND a fin:ReasonCode .
+fin:ENTITY_AMBIGUOUS a fin:ReasonCode .
+fin:METRIC_NOT_AVAILABLE a fin:ReasonCode .
+fin:DATE_NOT_COVERED a fin:ReasonCode .
+fin:MISSING_VALUE a fin:ReasonCode .
+fin:NO_MATCHING_CANDIDATE a fin:ReasonCode .
+fin:EVIDENCE_CONFLICT a fin:ReasonCode .
+fin:SYSTEM_OR_RETRIEVAL_ERROR a fin:ReasonCode .
+fin:INSUFFICIENT_EVIDENCE a fin:ReasonCode .
+fin:UNIT_OR_PERIOD_UNKNOWN a fin:ReasonCode .
+fin:UNSUPPORTED_RELATION a fin:ReasonCode .
+
+fin:constraintId a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:constraintGroup a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:ruleText a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:appliesAtLayer a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:severity a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:onFailureStatus a owl:ObjectProperty ; rdfs:range fin:AnswerStatus .
+fin:onFailureReason a owl:ObjectProperty ; rdfs:range fin:ReasonCode .
+
+fin:S045 a fin:OperationalConstraint ;
+    fin:constraintId "S045" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "A core query entity must resolve to exactly one canonical entity. Zero candidates means ENTITY_NOT_FOUND; multiple candidates means ENTITY_AMBIGUOUS." ;
+    fin:appliesAtLayer "Entity Resolution / Answerability Gate" ;
+    fin:severity "HARD" .
+
+fin:S046 a fin:OperationalConstraint ;
+    fin:constraintId "S046" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "If the requested metric is not defined in the Semantic Metric Catalog / Source Mapping / RDB, do not substitute a similar metric or invent a calculation." ;
+    fin:appliesAtLayer "Ontology Mapping / Answerability Gate" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:onFailureReason fin:METRIC_NOT_AVAILABLE .
+
+fin:S047 a fin:OperationalConstraint ;
+    fin:constraintId "S047" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "If no observedAt covers the requested date or period, do not substitute datasetSnapshotDate or updatedAt." ;
+    fin:appliesAtLayer "RDB / Query Validator" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:onFailureReason fin:DATE_NOT_COVERED .
+
+fin:S048 a fin:OperationalConstraint ;
+    fin:constraintId "S048" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "NULL, zero, N/A, and not-provided are distinct states. Never answer NULL as numeric zero." ;
+    fin:appliesAtLayer "ETL / Answer Validator" ;
+    fin:severity "HARD" ;
+    fin:onFailureReason fin:MISSING_VALUE .
+
+fin:S049 a fin:OperationalConstraint ;
+    fin:constraintId "S049" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "When zero candidates satisfy all user filters, do not automatically relax any user condition." ;
+    fin:appliesAtLayer "Query Planner / Answerability Gate" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:onFailureReason fin:NO_MATCHING_CANDIDATE .
+
+fin:S050 a fin:OperationalConstraint ;
+    fin:constraintId "S050" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "If evidence for the same entity + metric + observedAt conflicts and the source-priority policy cannot resolve it, stop answer generation." ;
+    fin:appliesAtLayer "Evidence Validator" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:onFailureReason fin:EVIDENCE_CONFLICT .
+
+fin:S051 a fin:OperationalConstraint ;
+    fin:constraintId "S051" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "Graph/RDB/Vector retrieval failure is not data absence and must be returned as RETRIEVAL_FAILED." ;
+    fin:appliesAtLayer "Runtime / Answerability Gate" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:RETRIEVAL_FAILED ;
+    fin:onFailureReason fin:SYSTEM_OR_RETRIEVAL_ERROR .
+
+fin:S052 a fin:OperationalConstraint ;
+    fin:constraintId "S052" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "Every factual claim in the final answer must be linked to at least one evidence item." ;
+    fin:appliesAtLayer "Evidence Validator" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:onFailureReason fin:INSUFFICIENT_EVIDENCE .
+
+fin:S053 a fin:OperationalConstraint ;
+    fin:constraintId "S053" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "For a multi-slot question with evidence for only some slots, answer only the supported slots, explicitly report missing slots, and return PARTIALLY_ANSWERABLE." ;
+    fin:appliesAtLayer "Answerability Gate" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:PARTIALLY_ANSWERABLE .
+
+fin:S054 a fin:OperationalConstraint ;
+    fin:constraintId "S054" ;
+    fin:constraintGroup "Answerability" ;
+    fin:ruleText "If unit, period, or ratio scale is not certain, prohibit normalization, comparison, ranking, and derived calculation." ;
+    fin:appliesAtLayer "RDB / Answer Validator" ;
+    fin:severity "HARD" ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:onFailureReason fin:UNIT_OR_PERIOD_UNKNOWN .
+
+#################################################################
+# SHACL constraints
+#################################################################
+
+fin:FinancialProductShape
+    a sh:NodeShape ;
+    sh:targetClass fin:FinancialProduct ;
+    sh:property [
+        sh:path fin:internalProductID ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+        sh:message "FinancialProduct must have exactly one non-empty internalProductID."@en
+    ] ;
+    sh:property [
+        sh:path fin:productName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+        sh:message "FinancialProduct must have exactly one non-empty productName."@en
+    ] ;
+    sh:property [
+        sh:path fin:hasIdentifier ;
+        sh:minCount 1 ;
+        sh:class fin:Identifier ;
+        sh:message "FinancialProduct must have at least one Identifier."@en
+    ] ;
+    sh:property [
+        sh:path fin:hasSourceRecord ;
+        sh:minCount 1 ;
+        sh:class fin:SourceRecord ;
+        sh:message "FinancialProduct must be grounded by at least one SourceRecord."@en
+    ] .
+
+fin:IdentifierShape
+    a sh:NodeShape ;
+    sh:targetClass fin:Identifier ;
+    sh:property [
+        sh:path fin:identifierValue ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+        sh:message "Identifier must have exactly one non-empty identifierValue."@en
+    ] ;
+    sh:property [
+        sh:path fin:identifierScheme ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class fin:IdentifierScheme ;
+        sh:message "Identifier must have exactly one identifierScheme."@en
+    ] ;
+    sh:property [
+        sh:path fin:identifierNamespace ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+        sh:message "Identifier must have exactly one non-empty identifierNamespace."@en
+    ] ;
+    sh:property [
+        sh:path fin:isPrimaryInSource ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean
+    ] ;
+    sh:property [
+        sh:path fin:validationStatus ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ("VALIDATED" "FORMAT_ONLY" "UNKNOWN" "CONFLICT" "INVALID_FORMAT") ;
+        sh:message "Identifier must have a supported validationStatus."@en
+    ] .
+
+fin:ISINIdentifierShape
+    a sh:NodeShape ;
+    sh:target [
+        a sh:SPARQLTarget ;
+        sh:select """
+            SELECT ?this WHERE {
+                ?this fin:identifierScheme fin:ISIN .
+            }
+        """
+    ] ;
+    sh:property [
+        sh:path fin:identifierValue ;
+        sh:pattern "^[A-Z]{2}[A-Z0-9]{9}[0-9]$" ;
+        sh:flags "i" ;
+        sh:message "ISIN identifierValue must match the ISIN format."@en
+    ] .
+
+fin:IdentifierCollisionShape
+    a sh:NodeShape ;
+    sh:targetClass fin:Identifier ;
+    sh:sparql [
+        sh:message "The same identifier scheme, namespace, and value is connected to different products."@en ;
+        sh:select """
+            SELECT $this WHERE {
+                $this fin:identifierScheme ?scheme ;
+                      fin:identifierValue ?value ;
+                      fin:identifierNamespace ?namespace .
+                ?p1 fin:hasIdentifier $this .
+                ?other fin:identifierScheme ?scheme ;
+                       fin:identifierValue ?value ;
+                       fin:identifierNamespace ?namespace .
+                ?p2 fin:hasIdentifier ?other .
+                FILTER ($this != ?other && ?p1 != ?p2)
+            }
+        """
+    ] .
+
+fin:ETFShape
+    a sh:NodeShape ;
+    sh:targetClass fin:ETF ;
+    sh:not [ sh:class fin:ETN ] ;
+    sh:property [
+        sh:path fin:issuedBy ;
+        sh:maxCount 0 ;
+        sh:message "ETF must not use issuedBy; use managedBy when source evidence represents the management role."@en
+    ] .
+
+fin:ETNShape
+    a sh:NodeShape ;
+    sh:targetClass fin:ETN ;
+    sh:not [ sh:class fin:ETF ] ;
+    sh:property [
+        sh:path fin:managedBy ;
+        sh:maxCount 0 ;
+        sh:message "ETN must not use managedBy for the source field routed as issuer."@en
+    ] ;
+    sh:property [
+        sh:path fin:hasManagementStyle ;
+        sh:maxCount 0 ;
+        sh:message "ETN must not receive ETF ManagementStyle assertions."@en
+    ] ;
+    sh:property [
+        sh:path fin:hasReplicationMethod ;
+        sh:maxCount 0 ;
+        sh:message "ETN must not receive ETF ReplicationMethod assertions."@en
+    ] .
+
+fin:FundShareClassShape
+    a sh:NodeShape ;
+    sh:targetClass fin:FundShareClass ;
+    sh:property [
+        sh:path [ sh:inversePath fin:hasShareClass ] ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class fin:Fund ;
+        sh:message "Each materialized FundShareClass must resolve to exactly one parent Fund."@en
+    ] ;
+    sh:property [
+        sh:path fin:hasOfferingType ;
+        sh:maxCount 1 ;
+        sh:class fin:OfferingType
+    ] .
+
+fin:SaleLotShape
+    a sh:NodeShape ;
+    sh:targetClass fin:SaleLot ;
+    sh:property [
+        sh:path [ sh:inversePath fin:hasSaleLot ] ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class fin:Bond ;
+        sh:message "Each SaleLot must belong to exactly one Bond."@en
+    ] .
+
+fin:SourceRecordShape
+    a sh:NodeShape ;
+    sh:targetClass fin:SourceRecord ;
+    sh:property [
+        sh:path fin:sourcePrimaryKey ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1
+    ] ;
+    sh:property [
+        sh:path fin:sourceRowNumber ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:positiveInteger
+    ] ;
+    sh:property [
+        sh:path fin:snapshotDate ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:date
+    ] ;
+    sh:property [
+        sh:path fin:inDataset ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class fin:SourceDataset
+    ] ;
+    sh:property [
+        sh:path fin:describesProduct ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class fin:FinancialProduct
+    ] .
+
+#################################################################
+# Runtime rule
+#################################################################
+
+<https://miraeasset.com/ontology/financial-product>
+    rdfs:comment """
+Implementation rule:
+- Do not materialize PriceObservation, NAVObservation, PerformanceObservation,
+  YieldObservation, FeeObservation, or other high-churn metric nodes in RDF for
+  the competition QA runtime.
+- Store numeric and time-varying values in RDB keyed by canonical product,
+  fund-share-class, bond, or sale-lot identifiers.
+- Store stable product, organization, identifier, index, classification,
+  channel, and grain relations in the graph.
+- Keep long-form overseas ETP strategy text in Vector/BM25.
+- Preserve source dataset, row, column, and raw value metadata so the
+  Answerability Gate can validate every factual claim before generation.
+"""@en .
