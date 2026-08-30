@@ -6,6 +6,7 @@ from app.domain.models import (
     ExecutionContext,
     QueryStep,
     RetrievalRecord,
+    RetrievalResult,
     StepExecutionStatus,
 )
 from app.graph.backend import Neo4jGraphBackend
@@ -30,6 +31,13 @@ class RealGraphRetriever:
         step: QueryStep,
         context: ExecutionContext,
     ) -> list[RetrievalRecord]:
+        return (await self.retrieve_with_result(step, context)).records
+
+    async def retrieve_with_result(
+        self,
+        step: QueryStep,
+        context: ExecutionContext,
+    ) -> RetrievalResult:
         candidate_ids = _dependency_candidates(step, context)
         try:
             metadata = await self._backend.assert_ready(
@@ -37,12 +45,17 @@ class RealGraphRetriever:
             )
             results: list[RetrievalRecord] = []
             emitted: set[str] = set()
+            path_totals: list[int] = []
             for path in graph_paths(step):
                 compiled = self._compiler.compile(
                     step,
                     path,
                     candidate_ids=candidate_ids,
                 )
+                count_rows = await self._backend.query(
+                    compiled.count_cypher, compiled.parameters
+                )
+                path_totals.append(int(count_rows[0]["total_matches"]))
                 rows = await self._backend.query(
                     compiled.cypher, compiled.parameters
                 )
@@ -53,14 +66,33 @@ class RealGraphRetriever:
                         compiled.relations,
                         compiled.directions,
                         self._snapshot,
-                        metadata.graph_version,
+                        getattr(
+                            metadata,
+                            "graph_version",
+                            getattr(metadata, "projection_version", "unknown"),
+                        ),
                         candidate_ids,
                     )
                     if record.source_id in emitted:
                         continue
                     emitted.add(record.source_id)
                     results.append(record)
-            return results
+            # A single path has an exact count.  Multi-path plans may overlap;
+            # retain an explicit per-path count instead of inventing a union.
+            total_matches = path_totals[0] if len(path_totals) == 1 else None
+            return RetrievalResult(
+                records=results,
+                total_matches=total_matches,
+                returned_count=len(results),
+                window_limit=compiled.parameters["limit"] if path_totals else None,
+                counts=(
+                    {"path_total_matches": total_matches}
+                    if total_matches is not None else {
+                        "path_count": len(path_totals),
+                        "path_total_sum": sum(path_totals),
+                    }
+                ),
+            )
         except RetrieverUnavailableError:
             raise
         except Exception as exc:
@@ -114,6 +146,7 @@ def _record_from_path(
     provenance = [
         {
             "edge_id": edge.get("edge_id"),
+            "canonical_fact_id": edge.get("canonical_fact_id"),
             "edge_type": edge.get("edge_type"),
             "source_dataset": edge.get("source_dataset"),
             "source_record_keys": edge.get("source_record_keys", []),

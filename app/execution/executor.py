@@ -9,6 +9,7 @@ from app.domain.models import (
     QueryPlan,
     QueryStep,
     RetrievalRecord,
+    RetrievalResult,
     RetrievalSource,
     StepExecutionResult,
     StepExecutionStatus,
@@ -17,6 +18,11 @@ from app.execution.config import ExecutionSettings
 from app.execution.transforms import InternalTransformExecutor
 from app.retrieval.exceptions import RetrievalError
 from app.retrieval.registry import RetrieverRegistry
+
+
+def _records_result(records: list[RetrievalRecord]) -> RetrievalResult:
+    """Adapt legacy list-only retrievers without inventing a total count."""
+    return RetrievalResult(records=records, returned_count=len(records))
 
 
 class QueryExecutor:
@@ -121,12 +127,22 @@ class QueryExecutor:
                     records = await self._transform_executor.execute(step, context)
                 else:
                     retriever = self._registry.get(step.source)
-                    records = await retriever.retrieve(step, context)
+                    retrieve_with_result = getattr(retriever, "retrieve_with_result", None)
+                    result = (
+                        await retrieve_with_result(step, context)
+                        if retrieve_with_result is not None
+                        else _records_result(await retriever.retrieve(step, context))
+                    )
+                    records = result.records
             normalized = [self._with_provenance(record, step) for record in records]
             return self._result(
                 step=step,
                 status=StepExecutionStatus.SUCCESS,
                 records=normalized,
+                retrieval_metadata=(
+                    result.model_dump(exclude={"records"})
+                    if step.source is not RetrievalSource.INTERNAL else {}
+                ),
                 started_at=started_at,
                 started_clock=started_clock,
             )
@@ -174,6 +190,7 @@ class QueryExecutor:
         step: QueryStep,
         status: StepExecutionStatus,
         records: list[RetrievalRecord],
+        retrieval_metadata: dict | None = None,
         started_at: datetime,
         started_clock: float,
         error_code: ExecutionErrorCode | None = None,
@@ -185,6 +202,7 @@ class QueryExecutor:
             source=step.source,
             status=status,
             records=records,
+            retrieval_metadata=retrieval_metadata or {},
             error_code=error_code,
             error_message=error_message,
             started_at=started_at,

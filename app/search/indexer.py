@@ -1,7 +1,6 @@
 import hashlib
 import json
 import os
-import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
@@ -10,7 +9,13 @@ from app.search.documents import ForeignETFStrategyDocumentBuilder
 from app.search.embedding import EmbeddingProvider
 from app.search.models import IndexBuildResult, SemanticIndexMetadata
 from app.search.normalization import tokenize
-from app.search.store import SemanticIndexStore, pack_vector
+from app.search.store import (
+    SEMANTIC_ARTIFACT_FORMAT,
+    SemanticIndexStore,
+    encode_vector,
+    pack_vector,
+)
+from app.derived.manifest import DerivedStoreManifest
 
 
 class SemanticIndexBuilder:
@@ -19,10 +24,12 @@ class SemanticIndexBuilder:
         document_builder: ForeignETFStrategyDocumentBuilder,
         embedding_provider: EmbeddingProvider,
         settings: SearchSettings,
+        derived_manifest_factory=None,
     ) -> None:
         self._documents = document_builder
         self._embedding = embedding_provider
         self._settings = settings
+        self._derived_manifest_factory = derived_manifest_factory
 
     async def build(self) -> IndexBuildResult:
         documents, stats = self._documents.build()
@@ -34,6 +41,12 @@ class SemanticIndexBuilder:
 
         existing_store = SemanticIndexStore(self._settings.index_path)
         cache = existing_store.embedding_cache(
+            snapshot=self._settings_snapshot,
+            index_version=self._settings.index_version,
+            embedding_model=self._embedding.model_name,
+            embedding_dimension=self._embedding.dimension,
+        )
+        previous_document_ids = existing_store.document_ids(
             snapshot=self._settings_snapshot,
             index_version=self._settings.index_version,
             embedding_model=self._embedding.model_name,
@@ -83,11 +96,31 @@ class SemanticIndexBuilder:
                 else 0.0
             ),
         )
-        self._write_atomically(documents, text_hashes, vectors, metadata)
+        derived_manifest = (
+            self._derived_manifest_factory(len(documents), metadata)
+            if self._derived_manifest_factory is not None
+            else None
+        )
+        if derived_manifest is not None:
+            metadata = metadata.model_copy(
+                update={
+                    "generation": derived_manifest.generation,
+                    "ontology_version": derived_manifest.ontology_version,
+                    "canonical_schema_version": derived_manifest.canonical_schema_version,
+                    "transformer_version": derived_manifest.transformer_version,
+                }
+            )
+        self._write_atomically(documents, text_hashes, vectors, metadata, derived_manifest)
         return IndexBuildResult(
             metadata=metadata,
             reused_embeddings=reused,
             generated_embeddings=len(pending),
+            new_documents=len(set(text_hashes) - previous_document_ids),
+            removed_documents=len(previous_document_ids - set(text_hashes)),
+            regenerated_embeddings=sum(
+                document.document_id in previous_document_ids
+                for document in pending
+            ),
         )
 
     @property
@@ -97,87 +130,46 @@ class SemanticIndexBuilder:
             raise ValueError("document builder snapshot is unavailable")
         return snapshot
 
-    def _write_atomically(self, documents, text_hashes, vectors, metadata) -> None:
+    def _write_atomically(self, documents, text_hashes, vectors, metadata, derived_manifest: DerivedStoreManifest | None = None) -> None:
         target = self._settings.index_path
         target.parent.mkdir(parents=True, exist_ok=True)
         handle = tempfile.NamedTemporaryFile(
-            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent, delete=False
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            dir=target.parent,
+            delete=False,
+            mode="w",
+            encoding="utf-8",
         )
         temporary_path = handle.name
-        handle.close()
         try:
-            with sqlite3.connect(temporary_path) as connection:
-                connection.executescript(_SCHEMA)
-                connection.execute(
-                    "INSERT INTO semantic_index_metadata"
-                    "(id, metadata_json) VALUES(1, ?)",
-                    (metadata.model_dump_json(),),
-                )
-                connection.executemany(
-                    """
-                    INSERT INTO semantic_documents(
-                        document_id, entity_id, source_dataset, source_record_key,
-                        source_field, raw_text, normalized_text, product_type,
-                        region, asset_type, dataset_snapshot, observed_at,
-                        metadata_json, tokens_json, text_sha256, vector
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            document.document_id,
-                            document.entity_id,
-                            document.source_dataset,
-                            document.source_record_key,
-                            document.source_field,
-                            document.raw_text,
-                            document.normalized_text,
-                            document.product_type,
-                            document.region,
-                            document.asset_type,
-                            document.dataset_snapshot,
-                            document.observed_at,
-                            json.dumps(document.metadata, ensure_ascii=False),
-                            json.dumps(tokenize(document.normalized_text)),
-                            text_hashes[document.document_id],
-                            vectors[document.document_id],
-                        )
-                        for document in documents
-                    ],
-                )
-                connection.commit()
+            artifact = {
+                "format": SEMANTIC_ARTIFACT_FORMAT,
+                "metadata": metadata.model_dump(mode="json"),
+                "documents": [
+                    {
+                        **document.model_dump(mode="json"),
+                        "tokens": tokenize(document.normalized_text),
+                        "text_sha256": text_hashes[document.document_id],
+                        "vector": encode_vector(vectors[document.document_id]),
+                    }
+                    for document in documents
+                ],
+            }
+            if derived_manifest is not None:
+                artifact["derived_manifest"] = derived_manifest.model_dump(mode="json")
+            json.dump(
+                artifact,
+                handle,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.close()
             os.replace(temporary_path, target)
         finally:
+            if not handle.closed:
+                handle.close()
             if os.path.exists(temporary_path):
                 os.unlink(temporary_path)
-
-
-_SCHEMA = """
-CREATE TABLE semantic_index_metadata (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    metadata_json TEXT NOT NULL
-);
-CREATE TABLE semantic_documents (
-    document_id TEXT PRIMARY KEY,
-    entity_id TEXT NOT NULL,
-    source_dataset TEXT NOT NULL,
-    source_record_key TEXT NOT NULL,
-    source_field TEXT NOT NULL,
-    raw_text TEXT NOT NULL,
-    normalized_text TEXT NOT NULL,
-    product_type TEXT NOT NULL,
-    region TEXT,
-    asset_type TEXT,
-    dataset_snapshot TEXT NOT NULL,
-    observed_at TEXT,
-    metadata_json TEXT NOT NULL,
-    tokens_json TEXT NOT NULL,
-    text_sha256 TEXT NOT NULL,
-    vector BLOB NOT NULL
-);
-CREATE INDEX ix_semantic_entity ON semantic_documents(entity_id);
-CREATE INDEX ix_semantic_source ON semantic_documents(source_dataset, source_field);
-CREATE INDEX ix_semantic_product_type ON semantic_documents(product_type);
-CREATE INDEX ix_semantic_region ON semantic_documents(region);
-CREATE INDEX ix_semantic_asset_type ON semantic_documents(asset_type);
-CREATE INDEX ix_semantic_snapshot ON semantic_documents(dataset_snapshot);
-"""

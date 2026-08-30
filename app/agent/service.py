@@ -1,5 +1,5 @@
 import json
-import os
+import asyncio
 from time import perf_counter
 from functools import lru_cache
 from pathlib import Path
@@ -39,17 +39,21 @@ from app.domain.models import (
 from app.data.database import DatabaseSettings, create_database_engine
 from app.data.schema import metadata as database_metadata
 from app.evidence.answer import DeterministicEvidenceAnswerGenerator
+from app.evidence.llm_answer import (
+    HyperCLOVAAnswerSettings,
+    HyperCLOVAEvidenceAnswerGenerator,
+)
 from app.evidence.builder import GenericEvidenceBuilder
 from app.evidence.quality import (
+    CanonicalV2FieldQualityProvider,
     DatabaseFieldQualityProvider,
     FieldQualityProvider,
-    StaticFieldQualityProvider,
 )
 from app.evidence.safe_response import ReasonAwareSafeResponseGenerator
 from app.evidence.serializer import serialize_evidence_bundle
 from app.evidence.validator import QualityAwareEvidenceValidator
-from app.entity.lookup import StaticEntityLookup
 from app.entity.rdb_lookup import RDBEntityLookup
+from app.entity.rdb_v2_lookup import CanonicalV2EntityLookup
 from app.entity.resolver import RegistryEntityResolver
 from app.execution.config import ExecutionSettings
 from app.execution.executor import QueryExecutor
@@ -58,6 +62,7 @@ from app.graph.backend import Neo4jGraphBackend
 from app.graph.compiler import GraphQueryCompiler
 from app.graph.config import GraphSettings
 from app.graph.mapping import GraphMappingRegistry
+from app.graph.v2 import CanonicalV2GraphBackend, V2_GRAPH_NODE_LABEL
 from app.ontology.loader import OntologyLoader
 from app.ontology.rdf_service import RDFOntologyService
 from app.ontology.vocabulary import export_compact_semantic_vocabulary
@@ -77,14 +82,15 @@ from app.query.llm_parser import (
 )
 from app.query.semantic_parser import SemanticParserCoordinator
 from app.query.semantic_validation import LLMSemanticCandidateValidator
-from app.retrieval.fakes import (
-    FakeBM25Retriever,
-    FakeGraphRetriever,
-    FakeRDBRetriever,
-    FakeVectorRetriever,
-)
+from app.retrieval.fakes import FakeGraphRetriever
 from app.retrieval.graph import RealGraphRetriever
 from app.retrieval.rdb import RDBFieldRegistry, RDBQueryCompiler, RealRDBRetriever
+from app.retrieval.rdb_v2 import (
+    CanonicalV2FieldRegistry,
+    CanonicalV2QueryCompiler,
+    CanonicalV2RDBRetriever,
+    CanonicalV2SnapshotSelector,
+)
 from app.retrieval.registry import RetrieverRegistry
 from app.retrieval.semantic import RealBM25Retriever, RealVectorRetriever
 from app.schemas.agent import AgentResult
@@ -118,6 +124,8 @@ class PipelineAnswerService:
         answer_generator: AnswerGenerator,
         safe_response_generator: SafeResponseGenerator,
         close_callbacks: list[Callable[[], Awaitable[None]]] | None = None,
+        readiness_checks: list[tuple[str, Callable[[], Awaitable[None]]]] | None = None,
+        runtime_metadata: dict[str, str] | None = None,
     ) -> None:
         self._query_analyzer = query_analyzer
         self._entity_resolver = entity_resolver
@@ -129,6 +137,27 @@ class PipelineAnswerService:
         self._answer_generator = answer_generator
         self._safe_response_generator = safe_response_generator
         self._close_callbacks = close_callbacks or []
+        self._readiness_checks = readiness_checks or []
+        self._runtime_metadata = runtime_metadata or {
+            "active_runtime_bundle": "canonical_v1",
+            "compatibility_status": "READY",
+        }
+
+    async def validate_derived_stores(self) -> None:
+        """Fail closed if the selected multi-store bundle is not coherent."""
+        for store_name, check in self._readiness_checks:
+            try:
+                await check()
+            except Exception:
+                self._runtime_metadata[f"{store_name}_readiness"] = "FAILED"
+                self._runtime_metadata["compatibility_status"] = "NOT_READY"
+                raise
+            self._runtime_metadata[f"{store_name}_readiness"] = "READY"
+        self._runtime_metadata["compatibility_status"] = "READY"
+
+    def runtime_health(self) -> dict[str, str]:
+        """Safe, operational state only; credentials are never included."""
+        return dict(self._runtime_metadata)
 
     async def close(self) -> None:
         for callback in reversed(self._close_callbacks):
@@ -137,6 +166,7 @@ class PipelineAnswerService:
     async def answer(self, question: str) -> AgentResult:
         request_started = perf_counter()
         trace: list[str] = []
+        query_started = perf_counter()
 
         try:
             parsed_query = await self._query_analyzer.analyze(question)
@@ -148,12 +178,17 @@ class PipelineAnswerService:
                 parser_summary={
                     "parser": exc.parser,
                     "status": "rejected",
+                    "reason": exc.reason,
+                    "llm_calls": 0 if exc.reason == "llm_fallback_not_configured" else 1,
                 },
                 total_started=request_started,
             )
+        query_latency_ms = _elapsed_ms(query_started)
         trace.append("query_understanding")
 
+        resolution_started = perf_counter()
         resolved_query = await self._entity_resolver.resolve(parsed_query)
+        resolution_latency_ms = _elapsed_ms(resolution_started)
         trace.append("entity_resolution")
 
         ontology_started = perf_counter()
@@ -177,27 +212,34 @@ class PipelineAnswerService:
         planning_latency_ms = _elapsed_ms(planning_started)
         trace.append("planning")
 
+        execution_started = perf_counter()
         execution_result = None
         if isinstance(self._executor, ExecutionResultExecutor):
             execution_result = await self._executor.execute_with_result(plan)
             records = execution_result.records
         else:
             records = await self._executor.execute(plan)
+        execution_latency_ms = _elapsed_ms(execution_started)
         trace.append("execution")
 
+        evidence_started = perf_counter()
         evidence = await self._evidence_builder.build(
             grounded_query,
             records,
             execution_result,
         )
+        evidence_latency_ms = _elapsed_ms(evidence_started)
         trace.append("evidence_building")
 
+        validation_started = perf_counter()
         validation = await self._evidence_validator.validate(
             grounded_query,
             evidence,
         )
+        validation_latency_ms = _elapsed_ms(validation_started)
         trace.append("validation")
 
+        answer_started = perf_counter()
         if validation.answerable:
             final_answer = await self._answer_generator.generate(
                 question,
@@ -210,6 +252,7 @@ class PipelineAnswerService:
             final_answer = await self._safe_response_generator.generate(validation)
             trace.append("safe_response")
             status = "unanswerable"
+        answer_latency_ms = _elapsed_ms(answer_started)
 
         return AgentResult(
             retrieved_context=serialize_evidence_bundle(evidence, validation),
@@ -232,12 +275,39 @@ class PipelineAnswerService:
                         "step_count": len(plan.steps),
                     },
                     "evidence_count": len(evidence.evidence),
+                    "execution_cardinality": {
+                        step_id: result.retrieval_metadata
+                        for step_id, result in execution_result.step_results.items()
+                        if result.retrieval_metadata
+                    } if execution_result is not None else {},
                     "validation_reasons": validation.reasons,
                     "validation_summary": {
                         "answerable": validation.answerable,
                         "reason_codes": [
                             code.value for code in validation.reason_codes
                         ],
+                    },
+                    "llm_call_summary": {
+                        "semantic_parser_calls": (
+                            1 if parsed_query.parser_source.value == "llm_fallback" else 0
+                        ),
+                        "answer_generation_calls": (
+                            int(getattr(self._answer_generator, "model_calls_per_answer", 0))
+                            if validation.answerable
+                            else 0
+                        ),
+                        "retries": 0,
+                    },
+                    "performance_ms": {
+                        "query_understanding": query_latency_ms,
+                        "entity_resolution": resolution_latency_ms,
+                        "ontology_grounding": ontology_latency_ms,
+                        "planning": planning_latency_ms,
+                        "execution": execution_latency_ms,
+                        "evidence_building": evidence_latency_ms,
+                        "validation": validation_latency_ms,
+                        "answer_generation": answer_latency_ms,
+                        "total": _elapsed_ms(request_started),
                     },
                     "semantic_summary": {
                         "parser": parsed_query.parser_source.value,
@@ -281,8 +351,8 @@ class PipelineAnswerService:
     ) -> AgentResult:
         validation = ValidationResult(
             answerable=False,
-            reason_codes=[AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS],
-            reasons=[AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS.value],
+            reason_codes=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT],
+            reasons=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value],
         )
         final_answer = await self._safe_response_generator.generate(validation)
         return AgentResult(
@@ -292,7 +362,7 @@ class PipelineAnswerService:
                     "validation": {
                         "answerable": False,
                         "reason_codes": [
-                            AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS.value
+                            AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value
                         ],
                     },
                 },
@@ -302,8 +372,26 @@ class PipelineAnswerService:
                 {
                     "steps": trace,
                     "status": "unsupported",
-                    "reason": "semantic_constraints_incomplete",
+                    "reason": "unsupported_constraint",
+                    "validation_summary": {
+                        "answerable": False,
+                        "reason_codes": [
+                            AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value
+                        ],
+                    },
                     "query_understanding": parser_summary,
+                    "llm_call_summary": {
+                        "semantic_parser_calls": (
+                            int(parser_summary.get("llm_calls", 0))
+                        ),
+                        "answer_generation_calls": 0,
+                        "retries": 0,
+                    },
+                    "performance_ms": {
+                        "ontology_grounding": ontology_latency_ms,
+                        "planning": planning_latency_ms,
+                        "total": _elapsed_ms(total_started),
+                    },
                 },
                 ensure_ascii=False,
             ),
@@ -347,11 +435,24 @@ def create_production_answer_service(
     graph_backend: Neo4jGraphBackend | None = None,
     semantic_parser_llm: SemanticParserLLM | None = None,
     semantic_parser_settings: HyperCLOVASemanticParserSettings | None = None,
+    hyperclova_answer_settings: HyperCLOVAAnswerSettings | None = None,
 ) -> PipelineAnswerService:
     """Compose the production semantic, retrieval, and evidence pipeline."""
-    settings = database_settings or DatabaseSettings.from_env()
+    if database_settings is not None:
+        settings = database_settings
+    elif database_engine is not None:
+        settings = DatabaseSettings(
+            database_url=database_engine.url.render_as_string(
+                hide_password=False
+            )
+        )
+    else:
+        settings = DatabaseSettings.from_env()
     semantic_settings = search_settings or SearchSettings.from_env()
     resolved_graph_settings = graph_settings or GraphSettings.from_env()
+    _assert_runtime_bundle_configuration(
+        settings, semantic_settings, resolved_graph_settings
+    )
     routing_metadata = RoutingMetadataRegistry()
     planner = QueryPlanner(
         routing_checker=FastRoutingChecker(routing_metadata),
@@ -361,22 +462,45 @@ def create_production_answer_service(
         ),
         plan_validator=StructuredQueryPlanValidator(routing_metadata),
     )
-    use_real_rdb = database_engine is not None or bool(os.getenv("DATABASE_URL"))
-    engine = database_engine
-    if use_real_rdb and engine is None:
-        engine = create_database_engine(settings)
-    if engine is not None:
+    engine = database_engine or create_database_engine(settings)
+    if settings.rdb_repository_version == "v1":
         database_metadata.create_all(engine)
+
+    v2_snapshot_selector = CanonicalV2SnapshotSelector(
+        snapshot_date=settings.snapshot_date,
+        generation=settings.v2_generation,
+        ontology_version=settings.v2_ontology_version,
+        transformer_version=settings.v2_transformer_version,
+    )
 
     if ontology_service is None:
         loader = ontology_loader or OntologyLoader(
             Path(__file__).resolve().parents[2] / "ontology",
-            known_canonical_fields=RDBFieldRegistry().canonical_fields,
+            known_canonical_fields=(
+                CanonicalV2FieldRegistry().canonical_fields
+                if settings.rdb_repository_version == "v2"
+                else RDBFieldRegistry().canonical_fields
+            ),
             version=resolved_graph_settings.ontology_version,
         )
         ontology_service = RDFOntologyService(loader.load())
 
     close_callbacks: list[Callable[[], Awaitable[None]]] = []
+    readiness_checks: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+    runtime_metadata = {
+        "active_runtime_bundle": settings.runtime_bundle.name,
+        "generation": settings.v2_generation if settings.runtime_bundle.uses_canonical_v2 else "legacy",
+        "snapshot": settings.snapshot_date,
+        "ontology_version": settings.v2_ontology_version if settings.runtime_bundle.uses_canonical_v2 else resolved_graph_settings.ontology_version,
+        "canonical_schema_version": "m10.8-b-canonical-v2" if settings.runtime_bundle.uses_canonical_v2 else "m10.7-canonical-v1",
+        "transformer_version": settings.v2_transformer_version if settings.runtime_bundle.uses_canonical_v2 else "legacy",
+        "rdb_readiness": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
+        "graph_readiness": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
+        "semantic_index_readiness": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
+        "graph_projection_version": resolved_graph_settings.v2_graph_projection_version if settings.runtime_bundle.uses_canonical_v2 else resolved_graph_settings.graph_version,
+        "semantic_projection_version": semantic_settings.v2_index_version if settings.runtime_bundle.uses_canonical_v2 else semantic_settings.index_version,
+        "compatibility_status": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
+    }
 
     parser_settings = (
         semantic_parser_settings or HyperCLOVASemanticParserSettings.from_env()
@@ -399,9 +523,34 @@ def create_production_answer_service(
         compact_vocabulary=compact_vocabulary,
     )
 
+    resolved_answer_generator = answer_generator
+    if resolved_answer_generator is None:
+        answer_settings = (
+            hyperclova_answer_settings or HyperCLOVAAnswerSettings.from_env()
+        )
+        answer_settings.validate()
+        if answer_settings.enabled:
+            hyperclova_answer = HyperCLOVAEvidenceAnswerGenerator(answer_settings)
+            resolved_answer_generator = hyperclova_answer
+            close_callbacks.append(hyperclova_answer.close)
+        else:
+            resolved_answer_generator = DeterministicEvidenceAnswerGenerator()
+
     if executor is None:
         retriever_registry = RetrieverRegistry()
-        if use_real_rdb and engine is not None:
+        if settings.rdb_repository_version == "v2":
+            v2_compiler = CanonicalV2QueryCompiler(
+                CanonicalV2FieldRegistry(),
+                default_limit=settings.rdb_default_limit,
+                max_limit=settings.rdb_max_limit,
+            )
+            retriever_registry.register(
+                RetrievalSource.RDB,
+                CanonicalV2RDBRetriever(
+                    engine, v2_compiler, v2_snapshot_selector
+                ),
+            )
+        else:
             compiler = RDBQueryCompiler(
                 RDBFieldRegistry(),
                 default_limit=settings.rdb_default_limit,
@@ -412,9 +561,72 @@ def create_production_answer_service(
                 RetrievalSource.RDB,
                 RealRDBRetriever(engine, compiler),
             )
-        else:
-            retriever_registry.register(RetrievalSource.RDB, FakeRDBRetriever())
-        if resolved_graph_settings.configured:
+        if settings.rdb_repository_version == "v2" and settings.v2_multi_store_enabled:
+            # v2 is only a complete set: canonical_v2 RDB + canonical_v2
+            # graph + canonical_v2 semantic corpus.  No v1 fallback exists.
+            if not resolved_graph_settings.configured:
+                raise ValueError(
+                    "canonical_v2 multi-store mode requires an isolated Neo4j configuration"
+                )
+            backend = graph_backend or CanonicalV2GraphBackend.connect(
+                resolved_graph_settings
+            )
+            graph_compiler = GraphQueryCompiler(
+                GraphMappingRegistry(version="canonical-v2"),
+                snapshot=settings.snapshot_date,
+                max_depth=resolved_graph_settings.max_depth,
+                limit=resolved_graph_settings.query_limit,
+                node_label=V2_GRAPH_NODE_LABEL,
+            )
+            retriever_registry.register(
+                RetrievalSource.GRAPH,
+                RealGraphRetriever(backend, graph_compiler, snapshot=settings.snapshot_date),
+            )
+            close_callbacks.append(backend.close)
+            provider = embedding_provider or DeterministicMultilingualEmbeddingProvider(
+                model_name=semantic_settings.embedding_model,
+                dimension=semantic_settings.embedding_dimension,
+            )
+            store = semantic_index_store or SemanticIndexStore(
+                semantic_settings.v2_index_path
+            )
+            retriever_registry.register(
+                RetrievalSource.VECTOR,
+                RealVectorRetriever(
+                    store, provider, semantic_settings,
+                    snapshot_date=settings.snapshot_date, canonical_v2=True,
+                ),
+            )
+            retriever_registry.register(
+                RetrievalSource.BM25,
+                RealBM25Retriever(
+                    store, semantic_settings,
+                    snapshot_date=settings.snapshot_date, canonical_v2=True,
+                ),
+            )
+            async def assert_v2_graph_ready() -> None:
+                await backend.assert_ready(expected_snapshot=settings.snapshot_date)
+
+            async def assert_v2_rdb_ready() -> None:
+                await asyncio.to_thread(_assert_v2_rdb_ready, engine, v2_snapshot_selector)
+
+            async def assert_v2_semantic_ready() -> None:
+                await asyncio.to_thread(
+                    store.validate_derived_manifest,
+                    generation=semantic_settings.v2_generation,
+                    snapshot=settings.snapshot_date,
+                    ontology_version=semantic_settings.v2_ontology_version,
+                    canonical_schema_version="m10.8-b-canonical-v2",
+                    transformer_version=semantic_settings.v2_transformer_version,
+                    projection_version=semantic_settings.v2_index_version,
+                )
+
+            readiness_checks.extend([
+                ("rdb", assert_v2_rdb_ready),
+                ("graph", assert_v2_graph_ready),
+                ("semantic_index", assert_v2_semantic_ready),
+            ])
+        elif settings.rdb_repository_version == "v1" and resolved_graph_settings.configured:
             backend = graph_backend or Neo4jGraphBackend.connect(
                 resolved_graph_settings
             )
@@ -442,11 +654,11 @@ def create_production_answer_service(
                 ),
             )
             close_callbacks.append(backend.close)
-        else:
+        elif settings.rdb_repository_version == "v1":
             retriever_registry.register(
                 RetrievalSource.GRAPH, FakeGraphRetriever()
             )
-        if use_real_rdb:
+        if settings.rdb_repository_version == "v1":
             provider = embedding_provider or DeterministicMultilingualEmbeddingProvider(
                 model_name=semantic_settings.embedding_model,
                 dimension=semantic_settings.embedding_dimension,
@@ -471,25 +683,22 @@ def create_production_answer_service(
                     snapshot_date=settings.snapshot_date,
                 ),
             )
-        else:
-            retriever_registry.register(
-                RetrievalSource.VECTOR, FakeVectorRetriever()
-            )
-            retriever_registry.register(RetrievalSource.BM25, FakeBM25Retriever())
         executor = QueryExecutor(
             registry=retriever_registry,
             transform_executor=InternalTransformExecutor(),
             settings=ExecutionSettings.from_env(),
         )
     field_quality = quality_provider or (
-        DatabaseFieldQualityProvider(engine, snapshot_date=settings.snapshot_date)
-        if use_real_rdb and engine is not None
-        else StaticFieldQualityProvider()
+        CanonicalV2FieldQualityProvider(engine)
+        if settings.rdb_repository_version == "v2"
+        else DatabaseFieldQualityProvider(
+            engine, snapshot_date=settings.snapshot_date
+        )
     )
     entity_lookup = (
-        RDBEntityLookup(engine, snapshot_date=settings.snapshot_date)
-        if use_real_rdb and engine is not None
-        else StaticEntityLookup()
+        CanonicalV2EntityLookup(engine, v2_snapshot_selector)
+        if settings.rdb_repository_version == "v2"
+        else RDBEntityLookup(engine, snapshot_date=settings.snapshot_date)
     )
     return PipelineAnswerService(
         query_analyzer=query_analyzer,
@@ -499,16 +708,13 @@ def create_production_answer_service(
         executor=executor,
         evidence_builder=GenericEvidenceBuilder(),
         evidence_validator=QualityAwareEvidenceValidator(field_quality),
-        answer_generator=answer_generator
-        or (
-            DeterministicEvidenceAnswerGenerator()
-            if use_real_rdb
-            else FakeAnswerGenerator()
-        ),
+        answer_generator=resolved_answer_generator,
         safe_response_generator=(
             safe_response_generator or ReasonAwareSafeResponseGenerator()
         ),
         close_callbacks=close_callbacks,
+        readiness_checks=readiness_checks,
+        runtime_metadata=runtime_metadata,
     )
 
 
@@ -527,4 +733,53 @@ def _parser_summary(provenance: ParseProvenance) -> dict[str, object]:
         "status": provenance.validation_status,
         "constraints_schema": provenance.semantic_schema_version,
         "model": provenance.model,
+        "llm_calls": 1 if provenance.parser_source.value == "llm_fallback" else 0,
     }
+
+
+def _assert_v2_rdb_ready(
+    engine: Engine, selector: CanonicalV2SnapshotSelector
+) -> None:
+    """Validate the four READY/PASSED source snapshots before serving v2."""
+    with engine.connect() as connection:
+        selector.select(connection)
+
+
+def _assert_runtime_bundle_configuration(
+    database: DatabaseSettings,
+    semantic: SearchSettings,
+    graph: GraphSettings,
+) -> None:
+    """Reject version drift before any v2 store can be selected."""
+    if not database.runtime_bundle.uses_canonical_v2:
+        return
+    expected = {
+        "generation": database.v2_generation,
+        "ontology": database.v2_ontology_version,
+        "transformer": database.v2_transformer_version,
+    }
+    actual = {
+        "graph.generation": graph.v2_generation,
+        "graph.ontology": graph.v2_ontology_version,
+        "graph.transformer": graph.v2_transformer_version,
+        "semantic.generation": semantic.v2_generation,
+        "semantic.ontology": semantic.v2_ontology_version,
+        "semantic.transformer": semantic.v2_transformer_version,
+    }
+    mismatches = [
+        f"{name}={value!r} expected {expected[key]!r}"
+        for name, value, key in (
+            ("graph.generation", actual["graph.generation"], "generation"),
+            ("graph.ontology", actual["graph.ontology"], "ontology"),
+            ("graph.transformer", actual["graph.transformer"], "transformer"),
+            ("semantic.generation", actual["semantic.generation"], "generation"),
+            ("semantic.ontology", actual["semantic.ontology"], "ontology"),
+            ("semantic.transformer", actual["semantic.transformer"], "transformer"),
+        )
+        if value != expected[key]
+    ]
+    if mismatches:
+        raise ValueError(
+            "canonical_v2 runtime bundle configuration is incompatible: "
+            + "; ".join(mismatches)
+        )

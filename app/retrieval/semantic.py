@@ -13,6 +13,7 @@ from app.search.config import SearchSettings
 from app.search.embedding import EmbeddingProvider
 from app.search.models import SemanticSearchHit
 from app.search.store import SemanticIndexError, SemanticIndexStore
+from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 
 
 class RealBM25Retriever:
@@ -22,10 +23,12 @@ class RealBM25Retriever:
         settings: SearchSettings,
         *,
         snapshot_date: str,
+        canonical_v2: bool = False,
     ) -> None:
         self._store = store
         self._settings = settings
         self._snapshot = snapshot_date
+        self._canonical_v2 = canonical_v2
 
     async def retrieve(
         self,
@@ -44,7 +47,7 @@ class RealBM25Retriever:
                 self._store.bm25_search,
                 query,
                 top_k=_top_k(step, self._settings.bm25_top_k),
-                filters=_metadata_filters(step, self._snapshot),
+                filters=_metadata_filters(step, self._snapshot, canonical_v2=self._canonical_v2),
                 candidate_ids=candidate_ids,
             )
         except SemanticIndexError as exc:
@@ -54,10 +57,18 @@ class RealBM25Retriever:
     def _validate_index(self) -> None:
         self._store.validate(
             snapshot=self._snapshot,
-            index_version=self._settings.index_version,
+            index_version=(self._settings.v2_index_version if self._canonical_v2 else self._settings.index_version),
             embedding_model=self._settings.embedding_model,
             embedding_dimension=self._settings.embedding_dimension,
         )
+        if self._canonical_v2:
+            self._store.validate_derived_manifest(
+                generation=self._settings.v2_generation, snapshot=self._snapshot,
+                ontology_version=self._settings.v2_ontology_version,
+                canonical_schema_version=CANONICAL_V2_SCHEMA_VERSION,
+                transformer_version=self._settings.v2_transformer_version,
+                projection_version=self._settings.v2_index_version,
+            )
 
 
 class RealVectorRetriever:
@@ -68,11 +79,13 @@ class RealVectorRetriever:
         settings: SearchSettings,
         *,
         snapshot_date: str,
+        canonical_v2: bool = False,
     ) -> None:
         self._store = store
         self._embedding = embedding_provider
         self._settings = settings
         self._snapshot = snapshot_date
+        self._canonical_v2 = canonical_v2
 
     async def retrieve(
         self,
@@ -100,7 +113,7 @@ class RealVectorRetriever:
                 self._store.vector_search,
                 query_vector,
                 top_k=_top_k(step, self._settings.vector_top_k),
-                filters=_metadata_filters(step, self._snapshot),
+                filters=_metadata_filters(step, self._snapshot, canonical_v2=self._canonical_v2),
                 candidate_ids=candidate_ids,
             )
         except SemanticIndexError as exc:
@@ -110,10 +123,18 @@ class RealVectorRetriever:
     def _validate_index(self) -> None:
         self._store.validate(
             snapshot=self._snapshot,
-            index_version=self._settings.index_version,
+            index_version=(self._settings.v2_index_version if self._canonical_v2 else self._settings.index_version),
             embedding_model=self._embedding.model_name,
             embedding_dimension=self._embedding.dimension,
         )
+        if self._canonical_v2:
+            self._store.validate_derived_manifest(
+                generation=self._settings.v2_generation, snapshot=self._snapshot,
+                ontology_version=self._settings.v2_ontology_version,
+                canonical_schema_version=CANONICAL_V2_SCHEMA_VERSION,
+                transformer_version=self._settings.v2_transformer_version,
+                projection_version=self._settings.v2_index_version,
+            )
 
 
 def _query_text(step: QueryStep) -> str:
@@ -130,9 +151,26 @@ def _top_k(step: QueryStep, configured: int) -> int:
     return min(value, configured)
 
 
-def _metadata_filters(step: QueryStep, snapshot: str) -> dict[str, Any]:
+def _metadata_filters(step: QueryStep, snapshot: str, *, canonical_v2: bool = False) -> dict[str, Any]:
     filters = dict(step.inputs.get("metadata_filters", {}))
-    if "entity_mentions" in step.inputs:
+    if canonical_v2:
+        # The v2 corpus is deliberately restricted to approved foreign ETP
+        # strategy assertions; structured constraints remain candidate IDs.
+        filters["source_dataset"] = ["PREF02N001"]
+        filters["source_field"] = ["source.cu_strtegy"]
+        product_types = filters.get("product_type")
+        if product_types is not None:
+            values = product_types if isinstance(product_types, list) else [product_types]
+            filters["product_type"] = [
+                str(value).rsplit(".", 1)[-1].upper() for value in values
+            ]
+        # Region and asset-class strings in a v1 semantic document are not a
+        # canonical_v2 classification source.  Their hard filtering is carried
+        # by the preceding canonical_v2 RDB candidate set, never approximated
+        # by vector metadata.
+        filters.pop("region", None)
+        filters.pop("asset_type", None)
+    elif "entity_mentions" in step.inputs:
         filters.setdefault("source_field", ["product.name"])
     filters.setdefault("dataset_snapshot", snapshot)
     return filters

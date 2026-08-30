@@ -18,6 +18,7 @@ class GraphQueryCompiler:
         snapshot: str,
         max_depth: int = 2,
         limit: int = 100,
+        node_label: str = "M10Entity",
     ) -> None:
         if not 1 <= max_depth <= 2:
             raise ValueError("graph traversal depth must be 1 or 2")
@@ -25,6 +26,9 @@ class GraphQueryCompiler:
         self._snapshot = snapshot
         self._max_depth = max_depth
         self._limit = limit
+        if node_label not in {"M10Entity", "M108DNode"}:
+            raise ValueError("unsupported graph node namespace")
+        self._node_label = node_label
 
     def compile(
         self,
@@ -84,11 +88,11 @@ class GraphQueryCompiler:
         except ValueError as exc:
             raise GraphQueryCompilationError(str(exc)) from exc
 
-        pattern = "(n0:M10Entity)"
+        pattern = f"(n0:{self._node_label})"
         for index, (mapping, direction) in enumerate(
             zip(mappings, directions, strict=True)
         ):
-            next_node = f"(n{index + 1}:M10Entity)"
+            next_node = f"(n{index + 1}:{self._node_label})"
             relation = f"[r{index}:{mapping.edge_type}]"
             pattern += (
                 f"-{relation}->{next_node}"
@@ -154,11 +158,16 @@ class GraphQueryCompiler:
             f"[{edge_projection}] AS edges "
             "ORDER BY n0.entity_id LIMIT $limit"
         )
+        count_cypher = (
+            f"MATCH path={pattern} WHERE {' AND '.join(conditions)} "
+            "RETURN count(path) AS total_matches"
+        )
         limit = step.inputs.get("limit", self._limit)
         if not isinstance(limit, int) or limit <= 0:
             raise GraphQueryCompilationError("graph limit must be positive")
         return CompiledGraphQuery(
             cypher=cypher,
+            count_cypher=count_cypher,
             parameters={
                 "snapshot": self._snapshot,
                 "source_node_ids": source_node_ids,

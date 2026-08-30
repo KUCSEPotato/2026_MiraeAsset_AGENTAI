@@ -1,0 +1,15 @@
+[
+  {"id":"EVAL-FACT-01","category":"structured","question":"KODEX 200의 상품명을 알려줘."},
+  {"id":"EVAL-COLLECTION-01","category":"structured","question":"미국 주식형 ETF를 알려줘."},
+  {"id":"EVAL-MULTI-01","category":"structured","question":"인도에 상장된 주식형 ETF를 알려줘."},
+  {"id":"EVAL-NEGATION-01","category":"structured","question":"인도를 제외한 ETF를 알려줘."},
+  {"id":"EVAL-ENTITY-01","category":"graph","question":"S&P 500을 추종하는 ETF를 알려줘."},
+  {"id":"EVAL-AMBIGUOUS-01","category":"unanswerable","question":"200 상품을 알려줘."},
+  {"id":"EVAL-GRAPH-01","category":"graph","question":"미래에셋이 운용하는 ETF를 알려줘."},
+  {"id":"EVAL-SEMANTIC-01","category":"semantic","question":"AI 산업과 관련된 전략을 가진 ETF를 찾아줘."},
+  {"id":"EVAL-HYBRID-01","category":"hybrid","question":"미국 주식형 ETF 중 AI 전략 상품을 알려줘."},
+  {"id":"EVAL-ZERO-01","category":"unanswerable","question":"인도 채권형 ETN을 알려줘."},
+  {"id":"EVAL-UNSUPPORTED-01","category":"unanswerable","question":"최근 3개월 수익률이 5% 이상인 ETF를 알려줘."},
+  {"id":"EVAL-EVIDENCE-01","category":"unanswerable","question":"위험등급 1등급 ETF의 검증되지 않은 미래 수익률을 알려줘."},
+  {"id":"EVAL-RANKING-01","category":"unanswerable","question":"수익률이 가장 높은 ETF 5개를 알려줘."}
+]

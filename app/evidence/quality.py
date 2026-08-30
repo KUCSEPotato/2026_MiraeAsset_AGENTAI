@@ -9,6 +9,7 @@ from app.domain.models import (
 )
 from app.data.schema import field_quality_profiles
 from app.data.schema import canonical_products
+from app.data.v2_schema import metric_definitions
 
 
 class FieldQualityProvider(Protocol):
@@ -130,4 +131,34 @@ class DatabaseFieldQualityProvider:
                 "ranking_safe": comparison_safe,
                 "comparison_safe": comparison_safe,
             }
+        )
+
+
+class CanonicalV2FieldQualityProvider:
+    """Read only approved canonical_v2 metric capability contracts."""
+
+    def __init__(self, engine: Engine) -> None:
+        if engine.dialect.name != "postgresql":
+            raise ValueError("canonical_v2 quality provider requires PostgreSQL")
+        self._engine = engine
+
+    def get_quality(
+        self,
+        canonical_field: str,
+        product_type: str | None = None,
+    ) -> FieldQualityMetadata:
+        del product_type
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                select(metric_definitions).where(
+                    metric_definitions.c.canonical_field == canonical_field
+                )
+            ).mappings().first()
+        if row is None:
+            return FieldQualityMetadata(canonical_field=canonical_field)
+        return FieldQualityMetadata(
+            canonical_field=canonical_field,
+            coverage_status=CoverageStatus.UNKNOWN,
+            ranking_safe=bool(row["sort_enabled"]),
+            comparison_safe=bool(row["cross_source_comparable"]),
         )

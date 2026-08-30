@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 ScalarValue = str | int | float | bool
@@ -101,6 +101,10 @@ class ConceptCategory(str, Enum):
     PRODUCT_TYPE = "product_type"
     REGION = "region"
     ASSET_TYPE = "asset_type"
+    EXPOSURE_REGION = "exposure_region"
+    ASSET_CLASS = "asset_class"
+    OFFERING_TYPE = "offering_type"
+    CLASSIFICATION = "classification"
     SEMANTIC_TERM = "semantic_term"
 
 
@@ -114,6 +118,7 @@ class CanonicalConcept(str, Enum):
     REGION_US = "Region.US"
     REGION_JP = "Region.JP"
     REGION_CN = "Region.CN"
+    REGION_IN = "Region.IN"
     REGION_GLOBAL = "Region.Global"
     REGION_ASIA = "Region.Asia"
     ASSET_TYPE_EQUITY = "AssetType.Equity"
@@ -125,6 +130,39 @@ class CanonicalConcept(str, Enum):
     ASSET_TYPE_REAL_ESTATE = "AssetType.RealEstate"
     ASSET_TYPE_ALTERNATIVE = "AssetType.Alternative"
     ASSET_TYPE_OTHER = "AssetType.Other"
+
+
+class SemanticCapabilityState(str, Enum):
+    ACTIVE = "active"
+    PROSPECTIVE = "prospective"
+    UNSUPPORTED_BY_CURRENT_SNAPSHOT = "unsupported_by_current_snapshot"
+
+
+class CanonicalSemanticValue(BaseModel):
+    """Ontology-owned identity with an optional storage compatibility key.
+
+    ``runtime_key`` is deliberately an adapter detail.  The ontology URI and
+    canonical name remain the semantic identity carried through grounding.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ontology_uri: str
+    canonical_name: str
+    category: str
+    runtime_key: str | None = None
+    mapping_version: str
+    capability: SemanticCapabilityState = SemanticCapabilityState.ACTIVE
+    legacy_names: tuple[str, ...] = ()
+
+    @property
+    def value(self) -> str:
+        """Compatibility value consumed by existing planner/compiler code."""
+
+        return self.runtime_key or self.canonical_name
+
+
+SemanticValue = CanonicalSemanticValue | CanonicalConcept
 
 
 class PlannerType(str, Enum):
@@ -195,6 +233,10 @@ class FindingSeverity(str, Enum):
 class AnswerabilityReasonCode(str, Enum):
     ANSWERABLE = "ANSWERABLE"
     NO_EVIDENCE = "NO_EVIDENCE"
+    ZERO_MATCH = "ZERO_MATCH"
+    ENTITY_NOT_FOUND = "ENTITY_NOT_FOUND"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    UNSUPPORTED_CONSTRAINT = "UNSUPPORTED_CONSTRAINT"
     MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
     INVALID_SENTINEL = "INVALID_SENTINEL"
     CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"
@@ -205,7 +247,10 @@ class AnswerabilityReasonCode(str, Enum):
     RETRIEVAL_TIMED_OUT = "RETRIEVAL_TIMED_OUT"
     DEPENDENCY_INCOMPLETE = "DEPENDENCY_INCOMPLETE"
     INSUFFICIENT_COVERAGE = "INSUFFICIENT_COVERAGE"
-    AMBIGUOUS_ENTITY = "AMBIGUOUS_ENTITY"
+    ENTITY_AMBIGUOUS = "ENTITY_AMBIGUOUS"
+    # Source compatibility for older call sites; serialized contract is the
+    # evaluator-facing ENTITY_AMBIGUOUS name.
+    AMBIGUOUS_ENTITY = "ENTITY_AMBIGUOUS"
     UNSUPPORTED_QUERY_SEMANTICS = "UNSUPPORTED_QUERY_SEMANTICS"
     RANKING_NOT_APPLIED = "RANKING_NOT_APPLIED"
 
@@ -376,15 +421,15 @@ class ResolvedQuery(BaseModel):
 class GroundedConcept(BaseModel):
     raw_text: str
     category: ConceptCategory
-    canonical_concept: CanonicalConcept | None = None
+    canonical_concept: SemanticValue | None = None
     status: GroundingStatus
 
 
 class GroundedFilter(BaseModel):
     raw_filter: FilterSpec
     canonical_field: str | None = None
-    canonical_value: CanonicalConcept | None = None
-    canonical_values: list[CanonicalConcept] = Field(default_factory=list)
+    canonical_value: SemanticValue | None = None
+    canonical_values: list[SemanticValue] = Field(default_factory=list)
     status: GroundingStatus
 
 
@@ -397,6 +442,8 @@ class GroundedSort(BaseModel):
 class GroundedField(BaseModel):
     raw_text: str
     canonical_field: str | None = None
+    ontology_uri: str | None = None
+    mapping_version: str | None = None
     status: GroundingStatus
 
 
@@ -419,7 +466,7 @@ class GroundedRelation(BaseModel):
 class GroundedQuery(BaseModel):
     parsed_query: ParsedQuery
     resolved_entities: list[EntityMention] = Field(default_factory=list)
-    canonical_concepts: list[CanonicalConcept] = Field(default_factory=list)
+    canonical_concepts: list[SemanticValue] = Field(default_factory=list)
     canonical_fields: dict[str, str] = Field(default_factory=dict)
     grounded_concepts: list[GroundedConcept] = Field(default_factory=list)
     grounded_filters: list[GroundedFilter] = Field(default_factory=list)
@@ -428,12 +475,28 @@ class GroundedQuery(BaseModel):
     grounded_relations: list[GroundedRelation] = Field(default_factory=list)
     unresolved_concepts: list[str] = Field(default_factory=list)
     semantic_constraints: list[SemanticConstraint] = Field(default_factory=list)
+    ontology_uri: str | None = None
+    ontology_version: str | None = None
+    semantic_mapping_version: str | None = None
+    dataset_snapshot: str | None = None
+
+
+class SemanticStorageIdentity(BaseModel):
+    """Temporary M10.7 bridge between semantic and physical entity grains."""
+
+    storage_row_id: str
+    ontology_entity_type: str
+    ontology_uri: str
+    parent_entity_id: str | None = None
+    compatibility_product_type: str | None = None
 
 
 class CanonicalEntity(BaseModel):
     canonical_id: str
     entity_type: str
-    official_name: str
+    # Fund family names may be authoritatively unavailable in canonical_v2.
+    # Keeping None is semantically different from synthesizing a class name.
+    official_name: str | None
     aliases: list[str] = Field(default_factory=list)
     identifiers: dict[str, str] = Field(default_factory=dict)
 
@@ -476,11 +539,22 @@ class RetrievalRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RetrievalResult(BaseModel):
+    """Records plus non-semantic transport cardinality metadata."""
+
+    records: list[RetrievalRecord] = Field(default_factory=list)
+    total_matches: int | None = Field(default=None, ge=0)
+    returned_count: int = Field(default=0, ge=0)
+    window_limit: int | None = Field(default=None, ge=1)
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
 class StepExecutionResult(BaseModel):
     step_id: str
     source: RetrievalSource
     status: StepExecutionStatus
     records: list[RetrievalRecord] = Field(default_factory=list)
+    retrieval_metadata: dict[str, Any] = Field(default_factory=dict)
     error_code: ExecutionErrorCode | None = None
     error_message: str | None = None
     started_at: datetime

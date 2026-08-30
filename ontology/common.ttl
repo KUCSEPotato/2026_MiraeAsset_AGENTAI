@@ -1,0 +1,376 @@
+@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fp:FinancialProductOntology a owl:Ontology ;
+    rdfs:label "Financial Product Ontology v0"@en .
+
+fp:canonicalConcept a owl:AnnotationProperty .
+fp:canonicalField a owl:AnnotationProperty .
+fp:conceptCategory a owl:AnnotationProperty .
+fp:sourceDataset a owl:AnnotationProperty .
+fp:allowAmbiguousAlias a owl:AnnotationProperty .
+
+fp:FinancialProduct a owl:Class ;
+    skos:prefLabel "금융상품"@ko ;
+    skos:prefLabel "Financial Product"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Bond a owl:Class ;
+    rdfs:subClassOf fp:FinancialProduct ;
+    owl:disjointWith fp:ExchangeTradedProduct, fp:Fund ;
+    skos:prefLabel "채권"@ko ;
+    skos:prefLabel "Bond"@en ;
+    fp:conceptCategory "product_type" ;
+    fp:canonicalConcept "FinancialProduct.Bond" .
+
+fp:ExchangeTradedProduct a owl:Class ;
+    rdfs:subClassOf fp:FinancialProduct ;
+    owl:disjointWith fp:Fund ;
+    skos:prefLabel "상장지수상품"@ko ;
+    skos:prefLabel "Exchange Traded Product"@en ;
+    skos:altLabel "ETP"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:ETF a owl:Class ;
+    rdfs:subClassOf fp:ExchangeTradedProduct ;
+    owl:disjointWith fp:ETN ;
+    skos:prefLabel "ETF"@en ;
+    skos:altLabel "상장지수펀드"@ko ;
+    fp:conceptCategory "product_type" ;
+    fp:canonicalConcept "FinancialProduct.ETF" .
+
+fp:ETN a owl:Class ;
+    rdfs:subClassOf fp:ExchangeTradedProduct ;
+    skos:prefLabel "ETN"@en ;
+    skos:altLabel "상장지수증권"@ko ;
+    fp:conceptCategory "product_type" ;
+    fp:canonicalConcept "FinancialProduct.ETN" .
+
+fp:Fund a owl:Class ;
+    rdfs:subClassOf fp:FinancialProduct ;
+    skos:prefLabel "펀드"@ko ;
+    skos:prefLabel "Fund"@en ;
+    fp:conceptCategory "product_type" ;
+    fp:canonicalConcept "FinancialProduct.Fund" .
+
+fp:PublicFund a owl:Class ;
+    rdfs:subClassOf fp:Fund ;
+    skos:prefLabel "공모펀드"@ko ;
+    skos:prefLabel "Public Fund"@en ;
+    fp:conceptCategory "product_type" ;
+    fp:canonicalConcept "FinancialProduct.PublicFund" .
+
+fp:FundClass a owl:Class ;
+    skos:prefLabel "펀드 클래스"@ko ;
+    skos:prefLabel "Fund Class"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:AssetManager a owl:Class ;
+    skos:prefLabel "운용사"@ko ;
+    skos:prefLabel "Asset Manager"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Issuer a owl:Class ;
+    skos:prefLabel "발행사"@ko ;
+    skos:prefLabel "Issuer"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Region a owl:Class ;
+    skos:prefLabel "투자지역"@ko ;
+    skos:prefLabel "Region"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:AssetType a owl:Class ;
+    skos:prefLabel "자산유형"@ko ;
+    skos:prefLabel "Asset Type"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:RiskGrade a owl:Class ;
+    skos:prefLabel "위험등급"@ko ;
+    skos:prefLabel "Risk Grade"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Currency a owl:Class ;
+    skos:prefLabel "통화"@ko ;
+    skos:prefLabel "Currency"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:ProductIdentifier a owl:Class ;
+    skos:prefLabel "상품 식별자"@ko ;
+    skos:prefLabel "Product Identifier"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Index a owl:Class ;
+    skos:prefLabel "기초지수"@ko ;
+    skos:prefLabel "Index"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Benchmark a owl:Class ;
+    rdfs:subClassOf fp:Index ;
+    skos:prefLabel "벤치마크"@ko ;
+    skos:prefLabel "Benchmark"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:InvestmentStrategy a owl:Class ;
+    skos:prefLabel "투자전략"@ko ;
+    skos:prefLabel "Investment Strategy"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:ReplicationMethod a owl:Class ;
+    skos:prefLabel "복제방식"@ko ;
+    skos:prefLabel "Replication Method"@en ;
+    fp:conceptCategory "entity_type" .
+
+fp:Korea a fp:Region ;
+    skos:prefLabel "한국"@ko ;
+    skos:altLabel "국내"@ko, "대한민국"@ko, "Korea"@en, "KR"@en ;
+    fp:conceptCategory "region" ;
+    fp:canonicalConcept "Region.KR" .
+
+fp:UnitedStates a fp:Region ;
+    skos:prefLabel "미국"@ko ;
+    skos:prefLabel "United States"@en ;
+    skos:altLabel "USA"@en, "US"@en, "United States of America"@en ;
+    fp:conceptCategory "region" ;
+    fp:canonicalConcept "Region.US" .
+
+fp:Japan a fp:Region ;
+    skos:prefLabel "일본"@ko ;
+    skos:prefLabel "Japan"@en ;
+    fp:conceptCategory "region" ;
+    fp:canonicalConcept "Region.JP" .
+
+fp:China a fp:Region ;
+    skos:prefLabel "중국"@ko ;
+    skos:prefLabel "China"@en ;
+    fp:conceptCategory "region" ;
+    fp:canonicalConcept "Region.CN" .
+
+fp:Global a fp:Region ;
+    skos:prefLabel "글로벌"@ko ;
+    skos:prefLabel "Global"@en ;
+    fp:conceptCategory "region" ;
+    fp:canonicalConcept "Region.Global" .
+
+fp:Asia a fp:Region ;
+    skos:prefLabel "아시아"@ko ;
+    skos:prefLabel "Asia"@en ;
+    fp:conceptCategory "region" ;
+    fp:canonicalConcept "Region.Asia" .
+
+fp:Equity a fp:AssetType ;
+    skos:prefLabel "주식"@ko ;
+    skos:prefLabel "Equity"@en ;
+    skos:altLabel "주식형"@ko ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Equity" .
+
+fp:BondAsset a fp:AssetType ;
+    skos:prefLabel "채권"@ko ;
+    skos:prefLabel "Bond"@en ;
+    skos:altLabel "채권형"@ko ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Bond" .
+
+fp:Commodity a fp:AssetType ;
+    skos:prefLabel "원자재"@ko ;
+    skos:prefLabel "Commodity"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Commodity" .
+
+fp:MixedAsset a fp:AssetType ;
+    skos:prefLabel "혼합자산"@ko ;
+    skos:prefLabel "Mixed Asset"@en ;
+    skos:altLabel "Mixed Assets"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Mixed" .
+
+fp:MoneyMarket a fp:AssetType ;
+    skos:prefLabel "단기자금"@ko ;
+    skos:prefLabel "Money Market"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.MoneyMarket" .
+
+fp:CurrencyAsset a fp:AssetType ;
+    skos:prefLabel "통화"@ko ;
+    skos:prefLabel "Currency Asset"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Currency" .
+
+fp:RealEstate a fp:AssetType ;
+    skos:prefLabel "부동산"@ko ;
+    skos:prefLabel "Real Estate"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.RealEstate" .
+
+fp:AlternativeAsset a fp:AssetType ;
+    skos:prefLabel "대체자산"@ko ;
+    skos:prefLabel "Alternative Asset"@en ;
+    skos:altLabel "Alternatives"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Alternative" .
+
+fp:OtherAsset a fp:AssetType ;
+    skos:prefLabel "기타"@ko ;
+    skos:prefLabel "Other Asset"@en ;
+    fp:conceptCategory "asset_type" ;
+    fp:canonicalConcept "AssetType.Other" .
+
+fp:managedBy a owl:ObjectProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range fp:AssetManager ;
+    skos:prefLabel "운용사"@ko ;
+    skos:prefLabel "managed by"@en ;
+    skos:altLabel "운용하는"@ko ;
+    skos:altLabel "관리하는"@ko ;
+    skos:altLabel "운용하는 회사"@ko ;
+    fp:conceptCategory "relation" ;
+    fp:canonicalField "product.asset_manager" .
+
+fp:issuedBy a owl:ObjectProperty ;
+    rdfs:domain fp:Bond ;
+    rdfs:range fp:Issuer ;
+    skos:prefLabel "발행사"@ko ;
+    skos:prefLabel "issued by"@en ;
+    skos:altLabel "발행한"@ko ;
+    skos:altLabel "발행한 기관"@ko ;
+    fp:conceptCategory "relation" ;
+    fp:canonicalField "product.issuer" .
+
+fp:tracks a owl:ObjectProperty ;
+    rdfs:domain fp:ExchangeTradedProduct ;
+    rdfs:range fp:Index ;
+    skos:prefLabel "기초지수"@ko ;
+    skos:prefLabel "tracks"@en ;
+    skos:altLabel "추종지수"@ko ;
+    skos:altLabel "따라가는"@ko ;
+    skos:altLabel "추종하는"@ko ;
+    fp:conceptCategory "relation" .
+
+fp:referencesBenchmark a owl:ObjectProperty ;
+    rdfs:domain fp:Fund ;
+    rdfs:range fp:Benchmark ;
+    skos:prefLabel "벤치마크"@ko ;
+    skos:prefLabel "references benchmark"@en ;
+    fp:conceptCategory "relation" .
+
+fp:hasClass a owl:ObjectProperty ;
+    rdfs:domain fp:Fund ;
+    rdfs:range fp:FundClass ;
+    skos:prefLabel "펀드 클래스"@ko ;
+    skos:prefLabel "has class"@en ;
+    fp:conceptCategory "relation" .
+
+fp:investsInRegion a owl:ObjectProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range fp:Region ;
+    skos:prefLabel "투자지역"@ko ;
+    skos:altLabel "지역"@ko, "region"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.region" .
+
+fp:hasAssetType a owl:ObjectProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range fp:AssetType ;
+    skos:prefLabel "자산유형"@ko ;
+    skos:altLabel "asset type"@en, "asset_type"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.asset_type" .
+
+fp:hasRiskGrade a owl:ObjectProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range fp:RiskGrade ;
+    skos:prefLabel "위험등급"@ko ;
+    fp:conceptCategory "relation" ;
+    fp:canonicalField "product.risk_grade" .
+
+fp:identifiedBy a owl:ObjectProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range fp:ProductIdentifier ;
+    skos:prefLabel "식별자"@ko ;
+    fp:conceptCategory "relation" .
+
+fp:denominatedIn a owl:ObjectProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range fp:Currency ;
+    skos:prefLabel "표시통화"@ko ;
+    fp:conceptCategory "relation" ;
+    fp:canonicalField "product.currency" .
+
+fp:productName a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "상품명"@ko ;
+    skos:prefLabel "product name"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.name" .
+
+fp:productType a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "상품유형"@ko ;
+    skos:altLabel "product type"@en, "product_type"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.product_type" .
+
+fp:ticker a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "티커"@ko ;
+    skos:prefLabel "ticker"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.ticker" .
+
+fp:isin a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "ISIN"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.isin" .
+
+fp:aum a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "순자산"@ko ;
+    skos:prefLabel "AUM"@en ;
+    skos:altLabel "운용규모"@ko ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.aum" .
+
+fp:expenseRatio a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "총보수"@ko ;
+    skos:prefLabel "expense ratio"@en ;
+    skos:altLabel "보수율"@ko, "운용보수"@ko ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.expense_ratio" .
+
+fp:nav a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "NAV"@en ;
+    skos:altLabel "기준가격"@ko ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.nav" .
+
+fp:price a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "가격"@ko ;
+    skos:prefLabel "price"@en ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.price" .
+
+fp:baseIndexName a owl:DatatypeProperty ;
+    rdfs:domain fp:FinancialProduct ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "기초지수명"@ko ;
+    skos:prefLabel "base index"@en ;
+    skos:altLabel "기초지수"@ko, "벤치마크"@ko ;
+    fp:conceptCategory "field" ;
+    fp:canonicalField "product.base_index" .

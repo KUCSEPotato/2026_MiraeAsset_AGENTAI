@@ -1,0 +1,30 @@
+.git
+.github
+.agents
+.codex
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.coverage
+htmlcov
+.DS_Store
+
+# Production secrets and local credentials must never enter the build context.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+ory-finance-agent-key.pem
+
+# Source workbooks and generated stores are provisioned independently.
+material
+data/canonical_v2
+data/semantic_search.json
+*.db
+*.db-*
+
+# Runtime/test output is not part of the production image.
+tests
+evaluation/artifacts

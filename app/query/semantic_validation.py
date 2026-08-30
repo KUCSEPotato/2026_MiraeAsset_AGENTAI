@@ -208,7 +208,8 @@ class LLMSemanticCandidateValidator:
                 item.source_span for item in candidate.product_types
             ] + [
                 item.source_span for item in candidate.filters
-                if normalize_ontology_text(item.field) == "product_type"
+                if normalize_ontology_text(item.field)
+                == normalize_ontology_text("product_type")
             ],
             ConstraintSemanticType.ENTITY: [
                 item.source_span for item in candidate.entities

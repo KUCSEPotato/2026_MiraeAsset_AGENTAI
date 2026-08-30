@@ -1,0 +1,26 @@
+[Unit]
+Description=Financial Semantic Agent evaluation API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=financial-agent
+Group=financial-agent
+WorkingDirectory=/opt/financial-semantic-agent/current
+EnvironmentFile=/etc/financial-semantic-agent/runtime.env
+ExecStart=/opt/financial-semantic-agent/uv run --no-sync uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=300
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/financial-semantic-agent
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

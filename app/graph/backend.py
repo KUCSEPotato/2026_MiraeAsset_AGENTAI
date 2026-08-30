@@ -27,6 +27,11 @@ class Neo4jGraphBackend:
         driver = AsyncGraphDatabase.driver(
             settings.uri,
             auth=(settings.user, settings.password),
+            connection_timeout=settings.connection_timeout_seconds,
+            connection_acquisition_timeout=(
+                settings.connection_acquisition_timeout_seconds
+            ),
+            max_transaction_retry_time=settings.max_transaction_retry_seconds,
         )
         return cls(driver, settings)
 

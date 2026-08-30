@@ -37,7 +37,7 @@ class InternalTransformExecutor:
         primary_records = (
             dependency_records[0]
             if step.operation is QueryOperation.RANK_CANDIDATES
-            else dependency_records[-1]
+            else _primary_evidence_records(dependency_records)
         )
         for record in primary_records:
             entity_id = record.entity_id
@@ -104,3 +104,14 @@ class InternalTransformExecutor:
         if not isinstance(limit, int) or limit <= 0:
             raise ValueError("internal transform limit must be positive")
         return transformed[:limit]
+
+
+def _primary_evidence_records(
+    dependencies: list[list[RetrievalRecord]],
+) -> list[RetrievalRecord]:
+    """Preserve factual/relation evidence while semantic hits remain metadata."""
+    for preferred in (RetrievalSource.GRAPH.value, RetrievalSource.RDB.value):
+        for records in dependencies:
+            if any(record.source == preferred for record in records):
+                return records
+    return dependencies[-1]

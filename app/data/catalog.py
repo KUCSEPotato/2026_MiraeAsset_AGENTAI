@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from sqlalchemy import Table
@@ -87,21 +88,27 @@ class DatasetFiles:
 def discover_dataset_files(root: Path) -> list[DatasetFiles]:
     discovered: list[DatasetFiles] = []
     for spec in DATASET_SPECS:
-        data_matches = sorted(root.rglob(f"{spec.prefix}_*_datarows.xlsx"))
-        schema_matches = sorted(root.rglob(f"{spec.prefix}_*_schema.xlsx"))
+        # The authoritative 2026-08-24 release uses lower-case exact names.
+        # Prefer that generation when legacy dated workbooks coexist under the
+        # material tree; legacy patterns remain supported for isolated tests.
+        data_matches = sorted(
+            root.rglob(f"{spec.prefix.lower()}_data.xlsx")
+        )
+        schema_matches = sorted(
+            root.rglob(f"{spec.prefix.lower()}_schema.xlsx")
+        )
+        if not data_matches and not schema_matches:
+            data_matches = sorted(
+                root.rglob(f"{spec.prefix}_*_datarows.xlsx")
+            )
+            schema_matches = sorted(
+                root.rglob(f"{spec.prefix}_*_schema.xlsx")
+            )
         if len(data_matches) != 1 or len(schema_matches) != 1:
             raise FileNotFoundError(
                 f"expected one data and schema workbook for {spec.prefix}"
             )
-        snapshot_token = data_matches[0].stem.rsplit("_", 2)[-2]
-        if len(snapshot_token) != 8 or not snapshot_token.isdigit():
-            raise ValueError(
-                f"cannot derive snapshot from {data_matches[0].name}"
-            )
-        snapshot = (
-            f"{snapshot_token[:4]}-{snapshot_token[4:6]}-"
-            f"{snapshot_token[6:]}"
-        )
+        snapshot = _snapshot_from_path(data_matches[0])
         discovered.append(
             DatasetFiles(
                 spec=spec,
@@ -111,3 +118,20 @@ def discover_dataset_files(root: Path) -> list[DatasetFiles]:
             )
         )
     return discovered
+
+
+def _snapshot_from_path(path: Path) -> str:
+    tokens: list[str] = []
+    for part in (path.stem, *(parent.name for parent in path.parents)):
+        tokens.extend(
+            match.group(1)
+            for match in re.finditer(
+                r"(?<!\d)(20\d{6}|\d{6})(?!\d)", part
+            )
+        )
+    if not tokens:
+        raise ValueError(f"cannot derive snapshot from {path}")
+    token = tokens[0]
+    if len(token) == 6:
+        token = f"20{token}"
+    return f"{token[:4]}-{token[4:6]}-{token[6:]}"

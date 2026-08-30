@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import Engine, Select, asc, case, desc, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.data.schema import canonical_products
+from app.data.schema import canonical_products, fund_classes
 from app.domain.models import (
     ExecutionContext,
     FilterOperator,
@@ -18,6 +18,7 @@ from app.retrieval.exceptions import (
     RDBQueryCompilationError,
     RetrieverUnavailableError,
 )
+from app.ontology.storage_adapter import FundShareClassStorageAdapter
 
 
 @dataclass(frozen=True)
@@ -234,8 +235,36 @@ class RealRDBRetriever:
     ) -> list[RetrievalRecord]:
         with self._engine.connect() as connection:
             rows = connection.execute(compiled.statement).mappings().all()
+            fund_ids = {
+                str(row["canonical_product_id"])
+                for row in rows
+                if row["source_dataset"] == "public_fund"
+            }
+            fund_class_metadata = {
+                str(row["canonical_product_id"]): row
+                for row in (
+                    connection.execute(
+                        select(fund_classes).where(
+                            fund_classes.c.dataset_snapshot
+                            == self._compiler._snapshot_date,
+                            fund_classes.c.canonical_product_id.in_(fund_ids),
+                        )
+                    ).mappings()
+                    if fund_ids
+                    else ()
+                )
+            }
         records: list[RetrievalRecord] = []
+        fund_adapter = FundShareClassStorageAdapter()
         for row in rows:
+            semantic_identity = None
+            fund_class_row = fund_class_metadata.get(
+                str(row["canonical_product_id"])
+            )
+            if fund_class_row is not None:
+                semantic_identity = fund_adapter.adapt(
+                    row, fund_class_row
+                ).as_dict()
             for field in compiled.projected_fields:
                 mapping = self._compiler._fields.get(field)
                 source_id = (
@@ -260,6 +289,7 @@ class RealRDBRetriever:
                             "dataset_snapshot": row["dataset_snapshot"],
                             "observed_at": row["observed_at"],
                             "product_type": row["product_type"],
+                            "semantic_identity": semantic_identity,
                             "real_rdb": True,
                             "ranking_applied": compiled.ranking_applied,
                         },
