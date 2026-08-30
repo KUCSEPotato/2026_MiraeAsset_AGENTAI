@@ -1,0 +1,47 @@
+{
+  "pdf": {
+    "gijunYMD": "20260824",
+    "totalCnt": 3,
+    "pdfExcelDownloadUrl": "/excel_pdf.do?fId=2ETF15&gijunYMD=20260824",
+    "nowCnt": 3,
+    "list": [
+      {
+        "risep": null,
+        "totalCnt": "3",
+        "secNm": "원화예금",
+        "evalA": "1591829",
+        "basrpRt": null,
+        "applyQ": "1591829",
+        "itmNo": "KRD010010001",
+        "curp": null,
+        "ratio": null,
+        "pdfType": null
+      },
+      {
+        "risep": "50",
+        "totalCnt": "3",
+        "secNm": "미래에셋증권",
+        "evalA": "223111500",
+        "basrpRt": null,
+        "applyQ": "6467",
+        "itmNo": "006800",
+        "curp": "36150",
+        "ratio": "24.49",
+        "pdfType": null
+      },
+      {
+        "risep": "0",
+        "totalCnt": "3",
+        "secNm": "식별자 미제공 자산",
+        "evalA": null,
+        "basrpRt": null,
+        "applyQ": null,
+        "itmNo": null,
+        "curp": null,
+        "ratio": "5",
+        "pdfType": null
+      }
+    ],
+    "rcvTime": "2026.08.28 15:30:00"
+  }
+}

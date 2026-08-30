@@ -11,6 +11,7 @@ data/*.db
 data/*.db-*
 data/semantic_search.json
 data/canonical_v2/
+/external_data/
 .env.example
 !.env.example
 ory-finance-agent-key.pem
@@ -31,3 +32,7 @@ tests/*
 !tests/test_m10_9_docker_deployment.py
 !tests/test_graph_retriever.py
 !tests/test_m8_ontology_integration.py
+!tests/external_data/
+!tests/external_data/**
+tests/external_data/**/__pycache__/
+tests/external_data/**/*.py[cod]
