@@ -64,11 +64,19 @@ class QualityAwareEvidenceValidator:
         )
 
         if not self._has_usable_evidence(evidence):
+            code = self._no_usable_evidence_code(evidence)
             findings.append(
                 ValidationFinding(
-                    code=AnswerabilityReasonCode.NO_EVIDENCE,
+                    code=code,
                     severity=FindingSeverity.BLOCKING,
-                    message="No usable evidence was retrieved.",
+                    message={
+                        AnswerabilityReasonCode.ZERO_MATCH: (
+                            "The fully compiled structured query matched no entities."
+                        ),
+                        AnswerabilityReasonCode.INSUFFICIENT_EVIDENCE: (
+                            "Records were retrieved but contain no usable evidence."
+                        ),
+                    }.get(code, "No usable evidence was retrieved."),
                 )
             )
 
@@ -226,6 +234,20 @@ class QualityAwareEvidenceValidator:
         bundle: EvidenceBundle,
     ) -> list[ValidationFinding]:
         findings: list[ValidationFinding] = []
+        unresolved = [
+            entity
+            for entity in query.resolved_entities
+            if entity.resolution_status is ResolutionStatus.UNRESOLVED
+        ]
+        if unresolved:
+            findings.append(
+                ValidationFinding(
+                    code=AnswerabilityReasonCode.ENTITY_NOT_FOUND,
+                    severity=FindingSeverity.BLOCKING,
+                    message="The requested entity could not be resolved.",
+                    metadata={"raw_mentions": [item.raw_text for item in unresolved]},
+                )
+            )
         ambiguous = [
             entity
             for entity in query.resolved_entities
@@ -279,6 +301,34 @@ class QualityAwareEvidenceValidator:
                 )
             )
         return findings
+
+    @staticmethod
+    def _no_usable_evidence_code(
+        bundle: EvidenceBundle,
+    ) -> AnswerabilityReasonCode:
+        """Keep empty-result semantics distinct from absent or unusable evidence."""
+        execution = bundle.execution_result
+        if execution is not None:
+            successful = [
+                result for result in execution.step_results.values()
+                if result.status is StepExecutionStatus.SUCCESS
+                and (
+                    isinstance(result.retrieval_metadata.get("total_matches"), int)
+                    or (
+                        result.retrieval_metadata.get("counts", {}).get("path_count", 0) > 0
+                        and result.retrieval_metadata.get("counts", {}).get("path_total_sum") == 0
+                    )
+                )
+            ]
+            if successful and all(
+                result.retrieval_metadata.get("total_matches") == 0
+                or result.retrieval_metadata.get("counts", {}).get("path_total_sum") == 0
+                for result in successful
+            ):
+                return AnswerabilityReasonCode.ZERO_MATCH
+        if bundle.evidence:
+            return AnswerabilityReasonCode.INSUFFICIENT_EVIDENCE
+        return AnswerabilityReasonCode.NO_EVIDENCE
 
     def _conflict_findings(
         self,

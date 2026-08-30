@@ -14,7 +14,10 @@ class ReasonAwareSafeResponseGenerator:
 
     async def generate(self, validation: ValidationResult) -> str:
         codes = set(validation.reason_codes)
-        if AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS in codes:
+        if (
+            AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS in codes
+            or AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT in codes
+        ):
             return (
                 "현재 제공된 조건을 모두 정확하게 해석하여 조회하기 "
                 "어렵습니다. 조건을 조금 더 구체적으로 지정해 주세요."
@@ -53,6 +56,12 @@ class ReasonAwareSafeResponseGenerator:
             )
         if AnswerabilityReasonCode.AMBIGUOUS_ENTITY in codes:
             return "요청하신 상품을 하나로 특정할 수 없어 답변할 수 없습니다."
+        if AnswerabilityReasonCode.ENTITY_NOT_FOUND in codes:
+            return "요청하신 상품 또는 기관을 현재 데이터에서 찾을 수 없습니다."
+        if AnswerabilityReasonCode.ZERO_MATCH in codes:
+            return "제공된 조건을 모두 만족하는 결과는 없습니다."
+        if AnswerabilityReasonCode.INSUFFICIENT_EVIDENCE in codes:
+            return "조회 결과가 있으나 답변에 필요한 근거가 충분하지 않습니다."
         if (
             AnswerabilityReasonCode.MISSING_REQUIRED_FIELD in codes
             or AnswerabilityReasonCode.INVALID_SENTINEL in codes

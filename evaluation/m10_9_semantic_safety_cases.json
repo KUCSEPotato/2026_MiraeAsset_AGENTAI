@@ -1,0 +1,14 @@
+[
+  {"id":"M109-SAFETY-Q1","category":"structured","question":"미국 주식형 ETF를 알려줘."},
+  {"id":"M109-SAFETY-Q2","category":"structured","question":"인도 주식형 ETF를 알려줘."},
+  {"id":"M109-SAFETY-Q3","category":"unanswerable","question":"인도에 상장된 주식형 ETF를 알려줘."},
+  {"id":"M109-SAFETY-Q4","category":"structured","question":"위험등급 1등급 ETF를 알려줘."},
+  {"id":"M109-SAFETY-Q5","category":"structured","question":"공모 펀드를 알려줘."},
+  {"id":"M109-SAFETY-Q6","category":"unanswerable","question":"인도 채권형 ETN을 알려줘."},
+  {"id":"M109-SAFETY-Q7","category":"structured","question":"유럽에 투자하는 ETF를 알려줘."},
+  {"id":"M109-SAFETY-Q8","category":"hybrid","question":"미국 주식형 ETF 중 AI 산업 관련 전략을 가진 상품을 알려줘."},
+  {"id":"M109-SAFETY-Q9","category":"graph","question":"알파글로벌챔프펀드 클래스 정보를 알려줘."},
+  {"id":"M109-SAFETY-Q10","category":"graph","question":"국민주택1종채권 21-08의 판매 LOT를 알려줘."},
+  {"id":"M109-SAFETY-Q11","category":"graph","question":"fund_family:029000036361의 벤치마크를 알려줘."},
+  {"id":"M109-SAFETY-Q12","category":"graph","question":"미래에셋증권 미래에셋 0.5X 코스닥150 선물 상장지수증권 제86호의 운용사와 발행사를 알려줘."}
+]

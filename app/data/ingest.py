@@ -1,8 +1,9 @@
 import argparse
 import datetime as dt
 import hashlib
-import uuid
 import json
+import os
+import uuid
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -74,7 +75,7 @@ class IngestionReport:
     skip_reason: str | None = None
 
 
-TRANSFORMER_VERSION = "ontology-ingestion-v2-sparse"
+TRANSFORMER_VERSION = "ontology-ingest-v2.2-team-1.1"
 
 
 class FinancialDataIngestor:
@@ -482,10 +483,13 @@ def _validate_types(
     row: dict[str, Any],
     schema: SourceSchema,
 ) -> str | None:
-    numeric_types = {"numeric", "double precision", "bigint"}
     for field, field_type in schema.column_types.items():
         value = row.get(field)
-        if value is None or field_type not in numeric_types:
+        is_numeric = (
+            field_type.startswith("numeric")
+            or field_type in {"double precision", "bigint"}
+        )
+        if value is None or not is_numeric:
             continue
         try:
             Decimal(str(value))
@@ -584,13 +588,13 @@ def main() -> int:
     parser.add_argument("--graph-projection", action="store_true", help="prepare provenance-bearing graph relations in RDB")
     parser.add_argument("--report-file", type=Path)
     args = parser.parse_args()
-    settings = DatabaseSettings.from_env()
     if args.database_url:
         settings = DatabaseSettings(
             database_url=args.database_url,
-            snapshot_date=settings.snapshot_date,
-            rdb_default_limit=settings.rdb_default_limit,
+            snapshot_date=os.getenv("DATA_SNAPSHOT_DATE", "2026-08-24"),
         )
+    else:
+        settings = DatabaseSettings.from_env()
     engine = create_database_engine(settings)
     try:
         if args.shacl:

@@ -33,6 +33,10 @@ class SemanticIndexMetadata(BaseModel):
     skipped_missing: int
     duplicate_texts: int
     average_document_length: float
+    generation: str | None = None
+    ontology_version: str | None = None
+    canonical_schema_version: str | None = None
+    transformer_version: str | None = None
 
 
 class SemanticSearchHit(BaseModel):
@@ -45,3 +49,6 @@ class IndexBuildResult(BaseModel):
     metadata: SemanticIndexMetadata
     reused_embeddings: int = 0
     generated_embeddings: int = 0
+    new_documents: int = 0
+    removed_documents: int = 0
+    regenerated_embeddings: int = 0

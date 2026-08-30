@@ -5,6 +5,7 @@ from app.ontology.models import OntologyLoadError
 
 LEGACY_RUNTIME_MAPPING_FILE = "mappings/column_mapping.csv"
 V7_RUNTIME_MAPPING_FILE = "mappings/v7_runtime_mapping.csv"
+TEAM_V1_RUNTIME_MAPPING_FILE = "runtime:team-v1-runtime-2026-08-29"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,8 @@ class GraphRelationMapping:
     subject_type: str
     object_type: str
     source_bindings: tuple[GraphSourceBinding, ...]
+    additional_subject_types: tuple[str, ...] = ()
+    additional_object_types: tuple[str, ...] = ()
 
 
 class GraphMappingRegistry:
@@ -32,14 +35,23 @@ class GraphMappingRegistry:
         *,
         version: str = "legacy",
     ) -> None:
-        if version not in {"legacy", "v7"}:
-            raise ValueError("graph mapping version must be 'legacy' or 'v7'")
-        mappings = _v7_mappings() if version == "v7" else _legacy_mappings()
-        self.version = version
+        normalized = "team-v1" if version == "team_v1" else version
+        if normalized not in {"legacy", "v7", "team-v1", "canonical-v2"}:
+            raise ValueError(
+                "graph mapping version must be 'legacy', 'v7', 'team-v1', or 'canonical-v2'"
+            )
+        mappings = {
+            "legacy": _legacy_mappings,
+            "v7": _v7_mappings,
+            "team-v1": _team_v1_mappings,
+            "canonical-v2": _canonical_v2_mappings,
+        }[normalized]()
+        self.version = normalized
         self.runtime_mapping_file = (
-            V7_RUNTIME_MAPPING_FILE
-            if version == "v7"
-            else LEGACY_RUNTIME_MAPPING_FILE
+            "runtime:canonical-v2-derived-store-m10.8-d" if normalized == "canonical-v2" else
+            TEAM_V1_RUNTIME_MAPPING_FILE if normalized == "team-v1" else
+            V7_RUNTIME_MAPPING_FILE if normalized == "v7" else
+            LEGACY_RUNTIME_MAPPING_FILE
         )
         self._by_relation = {item.canonical_relation: item for item in mappings}
         self._by_uri = {item.ontology_uri: item for item in mappings}
@@ -68,15 +80,32 @@ class GraphMappingRegistry:
         return mapping
 
     def validate_ontology(self, ontology_index: OntologyIndex) -> None:
+        # canonical_v2 relation admission is already enforced by its audited
+        # PostgreSQL domain contract.  The graph projection must not invent a
+        # second mapping from source labels while the Team TTL evolves.
+        if self.version == "canonical-v2":
+            return
         for mapping in self.mappings:
             if mapping.ontology_uri not in ontology_index.object_properties:
                 raise OntologyLoadError(
                     f"graph relation is absent from ontology: {mapping.ontology_uri}"
                 )
-            if not ontology_index.is_compatible(
+            subject_types = (
                 mapping.subject_type,
-                mapping.canonical_relation,
+                *mapping.additional_subject_types,
+            )
+            object_types = (
                 mapping.object_type,
+                *mapping.additional_object_types,
+            )
+            if not all(
+                ontology_index.is_compatible(
+                    subject_type,
+                    mapping.canonical_relation,
+                    object_type,
+                )
+                for subject_type in subject_types
+                for object_type in object_types
             ):
                 raise OntologyLoadError(
                     "graph mapping violates ontology domain/range: "
@@ -184,6 +213,165 @@ def _legacy_mappings() -> tuple[GraphRelationMapping, ...]:
     )
 
 
+def _team_v1_mappings() -> tuple[GraphRelationMapping, ...]:
+    return (
+        GraphRelationMapping(
+            "managedBy", str(FP.managedBy), "MANAGED_BY",
+            "ETF", "Organization",
+            (
+                GraphSourceBinding(
+                    "domestic_etf", "canonical_products.asset_manager"
+                ),
+                GraphSourceBinding(
+                    "foreign_etf", "canonical_products.asset_manager"
+                ),
+                GraphSourceBinding(
+                    "public_fund", "canonical_products.issuer"
+                ),
+            ),
+            ("Fund",),
+            ("AssetManagementCompany",),
+        ),
+        GraphRelationMapping(
+            "issuedBy", str(FP.issuedBy), "ISSUED_BY",
+            "Bond", "Organization",
+            (
+                GraphSourceBinding(
+                    "domestic_bond", "canonical_products.issuer"
+                ),
+            ),
+        ),
+        GraphRelationMapping(
+            "tracksIndex", str(FP.tracksIndex), "TRACKS_INDEX",
+            "ExchangeTradedProduct", "Index",
+            (
+                GraphSourceBinding(
+                    "foreign_etf", "product_relations.tracksIndex"
+                ),
+            ),
+        ),
+        GraphRelationMapping(
+            "hasUnderlyingIndex", str(FP.hasUnderlyingIndex),
+            "HAS_UNDERLYING_INDEX", "ExchangeTradedProduct", "Index",
+            (
+                GraphSourceBinding(
+                    "domestic_etf", "canonical_products.base_index"
+                ),
+                GraphSourceBinding(
+                    "foreign_etf", "canonical_products.base_index"
+                ),
+            ),
+        ),
+        GraphRelationMapping(
+            "hasShareClass", str(FP.hasShareClass), "HAS_SHARE_CLASS",
+            "Fund", "FundShareClass",
+            (
+                GraphSourceBinding("public_fund", "fund_classes.fund_id"),
+            ),
+        ),
+        GraphRelationMapping(
+            "hasBenchmark", str(FP.hasBenchmark), "HAS_BENCHMARK",
+            "Fund", "Index",
+            (GraphSourceBinding("public_fund", "canonical_products.base_index"),),
+        ),
+        GraphRelationMapping(
+            "denominatedIn", str(FP.denominatedIn), "DENOMINATED_IN",
+            "FinancialProduct", "Currency",
+            (GraphSourceBinding("domestic_bond", "canonical_products.currency"),),
+        ),
+        GraphRelationMapping(
+            "hasRiskGrade", str(FP.hasRiskGrade), "HAS_RISK_GRADE",
+            "FinancialProduct", "RiskGrade",
+            (
+                GraphSourceBinding("domestic_bond", "canonical_products.risk_grade"),
+                GraphSourceBinding("domestic_etf", "canonical_products.risk_grade"),
+                GraphSourceBinding("public_fund", "canonical_products.risk_grade"),
+            ),
+            ("FundShareClass",),
+        ),
+        GraphRelationMapping(
+            "hasAssetClass", str(FP.hasAssetClass), "HAS_ASSET_CLASS",
+            "FinancialProduct", "AssetClass",
+            (
+                GraphSourceBinding("domestic_etf", "canonical_products.asset_type"),
+                GraphSourceBinding("foreign_etf", "canonical_products.asset_type"),
+                GraphSourceBinding("public_fund", "canonical_products.asset_type"),
+            ),
+            ("FundShareClass",),
+        ),
+        GraphRelationMapping(
+            "hasExposureRegion", str(FP.hasExposureRegion),
+            "HAS_EXPOSURE_REGION", "FinancialProduct", "ExposureRegion",
+            (
+                GraphSourceBinding("domestic_etf", "canonical_products.region"),
+                GraphSourceBinding("foreign_etf", "canonical_products.region"),
+                GraphSourceBinding("public_fund", "canonical_products.region"),
+            ),
+            ("FundShareClass",),
+        ),
+        GraphRelationMapping(
+            "hasMarketScope", str(FP.hasMarketScope),
+            "HAS_MARKET_SCOPE", "FundShareClass", "MarketScope",
+            (
+                GraphSourceBinding(
+                    "public_fund", "source_public_funds.payload.ovrs_fd_desc"
+                ),
+            ),
+        ),
+        GraphRelationMapping(
+            "tradedInCurrency", str(FP.tradedInCurrency),
+            "TRADED_IN_CURRENCY", "ExchangeTradedProduct", "Currency",
+            (
+                GraphSourceBinding("domestic_etf", "canonical_products.currency"),
+                GraphSourceBinding("foreign_etf", "canonical_products.currency"),
+            ),
+        ),
+        GraphRelationMapping(
+            "hasOfferingType", str(FP.hasOfferingType),
+            "HAS_OFFERING_TYPE", "FundShareClass", "OfferingType",
+            (GraphSourceBinding("public_fund", "fund_classes.public_private"),),
+            ("Bond",),
+        ),
+        GraphRelationMapping(
+            "hasSaleLot", str(FP.hasSaleLot), "HAS_SALE_LOT",
+            "Bond", "SaleLot",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.source_record_key"),),
+        ),
+        GraphRelationMapping(
+            "hasBondType", str(FP.hasBondType), "HAS_BOND_TYPE",
+            "Bond", "BondType",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.payload.bd_knd"),),
+        ),
+        GraphRelationMapping(
+            "hasInterestRateType", str(FP.hasInterestRateType),
+            "HAS_INTEREST_RATE_TYPE", "Bond", "InterestRateType",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.payload.bd_inrt_tcd"),),
+        ),
+        GraphRelationMapping(
+            "hasInterestPaymentType", str(FP.hasInterestPaymentType),
+            "HAS_INTEREST_PAYMENT_TYPE", "Bond", "InterestPaymentType",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.payload.bd_intp_tcd"),),
+        ),
+        GraphRelationMapping(
+            "hasCreditRating", str(FP.hasCreditRating),
+            "HAS_CREDIT_RATING", "Bond", "CreditRating",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.payload.crd_grd"),),
+        ),
+        GraphRelationMapping(
+            "hasTradingType", str(FP.hasTradingType), "HAS_TRADING_TYPE",
+            "SaleLot", "TradingType",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.payload.pd_exg_mkt"),),
+        ),
+        GraphRelationMapping(
+            "availableThroughTradingChannel",
+            str(FP.availableThroughTradingChannel),
+            "AVAILABLE_THROUGH_TRADING_CHANNEL",
+            "SaleLot", "TradingChannel",
+            (GraphSourceBinding("domestic_bond", "source_domestic_bonds.payload.bdbns_abl_chnl_nm"),),
+        ),
+    )
+
+
 def _v7_mappings() -> tuple[GraphRelationMapping, ...]:
     return (
         GraphRelationMapping(
@@ -213,15 +401,47 @@ def _v7_mappings() -> tuple[GraphRelationMapping, ...]:
         GraphRelationMapping(
             "hasShareClass", str(FP.hasShareClass), "HAS_SHARE_CLASS",
             "Fund", "FundShareClass",
-            (
-                GraphSourceBinding("public_fund", "fund_classes.fund_id"),
-            ),
+            (GraphSourceBinding("public_fund", "fund_classes.fund_id"),),
         ),
         GraphRelationMapping(
             "hasSaleLot", str(FP.hasSaleLot), "HAS_SALE_LOT",
-            "Bond", "SaleLot",
-            (),
+            "Bond", "SaleLot", (),
         ),
+    )
+
+
+def _canonical_v2_mappings() -> tuple[GraphRelationMapping, ...]:
+    """The sole Cypher allow-list for canonical_v2 relation facts."""
+    items = (
+        ("hasShareClass", "HAS_SHARE_CLASS"),
+        ("hasSaleLot", "HAS_SALE_LOT"),
+        ("managedBy", "MANAGED_BY"),
+        ("issuedBy", "ISSUED_BY"),
+        ("hasTrustee", "HAS_TRUSTEE"),
+        ("hasUnderlyingIndex", "HAS_UNDERLYING_INDEX"),
+        ("tracksIndex", "TRACKS_INDEX"),
+        ("hasBenchmark", "HAS_BENCHMARK"),
+        ("denominatedIn", "DENOMINATED_IN"),
+        ("tradedInCurrency", "TRADED_IN_CURRENCY"),
+        ("listedInCountry", "LISTED_IN_COUNTRY"),
+        ("hasInstrumentCountry", "HAS_INSTRUMENT_COUNTRY"),
+        ("hasAssetClass", "HAS_ASSET_CLASS"),
+        ("hasExposureRegion", "HAS_EXPOSURE_REGION"),
+        ("hasMarketScope", "HAS_MARKET_SCOPE"),
+        ("hasRiskGrade", "HAS_RISK_GRADE"),
+        ("hasBondType", "HAS_BOND_TYPE"),
+        ("hasOfferingType", "HAS_OFFERING_TYPE"),
+    )
+    return tuple(
+        GraphRelationMapping(
+            canonical_relation=name,
+            ontology_uri=str(getattr(FP, name)),
+            edge_type=edge,
+            subject_type="SemanticEntity",
+            object_type="SemanticEntity",
+            source_bindings=(),
+        )
+        for name, edge in items
     )
 
 
@@ -246,5 +466,17 @@ GRAPH_NODE_LABELS = frozenset(
         "AssetType",
         "RiskGrade",
         "Currency",
+        "Organization",
+        "AssetClass",
+        "ExposureRegion",
+        "MarketScope",
+        "OfferingType",
+        "BondType",
+        "InterestRateType",
+        "InterestPaymentType",
+        "CreditRating",
+        "TradingType",
+        "TradingChannel",
+        "M108DNode",
     }
 )

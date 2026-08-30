@@ -1,0 +1,55 @@
+{
+  "schema_version": "m10.9-local-acceptance-v1",
+  "decision": "NOT_READY_FOR_M11_FINAL_SUBMISSION_FREEZE",
+  "runtime_bundle": {
+    "generation": "260824",
+    "snapshot": "2026-08-24",
+    "ontology": "merged-optical-1.3",
+    "canonical_schema": "m10.8-b-canonical-v2",
+    "transformer": "m10.8-b2-relations-v2",
+    "graph_projection": "m10.8-d-canonical-v2-graph-1",
+    "semantic_projection": "m10.8-d-canonical-v2-semantic-1"
+  },
+  "local_rehearsal": {
+    "requests": 39,
+    "failures": 0,
+    "semantic_safety_cases": 12,
+    "semantic_safety_failures": 0,
+    "us_equity_etf_total_matches": 1749,
+    "us_equity_etf_returned_count": 10
+  },
+  "docker_compose_acceptance": {
+    "compose_version": "2.39.2-desktop.1",
+    "python_image": "3.12.11-slim-bookworm",
+    "clean_config_render": "PASS",
+    "clean_image_build": "PASS",
+    "postgres_healthcheck": "PASS",
+    "neo4j_healthcheck": "PASS",
+    "empty_store_fail_closed": "PASS",
+    "v2_health": "PASS",
+    "v2_answer": "PASS",
+    "api_restart_recovery": "PASS",
+    "v2_v1_v2_recreate_only_rollback": "PASS",
+    "down_up_persistence": "PASS",
+    "image_secret_scan": "PASS",
+    "public_external_endpoint": "BLOCKED_NO_DEPLOYMENT_TARGET"
+  },
+  "performance_ms": {
+    "structured": {"n": 12, "p50": 299.450, "p95": 827.963, "max": 827.963},
+    "graph": {"n": 6, "p50": 454.003, "p95": 1613.487, "max": 1613.487},
+    "vector": {"n": 3, "p50": 281.138, "p95": 299.816, "max": 299.816},
+    "bm25": {"n": 20, "p50": 71.266, "p95": 74.836, "max": 81.961},
+    "hybrid": {"n": 3, "p50": 1156.286, "p95": 2634.527, "max": 2634.527},
+    "unanswerable": {"n": 15, "p50": 1.497, "p95": 134.009, "max": 134.009}
+  },
+  "tests": {
+    "broad_non_destructive": {"passed": 330, "failed": 0, "errors": 0, "skipped": 95},
+    "postgresql_migrations": {"passed": 15},
+    "v2_bundle": {"passed": 43},
+    "m10_9_operations": {"passed": 11}
+  },
+  "external_blockers": [
+    "No Naver Cloud host, DNS name, or SSH target was supplied, so public deployment and outside-network validation were not executed.",
+    "The configured HyperCLOVA credential returned HTTP 401 for both parser and answer-generation live calls."
+  ]
+}

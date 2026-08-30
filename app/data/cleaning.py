@@ -4,10 +4,6 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.domain.models import ConceptCategory
-from app.ontology.registry import StaticSemanticRegistry
-
-
 DATE_SENTINELS = {"0", "99991231"}
 INDEX_SENTINELS = {
     "Index is not provided by Management Company",
@@ -86,21 +82,49 @@ def normalized_base_index(value: Any) -> tuple[str | None, str | None]:
 def canonical_asset_type(value: Any) -> str | None:
     if value is None:
         return None
-    concept = StaticSemanticRegistry().resolve_concept(
-        str(value),
-        ConceptCategory.ASSET_TYPE,
-    )
-    return concept.value if concept is not None else None
+    from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
+
+    mapping = TeamOntologyRuntimeMapping().concept(str(value), "asset_class")
+    semantic = mapping.semantic_value() if mapping is not None else None
+    return semantic.runtime_key if semantic is not None else None
 
 
 def canonical_region(value: Any) -> str | None:
     if value is None:
         return None
-    concept = StaticSemanticRegistry().resolve_concept(
-        str(value),
-        ConceptCategory.REGION,
-    )
-    return concept.value if concept is not None else None
+    # Authoritative ingestion follows the activated Team vocabulary. This is
+    # intentionally separate from the legacy StaticSemanticRegistry so that
+    # e.g. "Global Ex US" cannot silently collapse to unrestricted Global.
+    from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
+
+    mapping = TeamOntologyRuntimeMapping().concept(str(value), "exposure_region")
+    semantic = mapping.semantic_value() if mapping is not None else None
+    return semantic.runtime_key if semantic is not None else None
+
+
+def canonical_risk_grade(value: Any) -> str | None:
+    """Normalize the six reviewed grades; sentinels remain unresolved."""
+    if value is None:
+        return None
+    normalized = normalize_lookup_value(str(value))
+    for grade, label in _RISK_GRADE_LABELS.items():
+        if normalized in {
+            str(grade),
+            f"{grade}등급",
+            normalize_lookup_value(label),
+        }:
+            return f"RiskGrade.{grade}"
+    return None
+
+
+_RISK_GRADE_LABELS = {
+    1: "매우높은위험(1등급)",
+    2: "높은위험(2등급)",
+    3: "다소높은위험(3등급)",
+    4: "보통위험(4등급)",
+    5: "낮은위험(5등급)",
+    6: "매우낮은위험(6등급)",
+}
 
 
 def normalize_lookup_value(value: str) -> str:

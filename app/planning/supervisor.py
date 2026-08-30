@@ -24,6 +24,7 @@ class DeterministicSupervisorPlanner:
 
     async def create_plan(self, query: GroundedQuery) -> QueryPlan:
         steps: list[QueryStep] = []
+        semantic_step_id: str | None = None
         structured_inputs = structured_query_inputs(query)
         constraint_ids = _constraint_ids(query)
 
@@ -78,6 +79,7 @@ class DeterministicSupervisorPlanner:
                             ConstraintSemanticType.FILTER,
                             ConstraintSemanticType.SORT,
                             ConstraintSemanticType.REQUESTED_FIELD,
+                            ConstraintSemanticType.ENTITY,
                         },
                     ),
                 )
@@ -103,12 +105,14 @@ class DeterministicSupervisorPlanner:
             if needs_rdb and restrict_semantic_candidates:
                 dependencies = ["rdb-candidates"]
                 semantic_inputs["candidate_ids_from"] = dependencies
+            semantic_step_id = (
+                "bm25-strategy"
+                if source is RetrievalSource.BM25
+                else "vector-semantic"
+            )
             steps.append(
                 QueryStep(
-                    step_id=(
-                        "bm25-strategy" if source is RetrievalSource.BM25
-                        else "vector-semantic"
-                    ),
+                    step_id=semantic_step_id,
                     source=source,
                     operation=QueryOperation.SEMANTIC_SEARCH,
                     inputs=semantic_inputs,
@@ -142,7 +146,13 @@ class DeterministicSupervisorPlanner:
                 )
             )
         ]
-        graph_dependencies = ["rdb-candidates"] if needs_rdb else []
+        graph_dependencies = (
+            [semantic_step_id]
+            if semantic_step_id is not None
+            else ["rdb-candidates"]
+            if needs_rdb
+            else []
+        )
         has_target_anchor = any(
             any(value is not None for value in path["target_values"])
             for path in graph_paths

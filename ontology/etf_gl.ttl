@@ -1,0 +1,45 @@
+@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fp:ForeignETF a owl:Class ;
+    rdfs:subClassOf fp:ETF ;
+    skos:prefLabel "해외 ETF"@ko ;
+    skos:prefLabel "Foreign ETF"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "foreign_etf" .
+
+fp:ForeignETN a owl:Class ;
+    rdfs:subClassOf fp:ETN ;
+    skos:prefLabel "해외 ETN"@ko ;
+    skos:prefLabel "Foreign ETN"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "foreign_etf" .
+
+fp:hasInvestmentStrategy a owl:ObjectProperty ;
+    rdfs:domain fp:ForeignETF ;
+    rdfs:range fp:InvestmentStrategy ;
+    skos:prefLabel "투자전략"@ko ;
+    fp:conceptCategory "relation" .
+
+fp:hasReplicationMethod a owl:ObjectProperty ;
+    rdfs:domain fp:ForeignETF ;
+    rdfs:range fp:ReplicationMethod ;
+    skos:prefLabel "복제방식"@ko ;
+    fp:conceptCategory "relation" .
+
+fp:strategyDescription a owl:DatatypeProperty ;
+    rdfs:domain fp:ForeignETF ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "전략 설명"@ko ;
+    skos:prefLabel "strategy description"@en ;
+    fp:conceptCategory "field" .
+
+fp:replicationMethodDescription a owl:DatatypeProperty ;
+    rdfs:domain fp:ForeignETF ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "복제방식 설명"@ko ;
+    skos:prefLabel "replication method description"@en ;
+    fp:conceptCategory "field" .

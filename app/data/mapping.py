@@ -7,6 +7,7 @@ from app.data.cleaning import (
     as_float,
     canonical_asset_type,
     canonical_region,
+    canonical_risk_grade,
     normalize_lookup_value,
     normalized_base_index,
     normalized_date,
@@ -150,8 +151,11 @@ def _map_bond(
                 isin=isin,
                 issuer=row.get("pd_pbcm"),
                 asset_type=CanonicalConcept.ASSET_TYPE_BOND.value,
-                region=canonical_region(row.get("pd_ctry_cd")),
-                risk_grade=row.get("pd_risk_nm"),
+                # Identifier country is not investment exposure.
+                region=None,
+                risk_grade=canonical_risk_grade(
+                    row.get("pd_risk_nm") or row.get("pd_risk_gcd")
+                ),
                 currency=row.get("curr_cd"),
                 price=row.get("eval_price"),
                 observed_at=observed_at,
@@ -182,6 +186,12 @@ def _map_domestic_etf(
     if product_type is None:
         return None, "UNSUPPORTED_PRODUCT_GROUP"
     base_index, base_quality = normalized_base_index(row.get("cu_base_index"))
+    if base_index is None:
+        ref_index, ref_quality = normalized_base_index(
+            row.get("ref_base_index")
+        )
+        if ref_index is not None:
+            base_index, base_quality = ref_index, ref_quality
     _, listing_end_quality = normalized_date(row.get("pd_lste_dt"))
     observed_at, _ = normalized_date(row.get("du_upt_dt"))
     isin = row.get("pd_itm_no")
@@ -208,7 +218,9 @@ def _map_domestic_etf(
                 issuer=row.get("cu_fund_mgmt_co"),
                 asset_type=canonical_asset_type(row.get("wu_inv_ast_type")),
                 region=canonical_region(row.get("wu_inv_rgn")),
-                risk_grade=row.get("pd_risk_nm"),
+                risk_grade=canonical_risk_grade(
+                    row.get("pd_risk_nm") or row.get("pd_risk_gcd")
+                ),
                 currency=row.get("pd_curr_cd"),
                 aum=row.get("du_last_aum"),
                 nav=row.get("du_last_nav"),
@@ -313,6 +325,56 @@ def _map_public_fund(
         _identifier("ma_id", row.get("mtco_itm_no"), "public_fund"),
         _identifier("fss_id", row.get("fss_itm_no"), "public_fund"),
     ]
+    representative_id = _usable_representative_fund_id(
+        row.get("rptt_ksd_itm_no")
+    )
+    legacy_class_code = _usable_identifier(row.get("prfd_attr_cd"))
+    has_explicit_class_evidence = any(
+        row.get(field) not in (None, "")
+        for field in (
+            "han_clas_nm",
+            "han_clas_fee_type",
+            "han_clas_sales_channel",
+            "han_clas_policies",
+        )
+    )
+    # The new release supplies a representative KSD identifier for safely
+    # parentable share classes.  Rows without that identifier and without any
+    # class evidence remain compatibility product rows only; inventing a Fund
+    # parent would violate the Team Ontology's parent-uniqueness shape.
+    parent_key = representative_id
+    if parent_key is None and legacy_class_code is not None:
+        parent_key = source_fund_id
+    parentable = parent_key is not None and (
+        representative_id is not None
+        or legacy_class_code is not None
+        or has_explicit_class_evidence
+    )
+    fund_id = f"fund_family:{parent_key}" if parentable else None
+    fund = (
+        {
+            "fund_id": fund_id,
+            "dataset_snapshot": snapshot,
+            "source_fund_id": parent_key,
+            "fund_name": row.get("itm_nm"),
+            "representative_ksd_id": representative_id,
+        }
+        if fund_id is not None
+        else None
+    )
+    fund_class = (
+        {
+            "canonical_product_id": canonical_id,
+            "dataset_snapshot": snapshot,
+            "fund_id": fund_id,
+            "class_code": legacy_class_code or source_fund_id,
+            "raw_asset_category": row.get("or_attr_desc"),
+            "public_private": row.get("prvo_pbff_desc"),
+        }
+        if fund_id is not None
+        else None
+    )
+    manager_code = row.get("or_co_xtn_itt_cd")
     return (
         MappedProduct(
             canonical=_common(
@@ -322,17 +384,24 @@ def _map_public_fund(
                 product_name=row.get("itm_nm"),
                 short_name=row.get("itm_abrv_nm"),
                 isin=isin,
-                issuer=row.get("or_co_xtn_itt_cd"),
+                asset_manager=manager_code,
+                # Temporary physical compatibility for the legacy graph path.
+                # Team Ontology mode reads asset_manager and never interprets
+                # this value as issuedBy.
+                issuer=manager_code,
                 asset_type=canonical_asset_type(row.get("or_attr_desc")),
                 region=canonical_region(row.get("fd_ivst_rgn_desc")),
-                risk_grade=row.get("zrin_fd_ivst_risk_gcd"),
+                risk_grade=canonical_risk_grade(
+                    row.get("zrin_fd_ivst_risk_gcd")
+                    or row.get("zrin_fd_ivst_risk_gcd_desc")
+                ),
                 currency=row.get("curr_cd"),
                 aum=row.get("fd_nast_suma"),
                 base_index=row.get("bmrk_nm"),
             ),
             identifiers=identifiers,
-            fund=None,
-            fund_class=None,
+            fund=fund,
+            fund_class=fund_class,
         ),
         None,
     )
@@ -353,6 +422,28 @@ def _canonical_currency(value: Any) -> str | None:
     if normalized.startswith("CURR_CD_"):
         normalized = normalized.removeprefix("CURR_CD_")
     return normalized or None
+
+
+def _usable_identifier(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized or len(normalized) < 4:
+        return None
+    if set(normalized) <= {"0"}:
+        return None
+    return normalized
+
+
+def _usable_representative_fund_id(value: Any) -> str | None:
+    normalized = _usable_identifier(value)
+    if normalized is None or not re.fullmatch(
+        r"[A-Za-z0-9]{12}", normalized
+    ):
+        return None
+    if normalized.upper() == "KR0000000000":
+        return None
+    return normalized
 
 
 def _identifier(

@@ -6,7 +6,14 @@ from typing import Any
 
 from sqlalchemy import Engine, func, select
 
-from app.data.schema import canonical_products, fund_classes, funds
+from app.data.schema import (
+    canonical_products,
+    fund_classes,
+    funds,
+    product_relations,
+    source_domestic_bonds,
+    source_public_funds,
+)
 from app.domain.models import CanonicalConcept
 from app.graph.identity import (
     canonical_concept_id,
@@ -15,6 +22,7 @@ from app.graph.identity import (
     source_scoped_name_id,
 )
 from app.graph.models import GraphBuildData, GraphBuildStats, GraphEdge, GraphNode
+from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
 
 
 _PRODUCT_LABELS = {
@@ -34,14 +42,20 @@ class CanonicalGraphExtractor:
         snapshot: str,
         version: str = "legacy",
     ) -> None:
-        if version not in {"legacy", "v7"}:
-            raise ValueError("graph extractor version must be 'legacy' or 'v7'")
+        normalized = "team-v1" if version == "team_v1" else version
+        if normalized not in {"legacy", "v7", "team-v1"}:
+            raise ValueError(
+                "graph extractor version must be 'legacy', 'v7', or 'team-v1'"
+            )
         self._engine = engine
         self._snapshot = snapshot
-        self._version = version
+        self._version = normalized
         self._nodes: dict[str, GraphNode] = {}
         self._edges: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._stats = GraphBuildStats()
+        self._semantic_mapping = (
+            TeamOntologyRuntimeMapping() if normalized == "team-v1" else None
+        )
 
     def extract(self) -> GraphBuildData:
         with self._engine.connect() as connection:
@@ -66,6 +80,55 @@ class CanonicalGraphExtractor:
             for row in products:
                 self._extract_product(row)
 
+            if self._version == "team-v1":
+                bond_source_rows = connection.execute(
+                    select(
+                        source_domestic_bonds.c.canonical_product_id,
+                        source_domestic_bonds.c.source_record_key,
+                        source_domestic_bonds.c.payload,
+                    ).where(
+                        source_domestic_bonds.c.dataset_snapshot
+                        == self._snapshot
+                    )
+                ).mappings()
+                for source_row in bond_source_rows:
+                    self._extract_team_bond_source_record(source_row)
+
+                verified_tracking = connection.execute(
+                    select(
+                        product_relations.c.canonical_product_id,
+                        product_relations.c.target_label,
+                        product_relations.c.source_record_id,
+                        product_relations.c.source_column,
+                        canonical_products.c.source_dataset,
+                    )
+                    .join(
+                        canonical_products,
+                        (
+                            canonical_products.c.canonical_product_id
+                            == product_relations.c.canonical_product_id
+                        )
+                        & (
+                            canonical_products.c.dataset_snapshot
+                            == product_relations.c.dataset_snapshot
+                        ),
+                    )
+                    .where(
+                        product_relations.c.dataset_snapshot == self._snapshot,
+                        product_relations.c.relation_type == "tracksIndex",
+                    )
+                ).mappings()
+                for relation in verified_tracking:
+                    self._name_relation(
+                        str(relation["canonical_product_id"]),
+                        "TRACKS_INDEX",
+                        "Index",
+                        relation["target_label"],
+                        str(relation["source_dataset"]),
+                        str(relation["source_record_id"]),
+                        f"product_relations.{relation['source_column']}",
+                    )
+
             fund_rows = connection.execute(
                 select(
                     fund_classes.c.fund_id,
@@ -74,8 +137,15 @@ class CanonicalGraphExtractor:
                     funds.c.fund_name,
                     funds.c.source_fund_id,
                     canonical_products.c.issuer,
+                    canonical_products.c.asset_manager,
                     canonical_products.c.base_index,
+                    canonical_products.c.region,
+                    canonical_products.c.asset_type,
+                    canonical_products.c.risk_grade,
+                    canonical_products.c.currency,
                     canonical_products.c.source_record_key,
+                    fund_classes.c.public_private,
+                    source_public_funds.c.payload.label("source_payload"),
                 )
                 .join(
                     funds,
@@ -93,6 +163,17 @@ class CanonicalGraphExtractor:
                     )
                     & (
                         canonical_products.c.dataset_snapshot
+                        == fund_classes.c.dataset_snapshot
+                    ),
+                )
+                .join(
+                    source_public_funds,
+                    (
+                        source_public_funds.c.canonical_product_id
+                        == fund_classes.c.canonical_product_id
+                    )
+                    & (
+                        source_public_funds.c.dataset_snapshot
                         == fund_classes.c.dataset_snapshot
                     ),
                 )
@@ -163,6 +244,129 @@ class CanonicalGraphExtractor:
                     source_key,
                     "canonical_products.base_index",
                 )
+            return
+
+        if self._version == "team-v1":
+            if label == "ETF":
+                self._name_relation(
+                    product_id,
+                    "MANAGED_BY",
+                    "AssetManagementCompany",
+                    row["asset_manager"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.asset_manager",
+                )
+                self._name_relation(
+                    product_id,
+                    "HAS_UNDERLYING_INDEX",
+                    "Index",
+                    row["base_index"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.base_index",
+                )
+            elif label == "ETN":
+                self._name_relation(
+                    product_id,
+                    "HAS_UNDERLYING_INDEX",
+                    "Index",
+                    row["base_index"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.base_index",
+                )
+            if label in {"ETF", "ETN"}:
+                self._concept_relation(
+                    product_id,
+                    "HAS_ASSET_CLASS",
+                    "AssetClass",
+                    row["asset_type"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.asset_type",
+                )
+                self._concept_relation(
+                    product_id,
+                    "HAS_EXPOSURE_REGION",
+                    "ExposureRegion",
+                    row["region"],
+                    source_dataset,
+                    source_key,
+                    "canonical_products.region",
+                )
+                risk = _clean(row["risk_grade"])
+                if risk == "0":
+                    self._skip("HAS_RISK_GRADE", sentinel=True)
+                else:
+                    self._concept_relation(
+                        product_id,
+                        "HAS_RISK_GRADE",
+                        "RiskGrade",
+                        risk,
+                        source_dataset,
+                        source_key,
+                        "canonical_products.risk_grade",
+                    )
+                self._concept_relation(
+                    product_id,
+                    "TRADED_IN_CURRENCY",
+                    "Currency",
+                    _valid_currency(row["currency"]),
+                    source_dataset,
+                    source_key,
+                    "canonical_products.currency",
+                )
+                return
+            self._name_relation(
+                product_id,
+                "ISSUED_BY",
+                "Organization",
+                row["issuer"],
+                source_dataset,
+                source_key,
+                "canonical_products.issuer",
+            )
+            risk = _clean(row["risk_grade"])
+            if risk == "0":
+                self._skip("HAS_RISK_GRADE", sentinel=True)
+            else:
+                self._concept_relation(
+                    product_id,
+                    "HAS_RISK_GRADE",
+                    "RiskGrade",
+                    risk,
+                    source_dataset,
+                    source_key,
+                    "canonical_products.risk_grade",
+                )
+            self._concept_relation(
+                product_id,
+                "DENOMINATED_IN",
+                "Currency",
+                _valid_currency(row["currency"]),
+                source_dataset,
+                source_key,
+                "canonical_products.currency",
+            )
+            self._concept_relation(
+                product_id,
+                "HAS_ASSET_CLASS",
+                "AssetClass",
+                row["asset_type"],
+                source_dataset,
+                source_key,
+                "canonical_products.asset_type",
+            )
+            self._concept_relation(
+                product_id,
+                "HAS_EXPOSURE_REGION",
+                "ExposureRegion",
+                row["region"],
+                source_dataset,
+                source_key,
+                "canonical_products.region",
+            )
             return
 
         if label in {"ETF", "ETN"}:
@@ -271,6 +475,37 @@ class CanonicalGraphExtractor:
                 "FundShareClass",
                 ("M10Entity", "FundShareClass"),
                 {
+                    "display_name": f"{row['fund_name']} ({row['class_code']})",
+                    "class_code": row["class_code"],
+                    "source_dataset": "public_fund",
+                    "source_record_key": source_key,
+                },
+            )
+            self._add_edge(
+                fund_id,
+                "HAS_SHARE_CLASS",
+                class_id,
+                "public_fund",
+                source_key,
+                "fund_classes.fund_id",
+            )
+            return
+        if self._version == "team-v1":
+            self._add_node(
+                fund_id,
+                "Fund",
+                ("M10Entity", "FinancialProduct", "Fund"),
+                {
+                    "display_name": row["fund_name"],
+                    "source_dataset": "public_fund",
+                    "source_record_key": row["source_fund_id"],
+                },
+            )
+            self._add_node(
+                class_id,
+                "FundShareClass",
+                ("M10Entity", "FundShareClass"),
+                {
                     "display_name": (
                         f"{row['fund_name']} ({row['class_code']})"
                     ),
@@ -287,6 +522,131 @@ class CanonicalGraphExtractor:
                 source_key,
                 "fund_classes.fund_id",
             )
+            manager_code = _clean(
+                row.get("asset_manager", row.get("issuer"))
+            )
+            if manager_code is not None:
+                manager_id = explicit_source_id(
+                    "asset_manager", "public_fund", manager_code
+                )
+                self._add_node(
+                    manager_id,
+                    "AssetManagementCompany",
+                    ("M10Entity", "Organization", "AssetManagementCompany"),
+                    {
+                        "display_name": manager_code,
+                        "source_dataset": "public_fund",
+                        "identifier_type": "external_institution_code",
+                        "identifier_value": manager_code,
+                    },
+                )
+                self._add_edge(
+                    fund_id,
+                    "MANAGED_BY",
+                    manager_id,
+                    "public_fund",
+                    source_key,
+                    "canonical_products.asset_manager",
+                )
+
+            offering = _clean(row.get("public_private"))
+            offering_resource = {
+                "공모": "PUBLIC",
+                "사모": "PRIVATE",
+            }.get(offering or "")
+            if offering_resource is None:
+                self._skip("HAS_OFFERING_TYPE")
+            else:
+                offering_id = canonical_concept_id(
+                    "OfferingType", offering_resource
+                )
+                self._add_node(
+                    offering_id,
+                    "OfferingType",
+                    ("M10Entity", "OfferingType"),
+                    {
+                        "display_name": offering,
+                        "canonical_value": offering_resource,
+                        "ontology_uri": (
+                            "https://miraeasset.com/ontology/"
+                            f"financial-product#{offering_resource}"
+                        ),
+                        "identity_basis": "ontology_controlled_individual",
+                    },
+                )
+                self._add_edge(
+                    class_id,
+                    "HAS_OFFERING_TYPE",
+                    offering_id,
+                    "public_fund",
+                    source_key,
+                    "fund_classes.public_private",
+                )
+
+            market_scope = {
+                "국내": "MarketScope.Domestic",
+                "해외": "MarketScope.Overseas",
+                "국내외혼합": "MarketScope.Mixed",
+            }.get(
+                str((row.get("source_payload") or {}).get("ovrs_fd_desc") or "").strip()
+            )
+            self._concept_relation(
+                class_id,
+                "HAS_MARKET_SCOPE",
+                "MarketScope",
+                market_scope,
+                "public_fund",
+                source_key,
+                "source_public_funds.payload.ovrs_fd_desc",
+            )
+
+            benchmark = _clean(row["base_index"])
+            if benchmark is not None and _is_atomic_index(benchmark):
+                benchmark_id = source_scoped_name_id(
+                    "index", "public_fund", benchmark
+                )
+                self._add_node(
+                    benchmark_id,
+                    "Index",
+                    ("M10Entity", "Index"),
+                    {
+                        "display_name": benchmark,
+                        "source_dataset": "public_fund",
+                        "identity_basis": "source_scoped_exact_normalized_label",
+                    },
+                )
+                self._add_edge(
+                    fund_id,
+                    "HAS_BENCHMARK",
+                    benchmark_id,
+                    "public_fund",
+                    source_key,
+                    "canonical_products.base_index",
+                )
+            elif benchmark is not None:
+                self._skip("HAS_BENCHMARK")
+
+            for edge_type, node_type, value, source_field in (
+                ("HAS_ASSET_CLASS", "AssetClass", row.get("asset_type"),
+                 "canonical_products.asset_type"),
+                ("HAS_EXPOSURE_REGION", "ExposureRegion", row.get("region"),
+                 "canonical_products.region"),
+                ("HAS_RISK_GRADE", "RiskGrade", row.get("risk_grade"),
+                 "canonical_products.risk_grade"),
+            ):
+                cleaned = _clean(value)
+                if edge_type == "HAS_RISK_GRADE" and cleaned == "0":
+                    self._skip(edge_type, sentinel=True)
+                    continue
+                self._concept_relation(
+                    class_id,
+                    edge_type,
+                    node_type,
+                    cleaned,
+                    "public_fund",
+                    source_key,
+                    source_field,
+                )
             return
 
         self._add_node(
@@ -374,6 +734,81 @@ class CanonicalGraphExtractor:
                 "canonical_products.base_index",
             )
 
+    def _extract_team_bond_source_record(
+        self, row: Mapping[str, Any]
+    ) -> None:
+        bond_id = str(row["canonical_product_id"])
+        source_key = str(row["source_record_key"])
+        payload = row["payload"] or {}
+        lot_id = explicit_source_id("sale_lot", "domestic_bond", source_key)
+        self._add_node(
+            lot_id,
+            "SaleLot",
+            ("M10Entity", "SaleLot"),
+            {
+                "display_name": source_key,
+                "source_dataset": "domestic_bond",
+                "source_record_key": source_key,
+                "lot_sequence": payload.get("info_seq"),
+                "identity_basis": "source_record_key",
+            },
+        )
+        self._add_edge(
+            bond_id,
+            "HAS_SALE_LOT",
+            lot_id,
+            "domestic_bond",
+            source_key,
+            "source_domestic_bonds.source_record_key",
+        )
+        for edge_type, node_type, value, source_field, subject_id in (
+            ("HAS_BOND_TYPE", "BondType", payload.get("bd_knd"), "payload.bd_knd", bond_id),
+            ("HAS_INTEREST_RATE_TYPE", "InterestRateType", payload.get("bd_inrt_tcd"), "payload.bd_inrt_tcd", bond_id),
+            ("HAS_INTEREST_PAYMENT_TYPE", "InterestPaymentType", payload.get("bd_intp_tcd"), "payload.bd_intp_tcd", bond_id),
+            ("HAS_CREDIT_RATING", "CreditRating", payload.get("crd_grd"), "payload.crd_grd", bond_id),
+            ("HAS_TRADING_TYPE", "TradingType", payload.get("pd_exg_mkt"), "payload.pd_exg_mkt", lot_id),
+            ("AVAILABLE_THROUGH_TRADING_CHANNEL", "TradingChannel", payload.get("bdbns_abl_chnl_nm"), "payload.bdbns_abl_chnl_nm", lot_id),
+        ):
+            self._concept_relation(
+                subject_id,
+                edge_type,
+                node_type,
+                value,
+                "domestic_bond",
+                source_key,
+                f"source_domestic_bonds.{source_field}",
+            )
+        offering_resource = {
+            "공모": "PUBLIC",
+            "사모": "PRIVATE",
+        }.get(str(payload.get("bd_ofr_tcd") or "").strip())
+        if offering_resource is not None:
+            offering_id = canonical_concept_id(
+                "OfferingType", offering_resource
+            )
+            self._add_node(
+                offering_id,
+                "OfferingType",
+                ("M10Entity", "OfferingType"),
+                {
+                    "display_name": payload.get("bd_ofr_tcd"),
+                    "canonical_value": offering_resource,
+                    "ontology_uri": (
+                        "https://miraeasset.com/ontology/"
+                        f"financial-product#{offering_resource}"
+                    ),
+                    "identity_basis": "ontology_controlled_individual",
+                },
+            )
+            self._add_edge(
+                bond_id,
+                "HAS_OFFERING_TYPE",
+                offering_id,
+                "domestic_bond",
+                source_key,
+                "source_domestic_bonds.payload.bd_ofr_tcd",
+            )
+
     def _name_relation(
         self,
         subject_id: str,
@@ -388,7 +823,15 @@ class CanonicalGraphExtractor:
         if label is None:
             self._skip(edge_type)
             return
-        object_id = source_scoped_name_id(node_type, source_dataset, label)
+        identity_type = (
+            "asset_manager"
+            if self._version == "team-v1"
+            and node_type == "AssetManagementCompany"
+            else node_type
+        )
+        object_id = source_scoped_name_id(
+            identity_type, source_dataset, label
+        )
         self._add_node(
             object_id,
             node_type,
@@ -422,6 +865,26 @@ class CanonicalGraphExtractor:
         if canonical is None:
             self._skip(edge_type)
             return
+        ontology_uri = None
+        canonical_name = None
+        if self._semantic_mapping is not None:
+            category = {
+                "AssetClass": "asset_class",
+                "ExposureRegion": "exposure_region",
+                "RiskGrade": "risk_grade",
+                "BondType": "bond_type",
+                "MarketScope": "market_scope",
+            }.get(node_type)
+            mapping = (
+                self._semantic_mapping.concept(canonical, category)
+                if category is not None
+                else None
+            )
+            semantic = mapping.semantic_value() if mapping is not None else None
+            if semantic is not None:
+                canonical = semantic.runtime_key or semantic.canonical_name
+                canonical_name = semantic.canonical_name
+                ontology_uri = semantic.ontology_uri
         object_id = canonical_concept_id(node_type, canonical)
         self._add_node(
             object_id,
@@ -430,6 +893,8 @@ class CanonicalGraphExtractor:
             {
                 "display_name": canonical,
                 "canonical_value": canonical,
+                "canonical_name": canonical_name,
+                "ontology_uri": ontology_uri,
                 "identity_basis": "canonical_concept",
             },
         )
@@ -509,3 +974,36 @@ def _clean(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _valid_currency(value: Any) -> str | None:
+    normalized = _clean(value)
+    if normalized is None:
+        return None
+    normalized = normalized.removeprefix("CURR_CD_").upper()
+    if (
+        normalized == "000"
+        or len(normalized) != 3
+        or not normalized.isalpha()
+    ):
+        return None
+    return normalized
+
+
+def _is_atomic_index(value: str) -> bool:
+    normalized = value.casefold()
+    if any(
+        sentinel in normalized
+        for sentinel in (
+            "not provided",
+            "not available",
+            "해당없음",
+            "없음",
+        )
+    ):
+        return False
+    # Weighted blends are benchmarks, but not one Index instance under the
+    # Team Ontology's current Fund -> hasBenchmark -> Index range.
+    return "+" not in value and not any(
+        weight in normalized for weight in (" 25%", " 50%", " 75%", " 90%")
+    )

@@ -1,0 +1,69 @@
+@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fp:DomesticBond a owl:Class ;
+    rdfs:subClassOf fp:Bond ;
+    skos:prefLabel "국내채권"@ko ;
+    skos:prefLabel "Domestic Bond"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "domestic_bond" .
+
+fp:CorporateBond a owl:Class ;
+    rdfs:subClassOf fp:DomesticBond ;
+    skos:prefLabel "회사채"@ko ;
+    skos:prefLabel "Corporate Bond"@en ;
+    fp:conceptCategory "bond_category" .
+
+fp:SpecialBond a owl:Class ;
+    rdfs:subClassOf fp:DomesticBond ;
+    skos:prefLabel "특수채"@ko ;
+    skos:prefLabel "Special Bond"@en ;
+    fp:conceptCategory "bond_category" .
+
+fp:GovernmentAndPublicBond a owl:Class ;
+    rdfs:subClassOf fp:DomesticBond ;
+    skos:prefLabel "국공채"@ko ;
+    skos:prefLabel "Government and Public Bond"@en ;
+    fp:conceptCategory "bond_category" .
+
+fp:IndividualInvestmentGovernmentBond a owl:Class ;
+    rdfs:subClassOf fp:DomesticBond ;
+    skos:prefLabel "개인투자용국채"@ko ;
+    skos:prefLabel "Individual Investment Government Bond"@en ;
+    fp:conceptCategory "bond_category" .
+
+fp:hasCreditRating a owl:ObjectProperty ;
+    rdfs:domain fp:Bond ;
+    rdfs:range fp:RiskGrade ;
+    rdfs:subPropertyOf fp:hasRiskGrade ;
+    skos:prefLabel "신용등급"@ko ;
+    skos:prefLabel "credit rating"@en ;
+    fp:conceptCategory "relation" .
+
+fp:issueDate a owl:DatatypeProperty ;
+    rdfs:domain fp:Bond ;
+    rdfs:range xsd:date ;
+    skos:prefLabel "발행일"@ko ;
+    fp:conceptCategory "field" .
+
+fp:maturityDate a owl:DatatypeProperty ;
+    rdfs:domain fp:Bond ;
+    rdfs:range xsd:date ;
+    skos:prefLabel "만기일"@ko ;
+    fp:conceptCategory "field" .
+
+fp:yield a owl:DatatypeProperty ;
+    rdfs:domain fp:Bond ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "수익률"@ko ;
+    skos:prefLabel "yield"@en ;
+    fp:conceptCategory "field" .
+
+fp:issueBalance a owl:DatatypeProperty ;
+    rdfs:domain fp:Bond ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "발행잔액"@ko ;
+    fp:conceptCategory "field" .

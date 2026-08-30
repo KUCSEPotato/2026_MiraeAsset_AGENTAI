@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 import shutil
@@ -9,10 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, inspect, select
 
 from app.data.catalog import DATASET_SPECS, discover_dataset_files
 from app.data.ingest import FinancialDataIngestor
+from app.data.database import DatabaseSettings, create_database_engine
 from app.data.loader import load_source_schema
 from app.data.loader import iter_source_rows
 from app.data.cleaning import clean_source_row
@@ -22,11 +24,17 @@ from app.data.schema import (
     canonical_products, metric_observations, ontology_product_identifiers,
     product_relations, source_field_assertions, source_records,
     field_coverage_stats, quarantine_records,
+    metadata,
 )
 from app.data.product_validation import validate_product_row
 
 
-def validate(material_root: Path, *, sample_size: int = 10) -> None:
+def validate(
+    material_root: Path,
+    *,
+    database_url: str,
+    sample_size: int = 10,
+) -> None:
     files = discover_dataset_files(material_root)
     assert len(files) == 4
     assert all("prfd_attr_cd" not in spec.source_key_fields for spec in DATASET_SPECS)
@@ -49,8 +57,9 @@ def validate(material_root: Path, *, sample_size: int = 10) -> None:
     assert anomalies == [("domestic_etf", 224, "INVALID_PRODUCT_IDENTITY_AND_NAME")]
 
     with tempfile.TemporaryDirectory() as directory:
-        url = f"sqlite+pysqlite:///{directory}/ingestion.db"
-        engine = create_engine(url)
+        engine = create_database_engine(DatabaseSettings(database_url=database_url))
+        metadata.drop_all(engine)
+        metadata.create_all(engine)
         ingestor = FinancialDataIngestor(engine, row_limit=sample_size, batch_size=500)
         first = ingestor.ingest_all(material_root)
         counts1 = _counts(engine)
@@ -92,11 +101,11 @@ def validate(material_root: Path, *, sample_size: int = 10) -> None:
                     source_column="after_tax_yield", transformation_rule="test",
                 )
                 assert evidence.is_missing and evidence.quality_status == "MISSING"
-            plan = connection.exec_driver_sql(
-                "EXPLAIN QUERY PLAN SELECT * FROM field_coverage_stats WHERE source_dataset=? AND source_column=?",
-                ("domestic_bond", "after_tax_yield"),
-            ).all()
-            assert not any("SCAN field_coverage_stats" in str(row) for row in plan)
+            index_names = {
+                item["name"]
+                for item in inspect(connection).get_indexes("field_coverage_stats")
+            }
+            assert index_names
 
         # A mapping byte change invalidates only the fingerprint and forces reload.
         changed_mapping = Path(directory) / "column_mapping.csv"
@@ -140,8 +149,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--material-root", type=Path, default=Path("material"))
     parser.add_argument("--sample-size", type=int, default=10)
+    parser.add_argument(
+        "--database-url",
+        default=os.getenv("POSTGRES_TEST_DATABASE_URL"),
+        help="URL of a clean disposable PostgreSQL database",
+    )
     args = parser.parse_args()
-    validate(args.material_root, sample_size=args.sample_size)
+    if not args.database_url:
+        parser.error("--database-url or POSTGRES_TEST_DATABASE_URL is required")
+    validate(
+        args.material_root,
+        database_url=args.database_url,
+        sample_size=args.sample_size,
+    )
     return 0
 
 

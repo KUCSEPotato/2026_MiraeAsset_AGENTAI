@@ -25,7 +25,7 @@ provenance layers: source datasets, source records, source field assertions,
 same-product candidates, strict identifier validation, ISIN format checks, and
 identifier collision detection.
 """@en ;
-    owl:versionInfo "merged-optical-1.0" .
+    owl:versionInfo "merged-optical-1.3" .
 
 #################################################################
 # Annotation properties for grounding
@@ -241,8 +241,13 @@ fin:SameProductCandidate
     rdfs:subClassOf fin:EvidenceBearingEntity ;
     rdfs:label "Same-product candidate"@en, "동일상품 후보"@ko .
 
-fin:QualityStatus a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
-fin:ValidationStatus a owl:Class ; rdfs:subClassOf fin:ClassificationConcept .
+fin:QualityStatus
+    a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept ;
+    owl:disjointWith fin:ValidationStatus .
+fin:ValidationStatus
+    a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
 
 #################################################################
 # Object properties
@@ -389,8 +394,26 @@ fin:hasIncomeDistributionType a owl:ObjectProperty ; rdfs:range fin:IncomeDistri
 
 # Provenance and evidence
 fin:inDataset a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:SourceDataset .
-fin:describesProduct a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:FinancialProduct .
-fin:hasSourceRecord a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:SourceRecord ; owl:inverseOf fin:describesProduct .
+fin:describesEntity
+    a owl:ObjectProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:EvidenceBearingEntity ;
+    rdfs:comment "Exactly one primary semantic entity represented by the physical source row."@en .
+fin:supportsEntity
+    a owl:ObjectProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:EvidenceBearingEntity ;
+    rdfs:comment "Additional semantic entity supported by the same source row; field-level evidence remains separately asserted."@en .
+fin:describesProduct
+    a owl:ObjectProperty ;
+    rdfs:subPropertyOf fin:describesEntity ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:FinancialProduct .
+fin:hasSourceRecord
+    a owl:ObjectProperty ;
+    rdfs:domain fin:EvidenceBearingEntity ;
+    rdfs:range fin:SourceRecord ;
+    owl:inverseOf fin:describesEntity .
 fin:hasFieldAssertion a owl:ObjectProperty ; rdfs:domain fin:SourceRecord ; rdfs:range fin:SourceFieldAssertion .
 fin:supportedByRecord a owl:ObjectProperty ; rdfs:range fin:SourceRecord .
 fin:candidateProduct a owl:ObjectProperty ; rdfs:domain fin:SameProductCandidate ; rdfs:range fin:FinancialProduct .
@@ -402,7 +425,11 @@ fin:candidateProduct a owl:ObjectProperty ; rdfs:domain fin:SameProductCandidate
 fin:identifierValue a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:string .
 fin:identifierNamespace a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:string .
 fin:isPrimaryInSource a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:boolean .
-fin:validationStatus a owl:DatatypeProperty ; rdfs:domain fin:Identifier ; rdfs:range xsd:string .
+fin:validationStatus
+    a owl:DatatypeProperty ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range xsd:string ;
+    rdfs:comment "Lexical code matching the local name of a fin:ValidationStatus individual."@en .
 
 fin:internalProductID a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
 fin:productName a owl:DatatypeProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range xsd:string .
@@ -425,7 +452,10 @@ fin:sourceColumn a owl:DatatypeProperty ; rdfs:range xsd:string .
 fin:sourceRawValue a owl:DatatypeProperty ; rdfs:range xsd:string .
 fin:rawValue a owl:DatatypeProperty ; rdfs:range xsd:string .
 fin:normalizedValue a owl:DatatypeProperty ; rdfs:range xsd:string .
-fin:qualityStatus a owl:DatatypeProperty ; rdfs:range xsd:string .
+fin:qualityStatus
+    a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:comment "Lexical code matching the local name of a fin:QualityStatus individual."@en .
 fin:rawPayloadHash a owl:DatatypeProperty ; rdfs:domain fin:SourceRecord ; rdfs:range xsd:string .
 fin:uncertaintyNote a owl:DatatypeProperty ; rdfs:range xsd:string .
 
@@ -446,8 +476,77 @@ fin:KSD_ID a fin:IdentifierScheme ; skos:prefLabel "KSD ID"@en .
 fin:REPRESENTATIVE_KSD_ID a fin:IdentifierScheme ; skos:prefLabel "Representative KSD ID"@en .
 fin:FSS_ID a fin:IdentifierScheme ; skos:prefLabel "FSS ID"@en .
 
-fin:PUBLIC a fin:OfferingType ; skos:prefLabel "Public"@en, "공모"@ko .
-fin:PRIVATE a fin:OfferingType ; skos:prefLabel "Private"@en, "사모"@ko .
+fin:PUBLIC a fin:OfferingType ; skos:prefLabel "Public"@en, "공모"@ko ; fin:alias "공모"@ko, "Public"@en ; fin:canonicalName "OfferingType.PUBLIC" ; fin:conceptCategory "offering_type" .
+fin:PRIVATE a fin:OfferingType ; skos:prefLabel "Private"@en, "사모"@ko ; fin:alias "사모"@ko, "Private"@en ; fin:canonicalName "OfferingType.PRIVATE" ; fin:conceptCategory "offering_type" .
+
+# Asset classes observed in PREF01N001, PREF02N001, or PRFD01N001.
+fin:ASSET_EQUITY a fin:AssetClass ; skos:prefLabel "Equity"@en, "주식"@ko ; fin:alias "Equity", "주식"@ko, "주식형"@ko ; fin:canonicalName "AssetClass.Equity" ; fin:conceptCategory "asset_class" .
+fin:ASSET_BOND a fin:AssetClass ; skos:prefLabel "Bond"@en, "채권"@ko ; fin:alias "Bond", "채권"@ko, "채권형"@ko ; fin:canonicalName "AssetClass.Bond" ; fin:conceptCategory "asset_class" .
+fin:ASSET_COMMODITY a fin:AssetClass ; skos:prefLabel "Commodity"@en, "원자재"@ko ; fin:alias "Commodity", "원자재"@ko ; fin:canonicalName "AssetClass.Commodity" ; fin:conceptCategory "asset_class" .
+fin:ASSET_MIXED a fin:AssetClass ; skos:prefLabel "Mixed assets"@en, "혼합자산"@ko ; fin:alias "Mixed Assets", "혼합자산"@ko, "채권혼합"@ko, "주식혼합"@ko ; fin:canonicalName "AssetClass.Mixed" ; fin:conceptCategory "asset_class" .
+fin:ASSET_MONEY_MARKET a fin:AssetClass ; skos:prefLabel "Money market"@en, "단기자금"@ko ; fin:alias "Money Market", "단기자금"@ko, "MMF" ; fin:canonicalName "AssetClass.MoneyMarket" ; fin:conceptCategory "asset_class" .
+fin:ASSET_CURRENCY a fin:AssetClass ; skos:prefLabel "Currency"@en, "통화"@ko ; fin:alias "Currency", "통화"@ko ; fin:canonicalName "AssetClass.Currency" ; fin:conceptCategory "asset_class" .
+fin:ASSET_REAL_ESTATE a fin:AssetClass ; skos:prefLabel "Real estate"@en, "부동산"@ko ; fin:alias "Real Estate", "부동산"@ko ; fin:canonicalName "AssetClass.RealEstate" ; fin:conceptCategory "asset_class" .
+fin:ASSET_ALTERNATIVE a fin:AssetClass ; skos:prefLabel "Alternative"@en, "대체투자"@ko ; fin:alias "Alternatives", "대체투자"@ko ; fin:canonicalName "AssetClass.Alternative" ; fin:conceptCategory "asset_class" .
+fin:ASSET_OTHER a fin:AssetClass ; skos:prefLabel "Other"@en, "기타"@ko ; fin:alias "Other", "기타"@ko ; fin:canonicalName "AssetClass.Other" ; fin:conceptCategory "asset_class" .
+
+# Exposure regions are limited to exact values supported by the current parser
+# and observed in the 2026-08-24 investment-region columns.
+fin:REGION_KOREA a fin:ExposureRegion ; skos:prefLabel "Korea"@en, "국내"@ko ; fin:alias "Korea", "한국"@ko, "국내"@ko ; fin:canonicalName "ExposureRegion.Korea" ; fin:conceptCategory "exposure_region" .
+fin:REGION_UNITED_STATES a fin:ExposureRegion ; skos:prefLabel "United States"@en, "미국"@ko ; fin:alias "United States", "United States of America", "USA", "미국"@ko ; fin:canonicalName "ExposureRegion.UnitedStates" ; fin:conceptCategory "exposure_region" .
+fin:REGION_JAPAN a fin:ExposureRegion ; skos:prefLabel "Japan"@en, "일본"@ko ; fin:alias "Japan", "일본"@ko ; fin:canonicalName "ExposureRegion.Japan" ; fin:conceptCategory "exposure_region" .
+fin:REGION_CHINA a fin:ExposureRegion ; skos:prefLabel "China"@en, "중국"@ko ; fin:alias "China", "중국"@ko ; fin:canonicalName "ExposureRegion.China" ; fin:conceptCategory "exposure_region" .
+fin:REGION_INDIA a fin:ExposureRegion ; skos:prefLabel "India"@en, "인도"@ko ; fin:alias "India", "인도"@ko ; fin:canonicalName "ExposureRegion.India" ; fin:conceptCategory "exposure_region" .
+fin:REGION_GLOBAL a fin:ExposureRegion ; skos:prefLabel "Global"@en, "글로벌"@ko ; fin:alias "Global", "글로벌"@ko ; fin:canonicalName "ExposureRegion.Global" ; fin:conceptCategory "exposure_region" .
+fin:REGION_ASIA a fin:ExposureRegion ; skos:prefLabel "Asia"@en, "아시아"@ko ; fin:alias "Asia", "아시아"@ko ; fin:canonicalName "ExposureRegion.Asia" ; fin:conceptCategory "exposure_region" .
+
+# PRFD01N001 ovrs_fd_desc values; "해당없음" remains unresolved.
+fin:MARKET_DOMESTIC a fin:MarketScope ; skos:prefLabel "Domestic"@en, "국내"@ko ; fin:alias "Domestic", "국내"@ko ; fin:canonicalName "MarketScope.Domestic" ; fin:conceptCategory "market_scope" .
+fin:MARKET_OVERSEAS a fin:MarketScope ; skos:prefLabel "Overseas"@en, "해외"@ko ; fin:alias "Overseas", "해외"@ko ; fin:canonicalName "MarketScope.Overseas" ; fin:conceptCategory "market_scope" .
+fin:MARKET_MIXED a fin:MarketScope ; skos:prefLabel "Domestic and overseas"@en, "국내외혼합"@ko ; fin:alias "Domestic and Overseas", "국내외혼합"@ko ; fin:canonicalName "MarketScope.Mixed" ; fin:conceptCategory "market_scope" .
+
+# Product risk grades observed across PRBD01N001, PREF01N001, and PRFD01N001.
+fin:RISK_GRADE_1 a fin:RiskGrade ; skos:prefLabel "Risk grade 1"@en, "1등급"@ko ; fin:alias "1", "1등급"@ko, "매우높은위험(1등급)"@ko ; fin:canonicalName "RiskGrade.1" ; fin:conceptCategory "risk_grade" .
+fin:RISK_GRADE_2 a fin:RiskGrade ; skos:prefLabel "Risk grade 2"@en, "2등급"@ko ; fin:alias "2", "2등급"@ko, "높은위험(2등급)"@ko ; fin:canonicalName "RiskGrade.2" ; fin:conceptCategory "risk_grade" .
+fin:RISK_GRADE_3 a fin:RiskGrade ; skos:prefLabel "Risk grade 3"@en, "3등급"@ko ; fin:alias "3", "3등급"@ko, "다소높은위험(3등급)"@ko ; fin:canonicalName "RiskGrade.3" ; fin:conceptCategory "risk_grade" .
+fin:RISK_GRADE_4 a fin:RiskGrade ; skos:prefLabel "Risk grade 4"@en, "4등급"@ko ; fin:alias "4", "4등급"@ko, "보통위험(4등급)"@ko ; fin:canonicalName "RiskGrade.4" ; fin:conceptCategory "risk_grade" .
+fin:RISK_GRADE_5 a fin:RiskGrade ; skos:prefLabel "Risk grade 5"@en, "5등급"@ko ; fin:alias "5", "5등급"@ko, "낮은위험(5등급)"@ko ; fin:canonicalName "RiskGrade.5" ; fin:conceptCategory "risk_grade" .
+fin:RISK_GRADE_6 a fin:RiskGrade ; skos:prefLabel "Risk grade 6"@en, "6등급"@ko ; fin:alias "6", "6등급"@ko, "매우낮은위험(6등급)"@ko ; fin:canonicalName "RiskGrade.6" ; fin:conceptCategory "risk_grade" .
+
+# Exact KSD bond-kind labels observed in PRBD01N001 bd_knd.  Opaque source
+# nulls are intentionally not represented as controlled concepts.
+fin:BOND_TYPE_INSTALLMENT_FINANCE a fin:BondType ; skos:prefLabel "할부금융채"@ko ; fin:alias "할부금융채"@ko ; fin:canonicalName "BondType.할부금융채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_GENERAL_SPECIAL_CORPORATE a fin:BondType ; skos:prefLabel "일반특수법인채"@ko ; fin:alias "일반특수법인채"@ko ; fin:canonicalName "BondType.일반특수법인채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_GENERAL_CORPORATE a fin:BondType ; skos:prefLabel "일반회사채"@ko ; fin:alias "일반회사채"@ko ; fin:canonicalName "BondType.일반회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_CREDIT_CARD a fin:BondType ; skos:prefLabel "신용카드채"@ko ; fin:alias "신용카드채"@ko ; fin:canonicalName "BondType.신용카드채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_REGIONAL_DEVELOPMENT a fin:BondType ; skos:prefLabel "지역개발채"@ko ; fin:alias "지역개발채"@ko ; fin:canonicalName "BondType.지역개발채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_ASSET_BACKED_CORPORATE a fin:BondType ; skos:prefLabel "유동화회사채"@ko ; fin:alias "유동화회사채"@ko ; fin:canonicalName "BondType.유동화회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_MBS a fin:BondType ; skos:prefLabel "MBS"@en ; fin:alias "MBS" ; fin:canonicalName "BondType.MBS" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_SPECIAL_BANK a fin:BondType ; skos:prefLabel "특수은행채"@ko ; fin:alias "특수은행채"@ko ; fin:canonicalName "BondType.특수은행채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_CONDUIT a fin:BondType ; skos:prefLabel "Conduit회사채"@ko ; fin:alias "Conduit회사채"@ko ; fin:canonicalName "BondType.Conduit회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_FACILITY_LEASE a fin:BondType ; skos:prefLabel "시설대여채(리스)"@ko ; fin:alias "시설대여채(리스)"@ko ; fin:canonicalName "BondType.시설대여채(리스)" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_GENERAL_BANK a fin:BondType ; skos:prefLabel "일반은행채"@ko ; fin:alias "일반은행채"@ko ; fin:canonicalName "BondType.일반은행채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_FINANCIAL_HOLDING a fin:BondType ; skos:prefLabel "금융지주회사채"@ko ; fin:alias "금융지주회사채"@ko ; fin:canonicalName "BondType.금융지주회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_URBAN_RAIL a fin:BondType ; skos:prefLabel "도시철도공채"@ko ; fin:alias "도시철도공채"@ko ; fin:canonicalName "BondType.도시철도공채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_KOREAN_TREASURY a fin:BondType ; skos:prefLabel "국고채권"@ko ; fin:alias "국고채권"@ko ; fin:canonicalName "BondType.국고채권" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_LOCAL_PUBLIC_CORPORATION a fin:BondType ; skos:prefLabel "일반지방공사채"@ko ; fin:alias "일반지방공사채"@ko ; fin:canonicalName "BondType.일반지방공사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_BROKER_DEALER a fin:BondType ; skos:prefLabel "투자매매.중개채"@ko ; fin:alias "투자매매.중개채"@ko ; fin:canonicalName "BondType.투자매매.중개채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_LOCAL_CORPORATION_COMPENSATION a fin:BondType ; skos:prefLabel "지방공사보상채권"@ko ; fin:alias "지방공사보상채권"@ko ; fin:canonicalName "BondType.지방공사보상채권" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_NATIONAL_HOUSING_1 a fin:BondType ; skos:prefLabel "국민주택1종"@ko ; fin:alias "국민주택1종"@ko ; fin:canonicalName "BondType.국민주택1종" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_SPECIAL_COMPENSATION a fin:BondType ; skos:prefLabel "특수보상채권"@ko ; fin:alias "특수보상채권"@ko ; fin:canonicalName "BondType.특수보상채권" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_SUBSCRIPTION_LOCAL a fin:BondType ; skos:prefLabel "모집지방채"@ko ; fin:alias "모집지방채"@ko ; fin:canonicalName "BondType.모집지방채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_INSURANCE_COMPANY a fin:BondType ; skos:prefLabel "보험회사채"@ko ; fin:alias "보험회사채"@ko ; fin:canonicalName "BondType.보험회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_NATIONAL_HOUSING_2 a fin:BondType ; skos:prefLabel "국민주택2종"@ko ; fin:alias "국민주택2종"@ko ; fin:canonicalName "BondType.국민주택2종" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_OTHER_FINANCE_COMPANY a fin:BondType ; skos:prefLabel "기타금융회사채"@ko ; fin:alias "기타금융회사채"@ko ; fin:canonicalName "BondType.기타금융회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_REAL_ESTATE_INVESTMENT_COMPANY a fin:BondType ; skos:prefLabel "부동산투자회사채"@ko ; fin:alias "부동산투자회사채"@ko ; fin:canonicalName "BondType.부동산투자회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_MONETARY_STABILIZATION a fin:BondType ; skos:prefLabel "통화안정채권"@ko ; fin:alias "통화안정채권"@ko ; fin:canonicalName "BondType.통화안정채권" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_OTHER_FINANCIAL_INVESTMENT a fin:BondType ; skos:prefLabel "기타금융투자전업회사채"@ko ; fin:alias "기타금융투자전업회사채"@ko ; fin:canonicalName "BondType.기타금융투자전업회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_SECURITIES_FINANCE a fin:BondType ; skos:prefLabel "증권금융채(특수금융)"@ko ; fin:alias "증권금융채(특수금융)"@ko ; fin:canonicalName "BondType.증권금융채(특수금융)" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_SPAC a fin:BondType ; skos:prefLabel "기업인수목적회사채"@ko ; fin:alias "기업인수목적회사채"@ko ; fin:canonicalName "BondType.기업인수목적회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_FOREIGN_EXCHANGE_STABILIZATION a fin:BondType ; skos:prefLabel "외국환평형기금"@ko ; fin:alias "외국환평형기금"@ko ; fin:canonicalName "BondType.외국환평형기금" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_COLLECTIVE_INVESTMENT_COMPANY a fin:BondType ; skos:prefLabel "집합투자회사채"@ko ; fin:alias "집합투자회사채"@ko ; fin:canonicalName "BondType.집합투자회사채" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_TREASURY_BILL a fin:BondType ; skos:prefLabel "재정증권"@ko ; fin:alias "재정증권"@ko ; fin:canonicalName "BondType.재정증권" ; fin:conceptCategory "bond_type" .
+fin:BOND_TYPE_ASSET_BACKED_BENEFICIARY_CERTIFICATE a fin:BondType ; skos:prefLabel "유동화수익증권"@ko ; fin:alias "유동화수익증권"@ko ; fin:canonicalName "BondType.유동화수익증권" ; fin:conceptCategory "bond_type" .
 
 fin:VALIDATED a fin:ValidationStatus ; skos:prefLabel "Validated"@en .
 fin:FORMAT_ONLY a fin:ValidationStatus ; skos:prefLabel "Format only"@en .
@@ -472,7 +571,7 @@ fin:VectorStore a fin:RuntimeStore ; skos:prefLabel "Vector/BM25"@en .
 fin:MetadataStore a fin:RuntimeStore ; skos:prefLabel "Evidence Metadata"@en .
 
 fin:MetricFamily a owl:Class .
-fin:primaryStore a owl:ObjectProperty ; rdfs:range fin:RuntimeStore .
+fin:primaryStore a owl:ObjectProperty ; rdfs:domain fin:MetricFamily ; rdfs:range fin:RuntimeStore .
 fin:semanticKey a owl:DatatypeProperty ; rdfs:range xsd:string .
 
 fin:PriceMetric a fin:MetricFamily ;
@@ -564,8 +663,8 @@ fin:constraintGroup a owl:DatatypeProperty ; rdfs:range xsd:string .
 fin:ruleText a owl:DatatypeProperty ; rdfs:range xsd:string .
 fin:appliesAtLayer a owl:DatatypeProperty ; rdfs:range xsd:string .
 fin:severity a owl:DatatypeProperty ; rdfs:range xsd:string .
-fin:onFailureStatus a owl:ObjectProperty ; rdfs:range fin:AnswerStatus .
-fin:onFailureReason a owl:ObjectProperty ; rdfs:range fin:ReasonCode .
+fin:onFailureStatus a owl:ObjectProperty ; rdfs:domain fin:OperationalConstraint ; rdfs:range fin:AnswerStatus .
+fin:onFailureReason a owl:ObjectProperty ; rdfs:domain fin:OperationalConstraint ; rdfs:range fin:ReasonCode .
 
 fin:S045 a fin:OperationalConstraint ;
     fin:constraintId "S045" ;
@@ -725,7 +824,7 @@ fin:IdentifierShape
         sh:minCount 1 ;
         sh:maxCount 1 ;
         sh:datatype xsd:string ;
-        sh:in ("VALIDATED" "FORMAT_ONLY" "UNKNOWN" "CONFLICT" "INVALID_FORMAT") ;
+        sh:in ("VALIDATED" "FORMAT_ONLY" "UNKNOWN_VALIDATION" "CONFLICT" "INVALID_FORMAT") ;
         sh:message "Identifier must have a supported validationStatus."@en
     ] .
 
@@ -850,10 +949,10 @@ fin:SourceRecordShape
         sh:class fin:SourceDataset
     ] ;
     sh:property [
-        sh:path fin:describesProduct ;
+        sh:path fin:describesEntity ;
         sh:minCount 1 ;
         sh:maxCount 1 ;
-        sh:class fin:FinancialProduct
+        sh:class fin:EvidenceBearingEntity
     ] .
 
 #################################################################

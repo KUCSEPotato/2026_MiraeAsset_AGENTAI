@@ -75,6 +75,7 @@ class GraphMetadata:
 @dataclass(frozen=True, slots=True)
 class CompiledGraphQuery:
     cypher: str
+    count_cypher: str
     parameters: dict[str, Any]
     relations: tuple[str, ...]
     directions: tuple[str, ...]

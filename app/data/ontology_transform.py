@@ -90,9 +90,11 @@ def transform_evidence(
                 _observation_row(files, mapping, value, cleaned, product_id, record_id)
             )
         elif mapping.is_relation:
-            result.relations.append(
-                _relation_row(files, mapping, value, mapped, product_id, record_id)
+            relation = _relation_row(
+                files, mapping, value, mapped, product_id, record_id
             )
+            if relation is not None:
+                result.relations.append(relation)
         elif mapping.category == "코드 또는 분류 개념":
             result.raw_codes.append(
                 {
@@ -118,6 +120,24 @@ def transform_evidence(
                     "dataset_snapshot": files.snapshot_date,
                     "observed_at": _observed_at(files.spec.prefix, mapping.source_column, cleaned),
                 }
+            )
+    if (
+        files.spec.prefix == "PREF02N001"
+        and str(cleaned.get("cu_index_tracking_yn") or "").strip().upper()
+        == "Y"
+    ):
+        base_index = cleaned.get("cu_base_index")
+        if _valid_index(base_index):
+            result.relations.append(
+                _explicit_relation_row(
+                    files,
+                    product_id,
+                    record_id,
+                    "cu_index_tracking_yn+cu_base_index",
+                    "tracksIndex",
+                    "Index",
+                    str(base_index).strip(),
+                )
             )
     return result
 
@@ -184,15 +204,47 @@ def _observation_row(files, mapping, value, row, product_id, record_id):
 def _relation_row(files, mapping, value, mapped, product_id, record_id):
     relation = mapping.target_property
     if relation == "managedBy/issuedBy":
-        relation = "issuedBy" if mapped.canonical["product_type"].endswith("ETN") else "managedBy"
+        # The new source labels this column as management company.  It is valid
+        # managedBy evidence for ETF, but not proof of an ETN issuer role.
+        if mapped.canonical["product_type"].endswith("ETN"):
+            return None
+        relation = "managedBy"
+    if mapping.source_column in {"cu_base_index", "ref_base_index"}:
+        if not _valid_index(value):
+            return None
+        relation = "hasUnderlyingIndex"
+    if relation == "referencesBenchmark":
+        relation = "hasBenchmark"
     target_type = mapping.target_class
     target = str(value).strip()
+    return _explicit_relation_row(
+        files,
+        product_id,
+        record_id,
+        mapping.source_column,
+        relation,
+        target_type,
+        target,
+    )
+
+
+def _explicit_relation_row(
+    files: DatasetFiles,
+    product_id: str,
+    record_id: str,
+    source_column: str,
+    relation: str,
+    target_type: str,
+    target: str,
+) -> dict[str, Any]:
     return {
-        "relation_id": _id("relation", record_id, mapping.source_column, relation, target),
+        "relation_id": _id(
+            "relation", record_id, source_column, relation, target
+        ),
         "canonical_product_id": product_id,
         "dataset_snapshot": files.snapshot_date,
         "source_record_id": record_id,
-        "source_column": mapping.source_column,
+        "source_column": source_column,
         "relation_type": relation,
         "target_type": target_type,
         "target_id": _id(target_type, files.spec.prefix, target),
@@ -251,6 +303,23 @@ def _valid_currency(value: Any) -> bool:
         return False
     text = str(value).strip().upper()
     return text not in {"000", "CURR_CD_000", "UNKNOWN"}
+
+
+def _valid_index(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip().casefold()
+    if not text:
+        return False
+    return not any(
+        sentinel in text
+        for sentinel in (
+            "not provided",
+            "not available",
+            "해당없음",
+            "없음",
+        )
+    )
 
 
 def _text(value: Any) -> str | None:

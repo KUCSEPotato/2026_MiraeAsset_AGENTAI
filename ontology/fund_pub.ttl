@@ -1,0 +1,51 @@
+@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fp:PublicFundFamily a owl:Class ;
+    rdfs:subClassOf fp:PublicFund ;
+    skos:prefLabel "공모펀드 패밀리"@ko ;
+    skos:prefLabel "Public Fund Family"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "public_fund" .
+
+fp:PublicFundClass a owl:Class ;
+    rdfs:subClassOf fp:FundClass ;
+    skos:prefLabel "공모펀드 클래스"@ko ;
+    skos:prefLabel "Public Fund Class"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "public_fund" .
+
+fp:FundType a owl:Class ;
+    skos:prefLabel "펀드 유형"@ko ;
+    fp:conceptCategory "entity_type" .
+
+fp:RedemptionType a owl:Class ;
+    skos:prefLabel "환매 유형"@ko ;
+    fp:conceptCategory "entity_type" .
+
+fp:IssuanceType a owl:Class ;
+    skos:prefLabel "발행 유형"@ko ;
+    fp:conceptCategory "entity_type" .
+
+fp:ListingType a owl:Class ;
+    skos:prefLabel "상장 유형"@ko ;
+    fp:conceptCategory "entity_type" .
+
+fp:InvestorEligibility a owl:Class ;
+    skos:prefLabel "투자자 자격"@ko ;
+    fp:conceptCategory "entity_type" .
+
+fp:classCode a owl:DatatypeProperty ;
+    rdfs:domain fp:FundClass ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "클래스 코드"@ko ;
+    fp:conceptCategory "field" .
+
+fp:benchmarkName a owl:DatatypeProperty ;
+    rdfs:domain fp:Fund ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "벤치마크명"@ko ;
+    fp:conceptCategory "field" .

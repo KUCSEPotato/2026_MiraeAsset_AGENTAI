@@ -1,0 +1,33 @@
+@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+fp:DomesticETF a owl:Class ;
+    rdfs:subClassOf fp:ETF ;
+    skos:prefLabel "국내 ETF"@ko ;
+    skos:prefLabel "Domestic ETF"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "domestic_etf" .
+
+fp:DomesticETN a owl:Class ;
+    rdfs:subClassOf fp:ETN ;
+    skos:prefLabel "국내 ETN"@ko ;
+    skos:prefLabel "Domestic ETN"@en ;
+    fp:conceptCategory "dataset_class" ;
+    fp:sourceDataset "domestic_etf" .
+
+fp:leverageFactor a owl:DatatypeProperty ;
+    rdfs:domain fp:ExchangeTradedProduct ;
+    rdfs:range xsd:decimal ;
+    skos:prefLabel "레버리지 배수"@ko ;
+    skos:prefLabel "leverage factor"@en ;
+    fp:conceptCategory "field" .
+
+fp:distributionCycle a owl:DatatypeProperty ;
+    rdfs:domain fp:DomesticETF ;
+    rdfs:range xsd:string ;
+    skos:prefLabel "분배주기"@ko ;
+    skos:prefLabel "distribution cycle"@en ;
+    fp:conceptCategory "field" .

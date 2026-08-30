@@ -10,13 +10,33 @@ from app.domain.models import (
 
 
 def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
+    product_concepts = [
+        concept.canonical_concept
+        for concept in query.grounded_concepts
+        if concept.category is ConceptCategory.PRODUCT_TYPE
+        and concept.canonical_concept is not None
+        and concept.raw_text in query.parsed_query.product_types
+    ]
+    resolved_entities = [
+        entity
+        for entity in query.resolved_entities
+        if entity.resolution_status is ResolutionStatus.RESOLVED
+        and entity.canonical_id is not None
+    ]
+    result_grain = _result_grain(resolved_entities)
     return {
-        "product_types": [
-            concept.canonical_concept.value
-            for concept in query.grounded_concepts
-            if concept.category is ConceptCategory.PRODUCT_TYPE
-            and concept.canonical_concept is not None
-            and concept.raw_text in query.parsed_query.product_types
+        # Physical compatibility keys are isolated at this planner/compiler
+        # boundary. Ontology identity remains available alongside them.
+        "product_types": [concept.value for concept in product_concepts],
+        "ontology_product_types": [
+            {
+                "ontology_uri": getattr(concept, "ontology_uri", None),
+                "canonical_name": getattr(
+                    concept, "canonical_name", concept.value
+                ),
+                "runtime_key": concept.value,
+            }
+            for concept in product_concepts
         ],
         "filters": [
             {
@@ -49,10 +69,8 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
         ],
         "entity_ids": [
             entity.canonical_id
-            for entity in query.resolved_entities
-            if entity.resolution_status is ResolutionStatus.RESOLVED
-            and entity.canonical_id is not None
-            and entity.entity_type == "product"
+            for entity in resolved_entities
+            if entity.entity_type in {"product", "fund_share_class", "sale_lot"}
         ],
         "entity_constraint_ids": [
             entity.constraint_id
@@ -69,6 +87,7 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
             if query.parsed_query.result_limit is not None
             else None
         ),
+        **({"result_grain": result_grain} if result_grain is not None else {}),
     }
 
 
@@ -104,3 +123,13 @@ def _normalized_raw_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalized_raw_value(item) for item in value]
     return value
+
+
+def _result_grain(resolved_entities) -> str | None:
+    """Preserve an explicitly resolved non-product entity grain end-to-end."""
+    kinds = {entity.entity_type for entity in resolved_entities}
+    if kinds == {"fund_share_class"}:
+        return "fund_share_class"
+    if kinds == {"sale_lot"}:
+        return "sale_lot"
+    return None

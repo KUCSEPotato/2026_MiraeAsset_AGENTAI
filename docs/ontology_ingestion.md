@@ -20,7 +20,8 @@ uv run python -m app.data.ingest --material-root material \
 
 # sample integration load
 uv run python -m app.data.ingest --material-root material \
-  --database-url sqlite:///data/financial_agent.db --limit 100
+  --database-url postgresql+psycopg://financial_agent:change-me@localhost:5432/financial_agent \
+  --limit 100
 
 # full load plus ontology/SHACL gate and semantic-search document preparation
 uv run python -m app.data.ingest --material-root material --shacl \

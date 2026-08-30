@@ -1,12 +1,12 @@
 # Financial Semantic Agent
 
-금융 상품 질의응답 Agent를 위한 평가용 Backend API입니다. Milestone 10에서는
-repository-local Ontology v0로 grounded된 structured query를 canonical RDB에서
-실행하고, 실제 해외 ETF 전략 원문을 BM25/vector index로 검색하며, 관계 질의를
-Neo4j knowledge graph에서 실행합니다.
-`DATABASE_URL`이 설정된 runtime의 RDB, entity lookup, field-quality metadata와
-BM25/Vector retriever는 실제 backend를 사용합니다. `NEO4J_URI`와 credential이 함께
-설정되면 Graph도 real retriever를 사용합니다.
+금융 상품 질의응답 Agent를 위한 competition evaluation API입니다. Production은
+2026-08-24 (`260824`) source generation의 `canonical_v2` PostgreSQL snapshot과
+Team Ontology `merged-optical-1.3`을 사용합니다. PostgreSQL에서 파생한 Neo4j graph와
+6,026-document BM25/vector artifact는 동일 version bundle로 startup compatibility
+검사를 통과해야 합니다.
+`DATABASE_URL`은 필수이며 PostgreSQL URL만 허용됩니다. `NEO4J_URI`와 credential이
+함께 설정되면 Graph도 real retriever를 사용합니다.
 
 ## Architecture
 
@@ -50,13 +50,16 @@ Question
 - Query Understanding은 intent, raw product type, filter, sort, requested field와 semantic-search 필요 여부를 구조화합니다.
 - Entity Resolution은 RDB가 설정되면 `RDBEntityLookup`, 격리 test에서는
   `StaticEntityLookup`을 사용하며 모르는 entity ID를 만들지 않습니다.
-- Semantic Grounding은 raw 표현을 보존하면서 `Region.US`, `AssetType.Bond`, `product.aum` 같은 canonical representation을 별도로 추가합니다.
+- Semantic Grounding은 raw 표현을 보존하면서 ontology URI, canonical name,
+  runtime key와 mapping version을 별도로 유지합니다.
 - M2 fake semantic components는 격리 테스트와 failure simulation을 위해 유지합니다.
 
-Production semantic grounding은 startup에서 repository의 mandatory TTL 5개를
-검증하고 한 번 index합니다. `StaticSemanticRegistry`와
-`RegistryOntologyService`는 격리/failure test용 baseline으로 유지합니다. 전체 금융
-entity dictionary와 LLM query parser는 아직 구현하지 않았습니다.
+Team mode는 authoritative artifact
+`ontology/candidates/new_optical_ontology.ttl`을 version/URI와 함께 검증하고 한 번
+index합니다. Ontology meaning과 PostgreSQL/Neo4j physical mapping은 versioned
+`TeamOntologyRuntimeMapping`에서 분리됩니다. `legacy` mode는 명시적 v1 rollback과
+migration regression에만 남습니다. Runtime은 authoritative data에 실제로 매핑되는
+controlled individual만 executable constraint로 사용합니다.
 
 Ontology의 목적, 파일별 vocabulary, competency questions, canonical mapping과
 validation 방법은 [ontology/README.md](ontology/README.md)에 정리되어 있습니다.
@@ -100,9 +103,9 @@ transform입니다. canonical `entity_id` 교집합과 stable ordering만 제공
 금융 ranking을 수행하지 않습니다. 결합 결과에는 dependency별 source ID, retrieval
 score type과 semantic matched text가 `fusion_provenance`로 보존됩니다.
 
-`DATABASE_URL`이 설정되면 RDB, Vector, BM25 source는 real retriever를 사용하고,
-Neo4j 설정이 완전하면 Graph source도 real retriever를 사용합니다.
-Fake retriever는 execution isolation test와 DB 미설정 개발 환경을 위해 유지합니다.
+Production composition은 항상 PostgreSQL RDB, PostgreSQL-derived Vector/BM25 source를
+사용하고, Neo4j 설정이 완전하면 Graph source도 real retriever를 사용합니다.
+Fake retriever는 constructor-injected isolation test에서만 유지합니다.
 생성되지 않았거나 snapshot/model/version이 맞지 않는 semantic index는 빈 결과로
 숨기지 않고 기존 Executor의 retrieval failure isolation으로 전달합니다.
 
@@ -129,7 +132,7 @@ NFKC, case folding, whitespace normalization 결과를 별도로 저장합니다
 
 ### BM25 and Vector Embeddings
 
-BM25는 현재 약 5.6K 문서에 적합한 portable BM25 Okapi 구현입니다. 전문용어와
+BM25는 현재 6,026개 문서에 적합한 portable BM25 Okapi 구현입니다. 전문용어와
 영문 phrase를 lexical token으로 검색하며 score는 raw BM25 provenance일 뿐 금융
 속성이 아닙니다.
 
@@ -141,10 +144,11 @@ neural foundation embedding은 아니며, 향후 multilingual neural provider로
 수 있는 초기 offline baseline입니다. Vector similarity 역시 금융 사실이 아니라
 ranking metadata로만 저장합니다.
 
-검색 artifact backend는 별도 SQLite file의 metadata-indexed documents와 packed float
-vectors이며, 현재 규모에서는 deterministic exact cosine scan을 사용합니다. 이는
-canonical production database가 PostgreSQL이라는 원칙을 바꾸지 않습니다. pgvector는
-extension 운영 dependency를 피하기 위해 M9 default로 선택하지 않았습니다.
+검색 artifact는 PostgreSQL canonical snapshot에서 생성한 versioned JSON projection이며,
+metadata-indexed documents와 packed float vectors를 포함합니다. 현재 규모에서는
+deterministic exact cosine scan을 사용합니다. 이 artifact는 canonical factual store가
+아니며 재생성 가능합니다. pgvector는 extension 운영 dependency를 피하기 위해 M9
+default로 선택하지 않았습니다.
 
 ### Index Build
 
@@ -153,7 +157,7 @@ offline command를 실행합니다.
 
 ```bash
 DATABASE_URL=postgresql+psycopg://... \
-DATA_SNAPSHOT_DATE=2026-07-11 \
+DATA_SNAPSHOT_DATE=2026-08-24 \
 uv run python -m app.search.index
 ```
 
@@ -207,7 +211,7 @@ transform에서 결합합니다. 따라서 dependency가 꼭 필요한 질의만
 ```text
 PostgreSQL canonical snapshot
   -> CanonicalGraphExtractor
-  -> GraphMappingRegistry (Ontology v0 domain/range validation)
+  -> GraphMappingRegistry (Team Ontology domain/range validation)
   -> offline Neo4j ingestion
   -> ready graph metadata (version + snapshot + built_at + counts)
   -> allow-listed GraphQueryCompiler
@@ -222,19 +226,22 @@ domain/range를 정의하는 schema vocabulary이고 product instance store가 �
 
 ### Nodes and Relations
 
-- Product: `ETF`, `ETN`, `Bond`, `Fund`, `FundClass`
-- Supporting entity: `AssetManager`, `Issuer`, `Index`, `Benchmark`, `Region`,
-  `AssetType`, `RiskGrade`, `Currency`
-- Edge: `MANAGED_BY`, `ISSUED_BY`, `TRACKS`, `REFERENCES_BENCHMARK`,
-  `HAS_CLASS`, `INVESTS_IN_REGION`, `HAS_ASSET_TYPE`, `HAS_RISK_GRADE`,
-  `DENOMINATED_IN`
+- Product/entity grain: `ETF`, `ETN`, `Bond`, `Fund`, `FundShareClass`, `SaleLot`
+- Supporting entity: `AssetManagementCompany`, `Organization`, `Index`,
+  `ExposureRegion`, `AssetClass`, `RiskGrade`, `CreditRating`, `Currency`
+- Core edge: `MANAGED_BY`, `ISSUED_BY`, `TRACKS_INDEX`,
+  `HAS_UNDERLYING_INDEX`, `HAS_BENCHMARK`, `HAS_SHARE_CLASS`,
+  `HAS_EXPOSURE_REGION`, `HAS_ASSET_CLASS`, `HAS_RISK_GRADE`,
+  `DENOMINATED_IN`, `TRADED_IN_CURRENCY`
 
-공개펀드는 family `Fund`와 실제 class product `FundClass`를 `HAS_CLASS`로 연결합니다.
+공개펀드는 family `Fund`와 semantic entity `FundShareClass`를
+`HAS_SHARE_CLASS`로 연결합니다. M10.7에서는 current PostgreSQL compatibility grain을
+storage adapter로 유지하며 physical redesign은 M10.8로 연기합니다.
 명시적 source ID가 없는 manager/index/issuer/benchmark는 source scope 안에서만 exact
 normalized label identity를 사용하며 fuzzy merge하지 않습니다. NULL, blank, 명시적
 unavailable sentinel에는 edge를 만들지 않습니다. 채권 `PD_RISK_GCD`는 현재 source
-의미상 신용등급으로 입증되지 않았으므로 `HAS_CREDIT_RATING`을 만들지 않고
-`HAS_RISK_GRADE`로만 적재합니다.
+새 source의 `crd_grd`는 credit-rating source로 검증되어 `HAS_CREDIT_RATING`으로
+적재하며, 별도 risk-grade source는 `HAS_RISK_GRADE`로 유지합니다.
 
 모든 node와 edge는 `dataset_snapshot`, graph version 및 source provenance를
 보존합니다. Runtime은 metadata status가 `ready`이고 version/snapshot이 정확히
@@ -246,10 +253,12 @@ Neo4j Community를 준비한 뒤 API request와 분리된 command를 실행합�
 
 ```bash
 DATABASE_URL=postgresql+psycopg://... \
-DATA_SNAPSHOT_DATE=2026-07-11 \
+DATA_SNAPSHOT_DATE=2026-08-24 \
 NEO4J_URI=neo4j://localhost:7687 \
 NEO4J_USER=neo4j \
 NEO4J_PASSWORD=... \
+ONTOLOGY_VERSION=team-v1 \
+GRAPH_VERSION=m10.7-team-v1-20260829 \
 uv run python -m app.graph.ingest
 ```
 
@@ -265,8 +274,10 @@ unbounded traversal은 허용하지 않습니다. Structured filter와 관계가
 bounded candidates를 만들고 Graph가 그 candidate set 안에서만 traversal한 뒤 기존
 INTERNAL transform이 canonical entity ID로 결합합니다.
 
-현재 graph relation parser는 운용사, 발행사, 기초/추종지수, 벤치마크, 펀드 클래스,
-표시통화, 위험등급의 deterministic 표현만 지원합니다. 자연어 multi-hop planning,
+현재 graph relation parser는 relation/field registry와 composable grammar를 통해
+운용사, 발행사, 기초/추종지수, 벤치마크, 펀드 클래스, 표시통화, 위험등급을
+구조화합니다. 상품명이나 acceptance 질문 문자열별 handler는 두지 않습니다.
+자연어 multi-hop planning,
 fuzzy supporting-entity resolution, learned graph ranking, graph analytics는 M11+ 범위입니다.
 
 ## Evidence Layer
@@ -318,7 +329,7 @@ uv run python -m app.data.ingest
 ```bash
 uv run python -m app.data.ingest \
   --material-root material \
-  --database-url sqlite:///data/financial_agent.db
+  --database-url postgresql+psycopg://financial_agent:change-me@localhost:5432/financial_agent
 ```
 
 동일 dataset snapshot은 replace-snapshot transaction으로 다시 적재됩니다. 따라서 command를 반복해도 logical row가 중복되지 않습니다. 치명적인 schema 오류는 dataset transaction을 rollback하며, 개별 invalid row는 source file/row/reason/raw payload와 함께 `quarantine_records`에 보존합니다.
@@ -335,14 +346,11 @@ Production PostgreSQL 예시:
 DATABASE_URL=postgresql+psycopg://financial_agent:change-me@localhost:5432/financial_agent
 ```
 
-격리된 local test에서는 `DATABASE_URL=sqlite:///data/financial_agent.db`를 사용할
-수 있습니다.
-
-Production database는 PostgreSQL이며 Psycopg 3 driver를 사용합니다. 같은
-SQLAlchemy 2.x schema와 query compiler를 SQLite test에도 사용하며 application
-query code는 PostgreSQL 전용 SQL에 의존하지 않습니다. Credential은 source
-code나 log에 기록하지 않습니다. `DATABASE_URL`이 없는 test/dev runtime은 기존
-fake RDB를 사용하므로 외부 DB가 unit test의 필수 조건이 아닙니다.
+PostgreSQL은 production, local development, ingestion verification 및 integration
+test의 유일한 relational backend이며 Psycopg 3 driver를 사용합니다. `DATABASE_URL`은
+필수이고 PostgreSQL URL이 아니면 startup이 명시적으로 실패합니다. DB가 필요 없는
+parser/grounding/planner unit test만 repository fake를 사용합니다. Credential은 source
+code나 health metadata, log에 기록하지 않습니다.
 
 PostgreSQL integration test는 운영 DB가 아닌 격리된 database URL만 받습니다.
 
@@ -485,14 +493,55 @@ uv run pytest tests/test_m10_6_semantic_parser.py
 uv run pytest -m hyperclova tests/test_hyperclova_semantic_integration.py
 ```
 
+## M10.8-B Canonical v2 Clean Rebuild
+
+`canonical_v2`는 authoritative 2026-08-24 (`260824`) 4개 workbook에서 직접
+재구축됩니다. v1 canonical row는 entity materialization 입력으로 사용하지 않으며,
+identity crosswalk와 regression 비교에만 읽습니다.
+
+```bash
+uv run alembic upgrade head
+uv run python -m app.data.v2_rebuild --material-root material
+```
+
+snapshot은 source/schema checksum, Team Ontology version, semantic mapping version,
+transformer version 및 DB schema version이 일치하고 reconciliation이 통과한 뒤에만
+`READY`가 됩니다. 동일 입력의 두 번째 실행은 `SKIPPED_UNCHANGED`입니다. 현재
+production repository, Neo4j, Vector/BM25와 `/answer`는 계속 v1을 사용하며 v2 runtime
+cutover는 M10.8-C 이후 범위입니다.
+
+## M10.8-C Canonical v2 RDB Repository
+
+기존 `QueryPlan`을 변경하지 않고 allow-listed SQLAlchemy compiler와 typed adapter를
+통해 `canonical_v2`를 조회합니다. M10.8-E 이후 production 기본 profile은 `v2`이며
+`v1`은 restart-only rollback profile입니다.
+
+```text
+RUNTIME_DATA_VERSION=v2
+CANONICAL_V2_GENERATION=260824
+CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.3
+```
+
+v2 mode는 지정 generation/date의 4개 source snapshot이 모두 `READY / PASSED`이고
+Graph/Semantic manifests가 같은 bundle일 때만 실행됩니다. v1 table fallback은
+없습니다. Public Fund는 product type이 아니라
+`Fund WHERE EXISTS FundShareClass WITH OfferingType.PUBLIC`으로 조회하며 Fund,
+FundShareClass, Bond, SaleLot grain을 분리합니다. AUM/expense-ratio의 filter/sort는
+비교 단위 계약이 승인될 때까지 닫혀 있습니다.
+
 ## Requirements
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
+- Ubuntu 24.04 LTS (production assumption)
+- Docker Engine and Docker Compose v2
+- Python 3.12 and [uv](https://docs.astral.sh/uv/) for non-container development
+- PostgreSQL and Neo4j reachable only over the Compose internal network
 
 ## Environment Variables
 
-설정 예시는 `.env.example`에 있습니다. 현재 baseline 실행에는 API key가 필요하지 않습니다.
+설정 예시는 `.env.example`에 있습니다. Production v2는
+`RUNTIME_DATA_VERSION=v2`와 coherent RDB/Graph/Semantic manifests가 필요합니다.
+Rule-complete parsing은 LLM parser를 호출하지 않지만 live answer generation을 켜려면
+`CLOVASTUDIO_API_KEY`와 `HYPERCLOVA_ANSWER_ENABLED=true`가 필요합니다.
 
 ```text
 CLOVASTUDIO_API_KEY=
@@ -500,31 +549,59 @@ HYPERCLOVA_BASE_URL=https://clovastudio.stream.ntruss.com
 HYPERCLOVA_MODEL=HCX-007
 HYPERCLOVA_TIMEOUT_SECONDS=30
 HYPERCLOVA_MAX_COMPLETION_TOKENS=2048
-DATA_SNAPSHOT_DATE=2026-07-11
-APP_TIMEOUT_SECONDS=280
+HYPERCLOVA_ANSWER_ENABLED=true
+HYPERCLOVA_ANSWER_MODEL=HCX-007
+HYPERCLOVA_ANSWER_TIMEOUT_SECONDS=45
+HYPERCLOVA_ANSWER_MAX_COMPLETION_TOKENS=1024
+DATA_SNAPSHOT_DATE=2026-08-24
+APP_TIMEOUT_SECONDS=240
 RETRIEVAL_STEP_TIMEOUT_SECONDS=10
-DATABASE_URL=postgresql+psycopg://financial_agent:change-me@localhost:5432/financial_agent
+POSTGRES_DB=financial_agent
+POSTGRES_USER=financial_agent
+POSTGRES_PASSWORD=change-me
+DATABASE_URL=postgresql+psycopg://financial_agent:change-me@postgres:5432/financial_agent
+DATABASE_POOL_SIZE=5
+DATABASE_MAX_OVERFLOW=5
+DATABASE_POOL_TIMEOUT_SECONDS=30
+DATABASE_POOL_RECYCLE_SECONDS=1800
 RDB_DEFAULT_LIMIT=10
 RDB_MAX_LIMIT=10000
-SEMANTIC_INDEX_PATH=data/semantic_search.db
-SEMANTIC_INDEX_VERSION=m9-strategy-v1
+RUNTIME_DATA_VERSION=v2
+CANONICAL_V2_GENERATION=260824
+CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.3
+CANONICAL_V2_TRANSFORMER_VERSION=m10.8-b2-relations-v2
+SEMANTIC_ARTIFACT_ROOT=/srv/financial-semantic-agent/artifacts/260824
+SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/v1/semantic_search.json
+SEMANTIC_INDEX_VERSION=m10.7-strategy-20260829
 EMBEDDING_MODEL=multilingual-semantic-hash-v1
 EMBEDDING_DIMENSION=384
 BM25_TOP_K=10
 VECTOR_TOP_K=10
 SEMANTIC_CANDIDATE_LIMIT=10000
-NEO4J_URI=neo4j://localhost:7687
+NEO4J_URI=neo4j://neo4j:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=change-me
 NEO4J_DATABASE=neo4j
-GRAPH_VERSION=m10-minimal-graph-v1
+NEO4J_CONNECTION_TIMEOUT_SECONDS=5
+NEO4J_CONNECTION_ACQUISITION_TIMEOUT_SECONDS=5
+NEO4J_MAX_TRANSACTION_RETRY_SECONDS=5
+GRAPH_VERSION=m10.7-team-v1-20260829
+ONTOLOGY_VERSION=team-v1
 GRAPH_INGEST_BATCH_SIZE=1000
 GRAPH_QUERY_LIMIT=100
 GRAPH_MAX_DEPTH=2
+CANONICAL_V2_GRAPH_PROJECTION_VERSION=m10.8-d-canonical-v2-graph-1
+CANONICAL_V2_SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/canonical_v2/semantic_search.json
+CANONICAL_V2_SEMANTIC_INDEX_VERSION=m10.8-d-canonical-v2-semantic-1
+RUNTIME_ENVIRONMENT=production
+PUBLIC_BASE_URL=https://PUBLIC_HOST
 LOG_LEVEL=INFO
+API_BIND_ADDRESS=0.0.0.0
+API_PORT=8000
 ```
 
-빠른 격리 test에서는 `sqlite:///...` URL을 사용할 수 있습니다.
+SQL execution, schema, constraints, NULL behavior, transaction 및 RDBRetriever test는
+반드시 disposable PostgreSQL에서 실행합니다.
 
 실제 secret을 담은 `.env`는 Git에 포함하지 않습니다.
 
@@ -540,6 +617,11 @@ uv sync --all-groups
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+Production에서는 [deployment runbook](deploy/README.md)의 Docker Compose stack을
+사용합니다. `agent-api`만 port를 publish하며 PostgreSQL과 Neo4j는 Compose network
+안에서만 접근합니다. Process liveness는 `/live`, coherent runtime readiness는
+`/health`에서 구분됩니다.
+
 ## Evaluation API
 
 인증 header 없이 다음 query parameter를 받습니다.
@@ -553,8 +635,11 @@ GET /answer?question_id=<string>&question=<string>
 ## Evaluation API End-point
 
 ```text
-http://<PUBLIC_IP>/answer
+${PUBLIC_BASE_URL}/answer
 ```
+
+최종 Naver Cloud stable URL은 배포 후 `PUBLIC_BASE_URL` placeholder를 실제 HTTPS
+endpoint로 교체해야 합니다. Evaluator에는 인증 header가 필요하지 않습니다.
 
 ## Example Request
 
@@ -570,9 +655,9 @@ curl -G "http://localhost:8000/answer" \
 {
   "question_id": "Q-001",
   "question": "국내 ETF 중 운용보수가 낮은 상품을 알려줘",
-  "retrieved_context": "[Evidence 1]\nsource_type=rdb\nsource_id=fake-pipeline-record-001\nentity_id=fake-pipeline-record-001\nfield=pipeline_status\nvalue=deterministic_test_record\ntext=M2 pipeline test evidence only; this is not financial product data.\ndataset_snapshot=2026-07-11\nmetadata={\"dataset_snapshot\":\"2026-07-11\",\"fake\":true}",
-  "think_trace": "{\"steps\": [\"query_understanding\", \"entity_resolution\", \"ontology_grounding\", \"planning\", \"execution\", \"evidence_building\", \"validation\", \"answer_generation\"], \"status\": \"success\", \"planner\": \"rule\", \"evidence_count\": 1, \"validation_reasons\": [\"usable_fake_evidence_available\"]}",
-  "answer": "M2 pipeline test answer generated from validated fake evidence."
+  "retrieved_context": "{...validated canonical evidence...}",
+  "think_trace": "{\"steps\":[\"query_understanding\",\"entity_resolution\",\"ontology_grounding\",\"planning\",\"execution\",\"evidence_building\",\"validation\",\"answer_generation\"],\"status\":\"success\",\"planner\":\"rule\"}",
+  "answer": "검증된 데이터 기준 결과입니다. ..."
 }
 ```
 
@@ -582,13 +667,60 @@ curl -G "http://localhost:8000/answer" \
 curl "http://localhost:8000/health"
 ```
 
-예상 응답은 `{"status":"ok"}`입니다.
+Ready server는 HTTP 200과 `status=ok`, `process_status=alive`,
+`readiness_status=READY`, active bundle metadata를 반환합니다. Store/manifest가
+호환되지 않는 v2 process는 startup에서 fail closed하며 v1으로 자동 전환하지 않습니다.
 
 ## Tests
 
 ```bash
 uv run pytest
 ```
+
+## canonical_v2 Runtime Bundle and Cutover (M10.8-E)
+
+`canonical_v2` PostgreSQL is the semantic source of truth.  Neo4j and the
+Vector/BM25 artifact are deterministic, separately versioned projections; they
+never read Excel rows or reconstruct missing relations.
+
+```text
+canonical_v2 PostgreSQL
+ ├── app.graph.ingest_v2      → isolated Neo4j M108DNode namespace
+ └── app.search.index_v2      → data/canonical_v2 semantic artifact
+```
+
+`RUNTIME_DATA_VERSION` selects exactly one coherent bundle.  The intended
+deployment profile is `v2`; `v1` remains the explicit rollback profile.  A
+v2 process requires all three compatible stores and fails closed when the RDB
+snapshot, graph manifest, or semantic manifest is absent, stale, failed, or
+version-mismatched.  It never falls back to v1 during a v2 request:
+
+```text
+RUNTIME_DATA_VERSION=v2
+CANONICAL_V2_SEMANTIC_INDEX_PATH=data/canonical_v2/semantic_search.json
+```
+
+For compatibility with older deployment files, `RDB_REPOSITORY_VERSION=v2`
+and `CANONICAL_V2_MULTI_STORE_ENABLED=true` may be supplied together, but a
+partial legacy selection is rejected.  Do not point v2 mode at a v1 Neo4j
+graph or semantic index.
+
+The startup `/health` response identifies the selected bundle and reports
+generation, snapshot, ontology, canonical schema, transformer, per-store
+readiness, and overall compatibility.  It contains no credentials.
+
+Build the v2 stores after applying Alembic migrations and rebuilding the
+authoritative snapshot:
+
+```bash
+uv run python -m app.graph.ingest_v2
+uv run python -m app.search.index_v2
+RUNTIME_DATA_VERSION=v2 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+curl --fail http://127.0.0.1:8000/health
+```
+
+To roll back without rebuilding data, restart with `RUNTIME_DATA_VERSION=v1`.
+The v1 tables, graph/index artifacts, and implementation are retained.
 
 실행 중인 서버를 평가 서버 방식으로 검사하려면:
 
@@ -598,12 +730,36 @@ uv run python scripts/smoke_test.py \
   --question "평가 질의"
 ```
 
-## Docker
+## Production Deployment and Evaluation Rehearsal
 
-Docker packaging은 production milestone에서 추가합니다.
+Naver Cloud prerequisites, stable paths, Docker Compose build/start commands, persistent
+volumes, firewall policy, startup readiness, and API-only rollback recreation are in
+[deploy/README.md](deploy/README.md). Persistent PostgreSQL/Neo4j data and the semantic
+artifact must not live in `/tmp`. Production secrets come only from a server-local `.env`;
+that file is excluded from Git and the Docker build context.
 
-## Production Deployment
+After deployment, validate externally and preserve the JSON artifact:
 
-Production 배포에서는 public port 80/443의 reverse proxy 뒤에서 Uvicorn을 실행합니다. SSH는 관리자 IP로 제한하고 RDB, Graph DB, Vector DB port는 public internet에 직접 공개하지 않습니다.
+```bash
+uv run python scripts/smoke_test.py \
+  --base-url "$PUBLIC_BASE_URL" \
+  --question-id M109-SMOKE \
+  --question "미국 주식형 ETF를 알려줘."
+
+uv run python scripts/m10_9_rehearsal.py \
+  --base-url "$PUBLIC_BASE_URL" \
+  --repetitions 3 \
+  --output artifacts/m10_9_rehearsal.json
+```
+
+The rehearsal is sequential, repeats identical `question_id`/question pairs, validates the
+exact five-string response schema, records semantic fingerprints, and reports p50/p95/max.
+Semantic unanswerability (`ENTITY_NOT_FOUND`, `ENTITY_AMBIGUOUS`,
+`UNSUPPORTED_CONSTRAINT`, `ZERO_MATCH`, `INSUFFICIENT_EVIDENCE`) remains an HTTP 200 safe
+response. Request timeout and answer-generation dependency failure use controlled 504/503 so
+the evaluator may retry; malformed input remains 422.
+
+Rollback is only `RUNTIME_DATA_VERSION=v1` plus process restart. Rebuild, re-ingestion, and
+migration commands are forbidden during `v2 -> v1 -> v2` rollback rehearsal.
 
 # 2026_MiraeAsset_AGENTAI
