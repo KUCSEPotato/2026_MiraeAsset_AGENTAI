@@ -95,7 +95,7 @@ def create_app() -> FastAPI:
             "ontology_version": ontology_version,
             "semantic_mapping_version": (
                 SEMANTIC_MAPPING_VERSION
-                if ontology_version in {"team-v1", "team_v1", "merged-optical-1.3"}
+                if ontology_version in {"team-v1", "team_v1", "merged-optical-1.3", "merged-optical-1.4"}
                 else "legacy-runtime-v0"
             ),
             "graph_version": os.getenv(

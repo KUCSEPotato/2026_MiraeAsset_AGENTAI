@@ -25,7 +25,9 @@ from app.data.v2_schema import (
     canonical_facts,
     entity_classifications,
     entity_relations,
+    fact_evidence_links,
     financial_products,
+    holding_fact_details,
     index_relations,
     indices,
     ontology_concepts,
@@ -40,8 +42,8 @@ from app.graph.models import GraphBuildData, GraphBuildStats, GraphEdge, GraphNo
 V2_GRAPH_NODE_LABEL = "M108DNode"
 V2_GRAPH_METADATA_LABEL = "M108DDerivedStoreMetadata"
 V2_GRAPH_METADATA_KEY = "canonical-v2-graph"
-V2_GRAPH_PROJECTION_VERSION = "m10.8-d-canonical-v2-graph-1"
-V2_TRANSFORMER_VERSION = "m10.8-b2-relations-v2"
+V2_GRAPH_PROJECTION_VERSION = "m10.9-c2-canonical-v2-graph-1"
+V2_TRANSFORMER_VERSION = "m10.9-c2-kodex-holdings-1"
 
 V2_RELATIONS = frozenset(
     {
@@ -50,7 +52,8 @@ V2_RELATIONS = frozenset(
         "HAS_BENCHMARK", "DENOMINATED_IN", "TRADED_IN_CURRENCY",
         "LISTED_IN_COUNTRY", "HAS_INSTRUMENT_COUNTRY", "HAS_ASSET_CLASS",
         "HAS_EXPOSURE_REGION", "HAS_MARKET_SCOPE", "HAS_RISK_GRADE",
-        "HAS_BOND_TYPE", "HAS_OFFERING_TYPE",
+        "HAS_BOND_TYPE", "HAS_OFFERING_TYPE", "HOLDS",
+        "SECURITY_ISSUED_BY",
     }
 )
 
@@ -58,7 +61,7 @@ _TYPE_LABELS = {
     "ETF": "ETF", "ETN": "ETN", "BOND": "Bond", "FUND": "Fund",
     "FUND_SHARE_CLASS": "FundShareClass", "SALE_LOT": "SaleLot",
     "ORGANIZATION": "Organization", "INDEX": "Index", "CURRENCY": "Currency",
-    "COUNTRY": "Country",
+    "COUNTRY": "Country", "SECURITY": "EquitySecurity",
     "asset_class": "AssetClass", "exposure_region": "ExposureRegion",
     "market_scope": "MarketScope", "risk_grade": "RiskGrade",
     "bond_type": "BondType", "offering_type": "OfferingType",
@@ -85,7 +88,7 @@ class CanonicalV2GraphExtractor:
         snapshot_ids: Iterable[str],
         snapshot: str,
         generation: str = "260824",
-        ontology_version: str = "merged-optical-1.3",
+        ontology_version: str = "merged-optical-1.4",
         transformer_version: str = V2_TRANSFORMER_VERSION,
         projection_version: str = V2_GRAPH_PROJECTION_VERSION,
     ) -> None:
@@ -100,6 +103,8 @@ class CanonicalV2GraphExtractor:
         self._projection_version = projection_version
         self._nodes: dict[str, GraphNode] = {}
         self._edges: dict[str, GraphEdge] = {}
+        self._evidence_by_fact: dict[str, list[str]] = defaultdict(list)
+        self._holding_by_fact: dict[str, Mapping[str, Any]] = {}
         self._stats = GraphBuildStats()
 
     def extract(self) -> GraphBuildData:
@@ -124,6 +129,7 @@ class CanonicalV2GraphExtractor:
                 select(ontology_concepts).where(ontology_concepts.c.active.is_(True)).order_by(ontology_concepts.c.concept_iri)
             ).mappings():
                 self._concept_node(row)
+            self._extract_relation_metadata(connection)
             self._extract_entity_relations(connection)
             self._extract_organization_relations(connection)
             self._extract_index_relations(connection)
@@ -158,7 +164,13 @@ class CanonicalV2GraphExtractor:
         node_type = _TYPE_LABELS.get(str(product)) if product is not None else _TYPE_LABELS.get(kind)
         if node_type is None:
             return
-        labels = (V2_GRAPH_NODE_LABEL, "FinancialProduct", node_type) if product is not None else (V2_GRAPH_NODE_LABEL, node_type)
+        labels = (
+            (V2_GRAPH_NODE_LABEL, "FinancialProduct", node_type)
+            if product is not None
+            else (V2_GRAPH_NODE_LABEL, "Security", node_type)
+            if kind == "SECURITY"
+            else (V2_GRAPH_NODE_LABEL, node_type)
+        )
         self._nodes[str(row["entity_id"])] = GraphNode(
             entity_id=str(row["entity_id"]), node_type=node_type, labels=labels,
             properties={
@@ -190,13 +202,43 @@ class CanonicalV2GraphExtractor:
             raise ValueError(f"unapproved canonical_v2 graph relation: {relation}")
         if subject not in self._nodes or object_id not in self._nodes:
             raise ValueError(f"canonical relation has an unprojectable endpoint: {fact_id}")
+        holding = self._holding_by_fact.get(fact_id)
+        properties: dict[str, Any] = {
+            "canonical_fact_id": fact_id, "dataset_snapshot": self._snapshot,
+            "generation": self._generation, "ontology_version": self._ontology_version,
+            "evidence_assertion_ids": sorted(self._evidence_by_fact.get(fact_id, [])),
+        }
+        if holding is not None:
+            properties.update({
+                "effective_date": holding["effective_date"].isoformat(),
+                "external_holding_record_id": holding["external_holding_record_id"],
+                "source_provider": holding["source_provider"],
+                "weight_normalized": (
+                    str(holding["weight_normalized"])
+                    if holding["weight_normalized"] is not None else None
+                ),
+                "weight_unit": holding["weight_unit"],
+                "weight_scale": holding["weight_scale"],
+            })
         self._edges[fact_id] = GraphEdge(
             edge_id=f"v2:{fact_id}", subject_id=subject, edge_type=relation, object_id=object_id,
-            properties={
-                "canonical_fact_id": fact_id, "dataset_snapshot": self._snapshot,
-                "generation": self._generation, "ontology_version": self._ontology_version,
-            },
+            properties=properties,
         )
+
+    def _extract_relation_metadata(self, connection) -> None:
+        rows = connection.execute(
+            select(fact_evidence_links.c.fact_id, fact_evidence_links.c.assertion_id)
+            .join(canonical_facts, canonical_facts.c.fact_id == fact_evidence_links.c.fact_id)
+            .where(canonical_facts.c.snapshot_id.in_(self._snapshot_ids))
+        )
+        for fact_id, assertion_id in rows:
+            self._evidence_by_fact[str(fact_id)].append(str(assertion_id))
+        rows = connection.execute(
+            select(holding_fact_details)
+            .join(canonical_facts, canonical_facts.c.fact_id == holding_fact_details.c.fact_id)
+            .where(canonical_facts.c.snapshot_id.in_(self._snapshot_ids))
+        ).mappings()
+        self._holding_by_fact = {str(row["fact_id"]): row for row in rows}
 
     def _extract_entity_relations(self, connection) -> None:
         rows = connection.execute(

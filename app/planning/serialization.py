@@ -6,6 +6,9 @@ from app.domain.models import (
     FilterOperator,
     GroundedQuery,
     ResolutionStatus,
+    OrderedComparison,
+    SortOperation,
+    TopN,
 )
 
 
@@ -28,6 +31,19 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
         # Physical compatibility keys are isolated at this planner/compiler
         # boundary. Ontology identity remains available alongside them.
         "product_types": [concept.value for concept in product_concepts],
+        "product_universe": (
+            {
+                "operation": "UNION",
+                "operands": query.parsed_query.product_universe.operands,
+            }
+            if query.parsed_query.product_universe is not None
+            else None
+        ),
+        "product_universe_constraint_id": (
+            query.parsed_query.product_universe.constraint_id
+            if query.parsed_query.product_universe is not None
+            else None
+        ),
         "ontology_product_types": [
             {
                 "ontology_uri": getattr(concept, "ontology_uri", None),
@@ -62,6 +78,12 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
             for item in query.grounded_requested_fields
             if item.canonical_field is not None
         ],
+        "filter_constraint_ids": [
+            item.raw_filter.constraint_id for item in query.grounded_filters
+        ],
+        "sort_constraint_ids": [
+            item.raw_sort.constraint_id for item in query.grounded_sort
+        ],
         "requested_field_constraint_ids": [
             item.constraint_id
             for item in query.semantic_constraints
@@ -82,6 +104,39 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
             if query.parsed_query.result_limit is not None
             else None
         ),
+        "sort_operations": [
+            SortOperation(
+                semantic_metric_key=item.canonical_field,
+                direction=item.raw_sort.direction,
+            ).model_dump(mode="json")
+            for item in query.grounded_sort
+            if item.canonical_field is not None
+        ],
+        "top_n": (
+            TopN(value=query.parsed_query.result_limit.value).model_dump(mode="json")
+            if query.parsed_query.result_limit is not None
+            and query.parsed_query.result_limit.value <= 1000
+            and (
+                bool(query.parsed_query.sort)
+                or query.parsed_query.result_limit.raw_text.startswith(("상위", "가장"))
+            )
+            else None
+        ),
+        "ordered_comparisons": [
+            OrderedComparison(
+                semantic_field=item.canonical_field,
+                operator=item.raw_filter.operator.value,
+                value=_filter_value(item),
+            ).model_dump(mode="json")
+            for item in query.grounded_filters
+            if item.canonical_field is not None
+            and item.raw_filter.operator in {
+                FilterOperator.GT,
+                FilterOperator.GTE,
+                FilterOperator.LT,
+                FilterOperator.LTE,
+            }
+        ],
         "limit_constraint_id": (
             query.parsed_query.result_limit.constraint_id
             if query.parsed_query.result_limit is not None
@@ -96,6 +151,7 @@ def has_structured_inputs(inputs: dict[str, Any]) -> bool:
         inputs.get(key)
         for key in (
             "product_types",
+            "product_universe",
             "filters",
             "sort",
             "requested_fields",

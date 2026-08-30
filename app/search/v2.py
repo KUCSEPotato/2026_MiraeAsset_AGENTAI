@@ -28,7 +28,7 @@ from app.search.models import SemanticDocument, SemanticIndexMetadata
 from app.search.normalization import normalize_text
 
 
-V2_SEMANTIC_PROJECTION_VERSION = "m10.8-d-canonical-v2-semantic-1"
+V2_SEMANTIC_PROJECTION_VERSION = "m10.9-c2-canonical-v2-semantic-1"
 V2_SEMANTIC_DATASET = "PREF02N001"
 V2_STRATEGY_COLUMN = "cu_strtegy"
 

@@ -2,7 +2,7 @@
 
 금융 상품 질의응답 Agent를 위한 competition evaluation API입니다. Production은
 2026-08-24 (`260824`) source generation의 `canonical_v2` PostgreSQL snapshot과
-Team Ontology `merged-optical-1.3`을 사용합니다. PostgreSQL에서 파생한 Neo4j graph와
+Team Ontology `merged-optical-1.4`를 사용합니다. PostgreSQL에서 파생한 Neo4j graph와
 6,026-document BM25/vector artifact는 동일 version bundle로 startup compatibility
 검사를 통과해야 합니다.
 `DATABASE_URL`은 필수이며 PostgreSQL URL만 허용됩니다. `NEO4J_URI`와 credential이
@@ -519,7 +519,7 @@ cutover는 M10.8-C 이후 범위입니다.
 ```text
 RUNTIME_DATA_VERSION=v2
 CANONICAL_V2_GENERATION=260824
-CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.3
+CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.4
 ```
 
 v2 mode는 지정 generation/date의 4개 source snapshot이 모두 `READY / PASSED`이고
@@ -568,8 +568,8 @@ RDB_DEFAULT_LIMIT=10
 RDB_MAX_LIMIT=10000
 RUNTIME_DATA_VERSION=v2
 CANONICAL_V2_GENERATION=260824
-CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.3
-CANONICAL_V2_TRANSFORMER_VERSION=m10.8-b2-relations-v2
+CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.4
+CANONICAL_V2_TRANSFORMER_VERSION=m10.9-c2-kodex-holdings-1
 SEMANTIC_ARTIFACT_ROOT=/srv/financial-semantic-agent/artifacts/260824
 SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/v1/semantic_search.json
 SEMANTIC_INDEX_VERSION=m10.7-strategy-20260829
@@ -590,9 +590,9 @@ ONTOLOGY_VERSION=team-v1
 GRAPH_INGEST_BATCH_SIZE=1000
 GRAPH_QUERY_LIMIT=100
 GRAPH_MAX_DEPTH=2
-CANONICAL_V2_GRAPH_PROJECTION_VERSION=m10.8-d-canonical-v2-graph-1
+CANONICAL_V2_GRAPH_PROJECTION_VERSION=m10.9-c2-canonical-v2-graph-1
 CANONICAL_V2_SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/canonical_v2/semantic_search.json
-CANONICAL_V2_SEMANTIC_INDEX_VERSION=m10.8-d-canonical-v2-semantic-1
+CANONICAL_V2_SEMANTIC_INDEX_VERSION=m10.9-c2-canonical-v2-semantic-1
 RUNTIME_ENVIRONMENT=production
 PUBLIC_BASE_URL=https://PUBLIC_HOST
 LOG_LEVEL=INFO
@@ -646,7 +646,7 @@ endpoint로 교체해야 합니다. Evaluator에는 인증 header가 필요하�
 ```bash
 curl -G "http://localhost:8000/answer" \
   --data-urlencode "question_id=Q-001" \
-  --data-urlencode "question=국내 ETF 중 운용보수가 낮은 상품을 알려줘"
+  --data-urlencode "question=미국 증시에 상장된 주식형 ETF 중 순자산이 큰 상품 3개"
 ```
 
 ## Example Response
@@ -761,5 +761,47 @@ the evaluator may retry; malformed input remains 422.
 
 Rollback is only `RUNTIME_DATA_VERSION=v1` plus process restart. Rebuild, re-ingestion, and
 migration commands are forbidden during `v2 -> v1 -> v2` rollback rehearsal.
+
+## Structured Metric Operations (M10.9-C1)
+
+Ranking is authorized by a source-scoped comparison contract, not by a global
+sortable-field flag. `ORDER BY` and bounded Top-N are compiled from structured
+operations with SQLAlchemy. PREF01/KRW and PREF02/USD AUM are sortable only
+inside their own source scope and are never compared across sources. Expense
+ratio ranking remains fail-closed because neither source contract defines its
+numeric scale. Bond credit ratings use an explicit ordinal vocabulary.
+Organizer evaluation semantics ignore buyable quantity: a Bond is purchasable
+unless an authoritative delisted/listing-ended fact exists by the 2026-08-24
+cutoff. The current PRBD source has no such lifecycle field, so it is treated as
+the cutoff Bond universe without inventing a SaleLot availability condition.
+
+`ONE_YEAR_RETURN` is a distinct exact-period metric. PREF01 `du_er_1y` is
+rankable only for the DomesticETF source scope. PREF02 has no 1Y return field,
+and PRFD return is FundShareClass-grain, so cross-product ETF/Public Fund
+ranking fails closed. Validated product-universe unions are planned as one
+global candidate set; arbitrary grouped boolean predicates remain unsupported.
+
+## Trusted Holdings Canonical Integration (M10.9-C2)
+
+The holdings boundary consumes a normalized, manifest-backed KODEX snapshot;
+it does not crawl or call provider APIs. Eligible rows resolve the source ETF
+and constituent by deterministic identifiers and materialize the temporal path:
+
+```text
+FinancialProduct -> HOLDS -> EquitySecurity -> SECURITY_ISSUED_BY -> Organization
+```
+
+Every projected relation is backed by a canonical fact and source evidence.
+Name-only identities, post-cutoff rows, collisions, and unproven issuers fail
+closed. Neo4j supports the reviewed reverse traversal and the two-hop issuer
+path without storing a separate `HELD_BY` fact.
+
+`TRUSTED_HOLDINGS_RUNTIME_ENABLED=0` is the production default. Enabling it
+requires a READY 2026-08-24 external manifest, evidence-backed PostgreSQL
+`HOLDS` facts, and an exactly reconciled compatible graph manifest. The current
+source-team repository artifact is a contract fixture rather than a complete
+production snapshot, so deployment must remain disabled until that independent
+data gate is satisfied. Public-fund holdings and sector inference remain out of
+scope.
 
 # 2026_MiraeAsset_AGENTAI

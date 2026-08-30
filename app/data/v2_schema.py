@@ -32,7 +32,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 
 CANONICAL_V2_SCHEMA = "canonical_v2"
-CANONICAL_V2_SCHEMA_VERSION = "m10.8-b-canonical-v2"
+CANONICAL_V2_SCHEMA_VERSION = "m10.9-c2-canonical-v2"
 
 _NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_name)s",
@@ -133,6 +133,67 @@ source_records = Table(
     CheckConstraint("source_row_number > 0", name="positive_row_number"),
 )
 
+external_snapshot_manifests = Table(
+    "external_snapshot_manifests",
+    metadata,
+    Column("external_snapshot_id", String(96), primary_key=True),
+    Column("canonical_snapshot_id", String(96), ForeignKey(f"{CANONICAL_V2_SCHEMA}.dataset_snapshots.snapshot_id"), nullable=False),
+    Column("schema_version", String(64), nullable=False),
+    Column("status", String(24), nullable=False),
+    Column("data_cutoff_date", Date, nullable=False),
+    Column("manifest_sha256", String(64), nullable=False),
+    Column("manifest_json", JSONB, nullable=False),
+    _now(),
+    CheckConstraint("status IN ('READY', 'PARTIAL', 'FAILED')", name="status_allowed"),
+    CheckConstraint("length(manifest_sha256) = 64", name="manifest_sha256_length"),
+)
+
+external_raw_artifacts = Table(
+    "external_raw_artifacts",
+    metadata,
+    Column("artifact_id", Text, primary_key=True),
+    Column("external_snapshot_id", String(96), ForeignKey(f"{CANONICAL_V2_SCHEMA}.external_snapshot_manifests.external_snapshot_id"), nullable=False),
+    Column("sha256", String(64), nullable=False),
+    Column("relative_path", Text, nullable=False),
+    Column("source_url", Text, nullable=False),
+    Column("content_type", String(32), nullable=False),
+    UniqueConstraint("external_snapshot_id", "sha256", "source_url", name="external_artifact_identity"),
+    CheckConstraint("length(sha256) = 64", name="sha256_length"),
+)
+
+external_source_records = Table(
+    "external_source_records",
+    metadata,
+    Column("external_source_record_id", Text, primary_key=True),
+    Column("external_snapshot_id", String(96), ForeignKey(f"{CANONICAL_V2_SCHEMA}.external_snapshot_manifests.external_snapshot_id"), nullable=False),
+    Column("artifact_id", Text, ForeignKey(f"{CANONICAL_V2_SCHEMA}.external_raw_artifacts.artifact_id"), nullable=False),
+    Column("source_provider", Text, nullable=False),
+    Column("source_url", Text, nullable=False),
+    Column("effective_date", Date, nullable=False),
+    Column("retrieved_at", DateTime(timezone=True), nullable=False),
+    Column("trust_tier", Integer, nullable=False),
+    Column("quality_status", String(32), nullable=False),
+    Column("raw_content_hash", String(64), nullable=False),
+    CheckConstraint("trust_tier BETWEEN 1 AND 3", name="trust_tier_allowed"),
+)
+
+external_holding_records = Table(
+    "external_holding_records",
+    metadata,
+    Column("holding_record_id", Text, primary_key=True),
+    Column("external_source_record_id", Text, ForeignKey(f"{CANONICAL_V2_SCHEMA}.external_source_records.external_source_record_id"), nullable=False),
+    Column("canonical_source_record_id", Text, ForeignKey(f"{CANONICAL_V2_SCHEMA}.source_records.source_record_id"), nullable=False, unique=True),
+    Column("product_source_id", Text, nullable=False),
+    Column("constituent_source_id", Text),
+    Column("effective_date", Date, nullable=False),
+    Column("product_resolution_status", String(24), nullable=False),
+    Column("security_resolution_status", String(24), nullable=False),
+    Column("normalized_payload", JSONB, nullable=False),
+    Column("payload_sha256", String(64), nullable=False),
+    CheckConstraint("product_resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED')", name="product_resolution_status_allowed"),
+    CheckConstraint("security_resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED', 'NON_SECURITY')", name="security_resolution_status_allowed"),
+)
+
 quarantine_records = Table(
     "quarantine_records",
     metadata,
@@ -163,7 +224,7 @@ canonical_entities = Table(
     _now(),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     UniqueConstraint("entity_id", "entity_kind", name="entity_kind_identity"),
-    CheckConstraint("entity_kind IN ('FINANCIAL_PRODUCT', 'FUND_SHARE_CLASS', 'SALE_LOT', 'ORGANIZATION', 'INDEX', 'CURRENCY', 'COUNTRY')", name="kind_allowed"),
+    CheckConstraint("entity_kind IN ('FINANCIAL_PRODUCT', 'FUND_SHARE_CLASS', 'SALE_LOT', 'ORGANIZATION', 'INDEX', 'CURRENCY', 'COUNTRY', 'SECURITY')", name="kind_allowed"),
     CheckConstraint("name_status IN ('AUTHORITATIVE', 'SOURCE_ONLY', 'NO_AUTHORITATIVE_FAMILY_NAME', 'UNKNOWN')", name="name_status_allowed"),
     CheckConstraint("name_status <> 'NO_AUTHORITATIVE_FAMILY_NAME' OR preferred_name IS NULL", name="missing_family_name_is_null"),
     CheckConstraint("identity_status IN ('PROVISIONAL', 'VALIDATED', 'AMBIGUOUS', 'CONFLICT', 'RETIRED')", name="identity_status_allowed"),
@@ -293,6 +354,28 @@ organizations = Table(
     CheckConstraint("organization_type IN ('ASSET_MANAGER', 'ISSUER', 'TRUSTEE', 'DISTRIBUTOR', 'OTHER')", name="organization_type_allowed"),
 )
 
+securities = Table(
+    "securities",
+    metadata,
+    Column("security_id", Text, primary_key=True),
+    Column("entity_kind", String(32), nullable=False, server_default=text("'SECURITY'")),
+    Column("security_type", String(32), nullable=False),
+    Column("ticker", Text),
+    Column("isin", Text),
+    Column("exchange", Text),
+    Column("issuer_resolution_status", String(24), nullable=False, server_default=text("'UNRESOLVED'")),
+    ForeignKeyConstraint(
+        ["security_id", "entity_kind"],
+        [f"{CANONICAL_V2_SCHEMA}.canonical_entities.entity_id", f"{CANONICAL_V2_SCHEMA}.canonical_entities.entity_kind"],
+        name="fk_security_entity_kind",
+    ),
+    CheckConstraint("entity_kind = 'SECURITY'", name="security_kind"),
+    CheckConstraint("security_type IN ('EQUITY')", name="security_type_allowed"),
+    CheckConstraint("issuer_resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED')", name="issuer_resolution_status_allowed"),
+)
+Index("ix_securities_ticker_exchange", securities.c.ticker, securities.c.exchange)
+Index("ix_securities_isin", securities.c.isin)
+
 indices = Table(
     "indices",
     metadata,
@@ -417,7 +500,7 @@ source_record_entities = Table(
         [f"{CANONICAL_V2_SCHEMA}.canonical_entities.entity_id", f"{CANONICAL_V2_SCHEMA}.canonical_entities.entity_kind"],
         name="fk_source_record_entity_kind",
     ),
-    CheckConstraint("entity_kind IN ('FINANCIAL_PRODUCT', 'FUND_SHARE_CLASS', 'SALE_LOT')", name="evidence_bearing_kind"),
+    CheckConstraint("entity_kind IN ('FINANCIAL_PRODUCT', 'FUND_SHARE_CLASS', 'SALE_LOT', 'SECURITY')", name="evidence_bearing_kind"),
     CheckConstraint("provenance_role IN ('DESCRIBES', 'SUPPORTS')", name="provenance_role_allowed"),
 )
 Index("ix_source_record_entities_entity", source_record_entities.c.entity_id)
@@ -471,13 +554,29 @@ entity_relations = Table(
     Column("subject_entity_id", Text, ForeignKey(f"{CANONICAL_V2_SCHEMA}.canonical_entities.entity_id"), nullable=False),
     Column("relation_type", String(40), nullable=False),
     Column("object_entity_id", Text, ForeignKey(f"{CANONICAL_V2_SCHEMA}.canonical_entities.entity_id"), nullable=False),
-    UniqueConstraint("subject_entity_id", "relation_type", "object_entity_id", name="entity_relation_identity"),
+    # Snapshot/effective-time identity lives on canonical_facts.  A global
+    # subject/relation/object uniqueness rule would incorrectly collapse the
+    # same temporal relation across snapshots.
     CheckConstraint(
-        "relation_type IN ('HAS_SHARE_CLASS', 'HAS_SALE_LOT', 'MANAGED_BY', 'ISSUED_BY', 'HAS_TRUSTEE', 'HAS_UNDERLYING_INDEX', 'TRACKS_INDEX', 'HAS_BENCHMARK', 'DENOMINATED_IN', 'TRADED_IN_CURRENCY', 'LISTED_IN_COUNTRY', 'HAS_INSTRUMENT_COUNTRY')",
+        "relation_type IN ('HAS_SHARE_CLASS', 'HAS_SALE_LOT', 'MANAGED_BY', 'ISSUED_BY', 'HAS_TRUSTEE', 'HAS_UNDERLYING_INDEX', 'TRACKS_INDEX', 'HAS_BENCHMARK', 'DENOMINATED_IN', 'TRADED_IN_CURRENCY', 'LISTED_IN_COUNTRY', 'HAS_INSTRUMENT_COUNTRY', 'HOLDS', 'SECURITY_ISSUED_BY')",
         name="relation_type_allowed",
     ),
 )
 Index("ix_entity_relations_target", entity_relations.c.object_entity_id, entity_relations.c.relation_type)
+
+holding_fact_details = Table(
+    "holding_fact_details",
+    metadata,
+    Column("fact_id", Text, ForeignKey(f"{CANONICAL_V2_SCHEMA}.entity_relations.fact_id", ondelete="CASCADE"), primary_key=True),
+    Column("effective_date", Date, nullable=False),
+    Column("weight_normalized", Numeric(38, 15)),
+    Column("weight_unit", String(64)),
+    Column("weight_scale", String(32)),
+    Column("source_provider", Text, nullable=False),
+    Column("external_holding_record_id", Text, nullable=False),
+    CheckConstraint("weight_normalized IS NULL OR (weight_normalized >= 0 AND weight_normalized <= 1)", name="weight_proportion"),
+    CheckConstraint("(weight_normalized IS NULL AND weight_unit IS NULL AND weight_scale IS NULL) OR (weight_normalized IS NOT NULL AND weight_unit IS NOT NULL AND weight_scale IS NOT NULL)", name="weight_semantic_tuple"),
+)
 
 fact_evidence_links = Table(
     "fact_evidence_links",

@@ -60,6 +60,7 @@ class QualityAwareEvidenceValidator:
                 comparison_scope,
                 ranking_scope,
                 product_type,
+                evidence,
             )
         )
 
@@ -456,11 +457,20 @@ class QualityAwareEvidenceValidator:
         comparison_scope: bool,
         ranking_scope: bool,
         product_type: str | None,
+        evidence: EvidenceBundle,
     ) -> list[ValidationFinding]:
         if not comparison_scope:
             return []
         findings: list[ValidationFinding] = []
         for field in required_fields:
+            if ranking_scope and any(
+                contract.get("canonical_field") == field
+                and contract.get("sort_capability") is True
+                for record in evidence.evidence
+                for contract in record.metadata.get("comparison_contracts", [])
+                if isinstance(contract, dict)
+            ):
+                continue
             quality = self._quality_provider.get_quality(field, product_type)
             safety = (
                 quality.ranking_safe

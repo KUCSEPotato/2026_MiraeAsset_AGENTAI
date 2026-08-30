@@ -80,6 +80,12 @@ class StructuredQueryPlanValidator:
         unsupported.update(query.parsed_query.unsupported_constraint_ids)
         unsupported.update(plan.unsupported_constraint_ids)
         errors.extend(f"unsupported_constraint:{item}" for item in sorted(unsupported))
+        errors.extend(
+            f"unsupported_comparison:{reason}"
+            for step in plan.steps
+            for reason in step.inputs.get("comparison_unsupported_reasons", [])
+            if isinstance(reason, str) and reason
+        )
         if query.parsed_query.unparsed_material_spans:
             errors.append("unparsed_material_clause")
 

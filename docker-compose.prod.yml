@@ -67,6 +67,7 @@ services:
       NEO4J_USER: ${NEO4J_USER:?NEO4J_USER is required}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
       RUNTIME_DATA_VERSION: ${RUNTIME_DATA_VERSION:?RUNTIME_DATA_VERSION is required}
+      TRUSTED_HOLDINGS_RUNTIME_ENABLED: ${TRUSTED_HOLDINGS_RUNTIME_ENABLED:-0}
       SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/v1/semantic_search.json
       CANONICAL_V2_SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/canonical_v2/semantic_search.json
     depends_on:

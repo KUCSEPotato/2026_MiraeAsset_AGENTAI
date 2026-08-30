@@ -254,7 +254,9 @@ def test_listing_country_is_not_exposure_region(retriever) -> None:
     ("product_type", "currency", "has_rows"),
     [
         ("FinancialProduct.ETF", "USD", True),
-        ("FinancialProduct.ETF", "KRW", False),
+        # M10.9-C1 normalizes the authoritative PREF01 CURR_CD_KRW code so
+        # source-scoped KRW AUM comparisons have an enforceable currency fact.
+        ("FinancialProduct.ETF", "KRW", True),
         ("FinancialProduct.Bond", "KRW", True),
     ],
 )

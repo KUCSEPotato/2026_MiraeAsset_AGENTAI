@@ -14,6 +14,7 @@ from app.domain.models import (
     FilterOperator,
     FilterSpec,
     ParsedQuery,
+    ProductUniverseUnion,
     QueryIntent,
     RelationDirection,
     RelationMention,
@@ -57,8 +58,9 @@ class RuleBasedQueryAnalyzer:
         "Equity", "주식", "Bond", "채권", "통화", "기타",
     )
     _field_aliases = (
+        "1년 수익률", "1년수익률", "연 수익률", "연수익률",
         "운용규모", "순자산", "AUM", "총보수", "보수율", "기준가격", "NAV",
-        "가격", "티커", "ticker", "ISIN",
+        "가격", "티커", "ticker", "ISIN", "신용등급",
     )
     _semantic_markers = (
         "관련", "전략", "친환경", "폭넓게", "테마", "산업", "혁신형",
@@ -73,13 +75,26 @@ class RuleBasedQueryAnalyzer:
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
+        "종목", "종목을", "순으로",
+        "TOP", "top",
     }
 
     async def analyze(self, question: str) -> ParsedQuery:
         entities = self._extract_entity_mentions(question)
         entity_spans = [range(*_find_span(question, item.raw_text)) for item in entities]
         product_types = self._extract_product_types(question, entity_spans)
+        product_universe, universe_span = self._extract_product_universe(question)
         filters = self._extract_filters(question, product_types, entity_spans)
+        if product_universe is not None:
+            filters = [
+                item
+                for item in filters
+                if not (
+                    item.field == "region"
+                    and str(item.value) in {"국내", "한국"}
+                    and "DomesticETF" in product_universe.operands
+                )
+            ]
         sort, sort_spans = self._extract_sort(question)
         requested_fields = self._extract_requested_fields(question, sort_spans)
         relations = self._extract_relations(question)
@@ -139,6 +154,15 @@ class RuleBasedQueryAnalyzer:
             add(start, end, ConstraintSemanticType.PRODUCT_TYPE,
                 payload={"value": value}, ref=("product_type", index))
 
+        if product_universe is not None and universe_span is not None:
+            add(
+                universe_span.start,
+                universe_span.stop,
+                ConstraintSemanticType.PRODUCT_UNIVERSE,
+                payload={"operands": product_universe.operands},
+                ref=("product_universe", 0),
+            )
+
         for index, item in enumerate(filters):
             start, end = self._filter_span(question, item)
             unit_is_unexecutable = (
@@ -185,6 +209,7 @@ class RuleBasedQueryAnalyzer:
             )
 
         if result_limit is not None and limit_span is not None:
+            limit_out_of_bounds = result_limit.value > 1000
             ranking_field_missing = (
                 result_limit.raw_text.startswith(("상위", "가장")) and not sort
             )
@@ -196,10 +221,16 @@ class RuleBasedQueryAnalyzer:
                 ref=("limit", 0),
                 status=(
                     ConstraintStatus.UNSUPPORTED
-                    if ranking_field_missing
+                    if limit_out_of_bounds or ranking_field_missing
                     else ConstraintStatus.PARSED
                 ),
-                reason=("ranking_field_missing" if ranking_field_missing else None),
+                reason=(
+                    "top_n_out_of_bounds"
+                    if limit_out_of_bounds
+                    else "ranking_field_missing"
+                    if ranking_field_missing
+                    else None
+                ),
             )
         if aggregation is not None and aggregation_span is not None:
             add(
@@ -279,6 +310,10 @@ class RuleBasedQueryAnalyzer:
             item.model_copy(update={"constraint_id": ref_ids.get(("relation", i))})
             for i, item in enumerate(relations)
         ]
+        if product_universe is not None:
+            product_universe = product_universe.model_copy(
+                update={"constraint_id": ref_ids.get(("product_universe", 0))}
+            )
         if result_limit is not None:
             result_limit = result_limit.model_copy(
                 update={"constraint_id": ref_ids.get(("limit", 0))}
@@ -297,6 +332,7 @@ class RuleBasedQueryAnalyzer:
         ]
         return ParsedQuery(
             original_question=question, intent=intent, product_types=product_types,
+            product_universe=product_universe,
             entities=entities, filters=filters, relations=relations, sort=sort,
             requested_fields=requested_fields,
             semantic_terms=semantic_terms,
@@ -366,6 +402,18 @@ class RuleBasedQueryAnalyzer:
         if product_types == ["채권"]:
             assets = [value for value in assets if value != "채권"]
         if regions:
+            listing_regions = {
+                match.group(1).casefold()
+                for match in re.finditer(
+                    r"(미국|한국|국내)\s*(?:증시|시장|거래소)(?:에)?\s*상장",
+                    question,
+                    re.IGNORECASE,
+                )
+            }
+            regions = [
+                value for value in regions if value.casefold() not in listing_regions
+            ]
+        if regions:
             negated = next((value for value in regions if re.search(
                 rf"{re.escape(value)}(?:을|를|이|가)?\s*(?:제외|아닌)", question,
                 re.IGNORECASE)), None)
@@ -394,6 +442,50 @@ class RuleBasedQueryAnalyzer:
         if re.search(r"공모\s*펀드", question, re.IGNORECASE):
             filters.append(
                 FilterSpec(field="offering_type", operator="eq", value="공모")
+            )
+        listing = re.search(
+            r"(미국|한국|국내)\s*(?:증시|시장|거래소)(?:에)?\s*상장(?:된|한)?",
+            question,
+            re.IGNORECASE,
+        )
+        if listing:
+            filters.append(
+                FilterSpec(
+                    field="listing_country",
+                    operator=FilterOperator.EQ,
+                    value="US" if listing.group(1) == "미국" else "KR",
+                )
+            )
+        if re.search(r"원화\s*채권", question):
+            filters.append(
+                FilterSpec(field="currency", operator=FilterOperator.EQ, value="KRW")
+            )
+        rating = re.search(
+            r"(?:신용등급\s*)?([A-Z]{1,4}(?:[+\-0])?)\s*(이상|이하|초과|미만)",
+            question,
+            re.IGNORECASE,
+        )
+        if rating:
+            operators = {
+                "이상": FilterOperator.GTE,
+                "이하": FilterOperator.LTE,
+                "초과": FilterOperator.GT,
+                "미만": FilterOperator.LT,
+            }
+            filters.append(
+                FilterSpec(
+                    field="credit_rating",
+                    operator=operators[rating.group(2)],
+                    value=rating.group(1).upper(),
+                )
+            )
+        if re.search(r"현재\s*판매\s*가능", question):
+            filters.append(
+                FilterSpec(
+                    field="current_sale_available",
+                    operator=FilterOperator.EQ,
+                    value=True,
+                )
             )
         filters.extend(self._extract_numeric_filters(question))
         return filters
@@ -448,6 +540,35 @@ class RuleBasedQueryAnalyzer:
                 )
                 found.append((match.start(), SortSpec(field=match.group(1), direction=direction),
                               range(match.start(), match.end())))
+            explicit = re.compile(
+                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
+                r"(오름차순|내림차순|ASC|DESC)",
+                re.IGNORECASE,
+            )
+            for match in explicit.finditer(question):
+                direction = (
+                    "asc" if match.group(2).casefold() in {"오름차순", "asc"} else "desc"
+                )
+                found.append(
+                    (
+                        match.start(),
+                        SortSpec(field=match.group(1), direction=direction),
+                        range(match.start(), match.end()),
+                    )
+                )
+            top_ranking = re.compile(
+                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
+                r"(?:TOP|상위)\s*\d+",
+                re.IGNORECASE,
+            )
+            for match in top_ranking.finditer(question):
+                found.append(
+                    (
+                        match.start(),
+                        SortSpec(field=match.group(1), direction="desc"),
+                        range(match.start(), match.end()),
+                    )
+                )
         found.sort(key=lambda item: item[0])
         return [item[1] for item in found], [item[2] for item in found]
 
@@ -550,6 +671,13 @@ class RuleBasedQueryAnalyzer:
                                 path_position=1),
             ]
         target_patterns = (
+            (re.compile(
+                r"^(.+?)(?:을|를)\s*보유한\s*"
+                r"(?:(?:국내\s*/\s*해외|국내|해외)\s*)?"
+                r"(?:ETF|ETN|공모\s*펀드|펀드)",
+                re.IGNORECASE,
+            ), "보유한", "FinancialProduct", "Security",
+             lambda value: _strip_korean_particle(value)),
             (re.compile(r"^(.+?)(?:이|가)\s*발행한\s*채권"), "발행한", "Bond",
              "Organization", lambda value: _strip_korean_particle(value)),
             (re.compile(r"발행사가\s*(.+?)인\s*채권"), "발행사", "Bond", "Issuer",
@@ -607,13 +735,59 @@ class RuleBasedQueryAnalyzer:
 
     @staticmethod
     def _extract_limit(question: str) -> tuple[ResultLimit | None, range | None]:
-        for pattern in (r"상위\s*(\d+)\s*개", r"(\d+)\s*개만",
-                        r"가장\s+(?:큰|낮은|높은|작은)\s*(\d+)\s*개"):
+        for pattern in (r"(?:TOP|Top|top)\s*(\d+)", r"상위\s*(\d+)\s*개", r"(\d+)\s*개만",
+                        r"가장\s+(?:큰|낮은|높은|작은)\s*(\d+)\s*개",
+                        r"(?:상품|종목)?\s*(\d+)\s*개(?:를|만)?"):
             match = re.search(pattern, question)
             if match is not None:
                 return (ResultLimit(value=int(match.group(1)), raw_text=match.group(0)),
                         range(match.start(), match.end()))
         return None, None
+
+    @staticmethod
+    def _extract_product_universe(
+        question: str,
+    ) -> tuple[ProductUniverseUnion | None, range | None]:
+        matches: list[tuple[int, int, str]] = []
+        occupied: list[range] = []
+
+        combined = re.search(r"국내\s*/\s*해외\s*ETF", question, re.IGNORECASE)
+        if combined:
+            matches.extend(
+                [
+                    (combined.start(), combined.end(), "DomesticETF"),
+                    (combined.start(), combined.end(), "ForeignETF"),
+                ]
+            )
+            occupied.append(range(combined.start(), combined.end()))
+
+        for pattern, operand in (
+            (r"국내\s*ETF", "DomesticETF"),
+            (r"해외\s*ETF", "ForeignETF"),
+            (r"공모\s*펀드", "PublicFund"),
+        ):
+            for match in re.finditer(pattern, question, re.IGNORECASE):
+                if any(match.start() in span for span in occupied):
+                    continue
+                matches.append((match.start(), match.end(), operand))
+                occupied.append(range(match.start(), match.end()))
+
+        for pattern, operand in ((r"ETF", "ETF"), (r"펀드", "Fund")):
+            for match in re.finditer(pattern, question, re.IGNORECASE):
+                if any(match.start() in span for span in occupied):
+                    continue
+                matches.append((match.start(), match.end(), operand))
+
+        operands = list(dict.fromkeys(item[2] for item in sorted(matches)))
+        has_source_scope = any(item in {"DomesticETF", "ForeignETF"} for item in operands)
+        if len(operands) < 2 and not has_source_scope:
+            return None, None
+        if not matches:
+            return None, None
+        return (
+            ProductUniverseUnion(operands=operands),
+            range(min(item[0] for item in matches), max(item[1] for item in matches)),
+        )
 
     @staticmethod
     def _extract_aggregation(question: str) -> tuple[AggregationSpec | None, range | None]:
@@ -640,6 +814,16 @@ class RuleBasedQueryAnalyzer:
             match = re.search(field_alias + r".*?" + re.escape(item.value.raw)
                               + r"\s*(?:이상|이하|초과|미만)",
                               question, re.IGNORECASE)
+            if match is not None:
+                return match.start(), match.end()
+        special_patterns = {
+            "listing_country": r"(?:미국|한국|국내)\s*(?:증시|시장|거래소)(?:에)?\s*상장(?:된|한)?",
+            "currency": r"원화\s*채권",
+            "credit_rating": r"(?:신용등급\s*)?[A-Z]{1,4}(?:[+\-0])?\s*(?:이상|이하|초과|미만)",
+            "current_sale_available": r"현재\s*판매\s*가능(?:한)?",
+        }
+        if item.field in special_patterns:
+            match = re.search(special_patterns[item.field], question, re.IGNORECASE)
             if match is not None:
                 return match.start(), match.end()
         values = item.value if isinstance(item.value, list) else [item.value]

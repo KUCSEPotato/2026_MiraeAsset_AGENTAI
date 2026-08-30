@@ -1,12 +1,13 @@
 import json
 import asyncio
+from datetime import date
 from time import perf_counter
 from functools import lru_cache
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, distinct, func, select
 
 from app.agent.fakes import (
     FakeAnswerGenerator,
@@ -37,6 +38,13 @@ from app.domain.models import (
     ValidationResult,
 )
 from app.data.database import DatabaseSettings, create_database_engine
+from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
+from app.data.v2_schema import (
+    canonical_facts,
+    entity_relations,
+    external_snapshot_manifests,
+    fact_evidence_links,
+)
 from app.data.schema import metadata as database_metadata
 from app.evidence.answer import DeterministicEvidenceAnswerGenerator
 from app.evidence.llm_answer import (
@@ -199,7 +207,7 @@ class PipelineAnswerService:
         planning_started = perf_counter()
         try:
             plan = await self._planner.create_plan(grounded_query)
-        except UnsupportedQuerySemanticsError:
+        except UnsupportedQuerySemanticsError as exc:
             trace.append("semantic_safety")
             return await self._semantic_safety_result(
                 question,
@@ -208,6 +216,11 @@ class PipelineAnswerService:
                 total_started=request_started,
                 ontology_latency_ms=ontology_latency_ms,
                 planning_latency_ms=_elapsed_ms(planning_started),
+                unsupported_details=[
+                    reason
+                    for reason in exc.reasons
+                    if reason.startswith("unsupported_comparison:")
+                ],
             )
         planning_latency_ms = _elapsed_ms(planning_started)
         trace.append("planning")
@@ -348,11 +361,13 @@ class PipelineAnswerService:
         total_started: float,
         ontology_latency_ms: float = 0.0,
         planning_latency_ms: float = 0.0,
+        unsupported_details: list[str] | None = None,
     ) -> AgentResult:
+        details = list(dict.fromkeys(unsupported_details or []))
         validation = ValidationResult(
             answerable=False,
             reason_codes=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT],
-            reasons=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value],
+            reasons=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value, *details],
         )
         final_answer = await self._safe_response_generator.generate(validation)
         return AgentResult(
@@ -364,6 +379,7 @@ class PipelineAnswerService:
                         "reason_codes": [
                             AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value
                         ],
+                        "reasons": details,
                     },
                 },
                 ensure_ascii=False,
@@ -378,6 +394,7 @@ class PipelineAnswerService:
                         "reason_codes": [
                             AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value
                         ],
+                        "reasons": details,
                     },
                     "query_understanding": parser_summary,
                     "llm_call_summary": {
@@ -492,11 +509,17 @@ def create_production_answer_service(
         "generation": settings.v2_generation if settings.runtime_bundle.uses_canonical_v2 else "legacy",
         "snapshot": settings.snapshot_date,
         "ontology_version": settings.v2_ontology_version if settings.runtime_bundle.uses_canonical_v2 else resolved_graph_settings.ontology_version,
-        "canonical_schema_version": "m10.8-b-canonical-v2" if settings.runtime_bundle.uses_canonical_v2 else "m10.7-canonical-v1",
+        "canonical_schema_version": CANONICAL_V2_SCHEMA_VERSION if settings.runtime_bundle.uses_canonical_v2 else "m10.7-canonical-v1",
         "transformer_version": settings.v2_transformer_version if settings.runtime_bundle.uses_canonical_v2 else "legacy",
         "rdb_readiness": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
         "graph_readiness": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
         "semantic_index_readiness": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
+        "holdings_readiness": (
+            "PENDING"
+            if settings.runtime_bundle.uses_canonical_v2
+            and settings.trusted_holdings_runtime_enabled
+            else "DISABLED"
+        ),
         "graph_projection_version": resolved_graph_settings.v2_graph_projection_version if settings.runtime_bundle.uses_canonical_v2 else resolved_graph_settings.graph_version,
         "semantic_projection_version": semantic_settings.v2_index_version if settings.runtime_bundle.uses_canonical_v2 else semantic_settings.index_version,
         "compatibility_status": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
@@ -605,10 +628,20 @@ def create_production_answer_service(
                 ),
             )
             async def assert_v2_graph_ready() -> None:
-                await backend.assert_ready(expected_snapshot=settings.snapshot_date)
+                manifest = await backend.assert_ready(expected_snapshot=settings.snapshot_date)
+                if settings.trusted_holdings_runtime_enabled:
+                    rdb_holds = await asyncio.to_thread(_v2_holds_count, engine)
+                    graph_holds = int(manifest.relation_counts.get("HOLDS", 0))
+                    if rdb_holds <= 0 or graph_holds != rdb_holds:
+                        raise RuntimeError(
+                            "C2 HOLDS PostgreSQL/Neo4j reconciliation failed"
+                        )
 
             async def assert_v2_rdb_ready() -> None:
                 await asyncio.to_thread(_assert_v2_rdb_ready, engine, v2_snapshot_selector)
+
+            async def assert_v2_holdings_ready() -> None:
+                await asyncio.to_thread(_assert_v2_holdings_ready, engine)
 
             async def assert_v2_semantic_ready() -> None:
                 await asyncio.to_thread(
@@ -616,13 +649,18 @@ def create_production_answer_service(
                     generation=semantic_settings.v2_generation,
                     snapshot=settings.snapshot_date,
                     ontology_version=semantic_settings.v2_ontology_version,
-                    canonical_schema_version="m10.8-b-canonical-v2",
+                    canonical_schema_version=CANONICAL_V2_SCHEMA_VERSION,
                     transformer_version=semantic_settings.v2_transformer_version,
                     projection_version=semantic_settings.v2_index_version,
                 )
 
             readiness_checks.extend([
                 ("rdb", assert_v2_rdb_ready),
+                *(
+                    [("holdings", assert_v2_holdings_ready)]
+                    if settings.trusted_holdings_runtime_enabled
+                    else []
+                ),
                 ("graph", assert_v2_graph_ready),
                 ("semantic_index", assert_v2_semantic_ready),
             ])
@@ -743,6 +781,53 @@ def _assert_v2_rdb_ready(
     """Validate the four READY/PASSED source snapshots before serving v2."""
     with engine.connect() as connection:
         selector.select(connection)
+
+
+def _v2_holds_count(engine: Engine) -> int:
+    with engine.connect() as connection:
+        return int(connection.scalar(
+            select(func.count())
+            .select_from(entity_relations.join(
+                canonical_facts,
+                canonical_facts.c.fact_id == entity_relations.c.fact_id,
+            ))
+            .where(
+                entity_relations.c.relation_type == "HOLDS",
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        ) or 0)
+
+
+def _assert_v2_holdings_ready(engine: Engine) -> None:
+    """Fail closed unless trusted source, canonical facts and evidence agree."""
+
+    with engine.connect() as connection:
+        manifests = int(connection.scalar(
+            select(func.count()).select_from(external_snapshot_manifests).where(
+                external_snapshot_manifests.c.status == "READY",
+                external_snapshot_manifests.c.data_cutoff_date
+                == date.fromisoformat("2026-08-24"),
+            )
+        ) or 0)
+        facts = int(connection.scalar(
+            select(func.count()).select_from(entity_relations).where(
+                entity_relations.c.relation_type == "HOLDS"
+            )
+        ) or 0)
+        evidenced = int(connection.scalar(
+            select(func.count(distinct(entity_relations.c.fact_id)))
+            .select_from(
+                entity_relations.join(
+                    fact_evidence_links,
+                    fact_evidence_links.c.fact_id == entity_relations.c.fact_id,
+                )
+            )
+            .where(entity_relations.c.relation_type == "HOLDS")
+        ) or 0)
+    if manifests <= 0 or facts <= 0 or evidenced != facts:
+        raise RuntimeError(
+            "trusted holdings runtime is not canonical-data READY"
+        )
 
 
 def _assert_runtime_bundle_configuration(

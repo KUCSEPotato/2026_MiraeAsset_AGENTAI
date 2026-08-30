@@ -25,7 +25,7 @@ provenance layers: source datasets, source records, source field assertions,
 same-product candidates, strict identifier validation, ISIN format checks, and
 identifier collision detection.
 """@en ;
-    owl:versionInfo "merged-optical-1.3" .
+    owl:versionInfo "merged-optical-1.4" .
 
 #################################################################
 # Annotation properties for grounding
@@ -51,6 +51,20 @@ fin:FinancialProduct
     a owl:Class ;
     rdfs:subClassOf fin:EvidenceBearingEntity ;
     rdfs:label "Financial product"@en, "금융상품"@ko .
+
+fin:Security
+    a owl:Class ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    rdfs:label "Security"@en, "증권"@ko ;
+    fin:canonicalName "Security" ;
+    fin:conceptCategory "entity_type" .
+
+fin:EquitySecurity
+    a owl:Class ;
+    rdfs:subClassOf fin:Security ;
+    rdfs:label "Equity security"@en, "지분증권"@ko ;
+    fin:canonicalName "EquitySecurity" ;
+    fin:conceptCategory "entity_type" .
 
 fin:DebtSecurity
     a owl:Class ;
@@ -280,6 +294,24 @@ fin:issuedBy
     fin:conceptCategory "relation" ;
     fin:alias "발행사"@ko, "발행한"@ko ;
     rdfs:comment "Used for ETN and Bond issuer roles."@en .
+
+fin:securityIssuedBy
+    a owl:ObjectProperty ;
+    rdfs:domain fin:Security ;
+    rdfs:range fin:Organization ;
+    fin:canonicalName "securityIssuedBy" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "증권 발행사"@ko ;
+    rdfs:comment "Security-specific issuer relation; it does not broaden the product issuedBy contract."@en .
+
+fin:holds
+    a owl:ObjectProperty ;
+    rdfs:domain fin:FinancialProduct ;
+    rdfs:range fin:Security ;
+    fin:canonicalName "holds" ;
+    fin:conceptCategory "relation" ;
+    fin:alias "보유한"@ko, "보유"@ko ;
+    rdfs:comment "Temporal holding fact whose effective date and evidence are stored in the canonical fact model."@en .
 
 fin:hasTrustee
     a owl:ObjectProperty ;
@@ -826,6 +858,42 @@ fin:IdentifierShape
         sh:datatype xsd:string ;
         sh:in ("VALIDATED" "FORMAT_ONLY" "UNKNOWN_VALIDATION" "CONFLICT" "INVALID_FORMAT") ;
         sh:message "Identifier must have a supported validationStatus."@en
+    ] .
+
+fin:SecurityShape
+    a sh:NodeShape ;
+    sh:targetClass fin:Security ;
+    sh:property [
+        sh:path fin:hasIdentifier ;
+        sh:minCount 1 ;
+        sh:class fin:Identifier ;
+        sh:message "A canonical Security requires authoritative identifier evidence."@en
+    ] ;
+    sh:property [
+        sh:path fin:securityIssuedBy ;
+        sh:maxCount 1 ;
+        sh:class fin:Organization ;
+        sh:message "Security issuer identity is optional but must be a proven Organization when asserted."@en
+    ] .
+
+fin:HoldsRelationShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf fin:holds ;
+    sh:class fin:FinancialProduct ;
+    sh:property [
+        sh:path fin:holds ;
+        sh:class fin:Security ;
+        sh:message "HOLDS must connect FinancialProduct to Security, never directly to Organization."@en
+    ] .
+
+fin:SecurityIssuerRelationShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf fin:securityIssuedBy ;
+    sh:class fin:Security ;
+    sh:property [
+        sh:path fin:securityIssuedBy ;
+        sh:class fin:Organization ;
+        sh:message "securityIssuedBy must connect Security to Organization."@en
     ] .
 
 fin:ISINIdentifierShape

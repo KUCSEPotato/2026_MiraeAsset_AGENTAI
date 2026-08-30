@@ -163,11 +163,10 @@ def test_supported_audit_cases_preserve_executable_constraints() -> None:
         "product.nav",
     ]
 
-    _, _, sorted_plan = _run_plan("순자산이 크고 총보수가 낮은 ETF")
-    assert [item["canonical_field"] for item in sorted_plan.steps[0].inputs["sort"]] == [
-        "product.aum",
-        "product.expense_ratio",
-    ]
+    # M10.9-C1 requires one source-scoped comparison contract per ranking
+    # metric.  This broad AUM + unknown-scale expense request must now fail
+    # before retrieval rather than merely carrying an unsafe sort downstream.
+    _assert_blocked("순자산이 크고 총보수가 낮은 ETF")
 
 
 def test_negation_or_and_limit_execute_with_sql_null_policy(tmp_path: Path) -> None:
@@ -332,11 +331,14 @@ def test_public_answer_contract_returns_safe_semantic_response_without_execution
             del plan
             raise AssertionError("unsafe plan reached execution")
 
-    result = asyncio.run(
-        create_production_answer_service(executor=MustNotExecute()).answer(
-            "반도체 ETF"
-        )
-    )
+    service = create_production_answer_service(executor=MustNotExecute())
+    result = asyncio.run(service.answer("반도체 ETF"))
     trace = json.loads(result.think_trace)
     assert trace["status"] == "unsupported"
     assert "조건을 모두 정확하게 해석" in result.answer
+
+    comparison = asyncio.run(service.answer("순자산이 큰 ETF 3개"))
+    context = json.loads(comparison.retrieved_context)
+    assert context["validation"]["reasons"] == [
+        "unsupported_comparison:aum_scope_spans_or_cannot_exclude_incompatible_sources"
+    ]

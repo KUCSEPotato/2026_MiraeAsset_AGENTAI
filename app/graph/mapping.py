@@ -431,6 +431,8 @@ def _canonical_v2_mappings() -> tuple[GraphRelationMapping, ...]:
         ("hasRiskGrade", "HAS_RISK_GRADE"),
         ("hasBondType", "HAS_BOND_TYPE"),
         ("hasOfferingType", "HAS_OFFERING_TYPE"),
+        ("holds", "HOLDS"),
+        ("securityIssuedBy", "SECURITY_ISSUED_BY"),
     )
     return tuple(
         GraphRelationMapping(

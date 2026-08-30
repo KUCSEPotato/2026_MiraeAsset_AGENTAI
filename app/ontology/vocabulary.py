@@ -11,7 +11,7 @@ DEFAULT_SEMANTIC_VOCABULARY = {
         "원자재", "Commodity", "혼합자산",
     ],
     "relations": [
-        "managedBy", "issuedBy", "tracks", "referencesBenchmark",
+        "managedBy", "issuedBy", "holds", "securityIssuedBy", "tracks", "referencesBenchmark",
         "hasClass", "denominatedIn", "hasRiskGrade",
         "운용사", "운용하는", "관리하는", "발행사", "발행한",
         "기초지수", "추종지수", "추종하는", "따라가는", "벤치마크",

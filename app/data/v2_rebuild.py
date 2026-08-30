@@ -76,7 +76,7 @@ from app.ontology.runtime_mapping import (
 
 GENERATION = "260824"
 SNAPSHOT = "2026-08-24"
-TRANSFORMER_VERSION = "m10.8-b2-relations-v2"
+TRANSFORMER_VERSION = "m10.9-c2-kodex-holdings-1"
 
 # The authoritative 260824 ETP sources do not expose a reviewed ETN issuer
 # field.  Keeping this explicit prevents a management-company field from being
@@ -110,7 +110,7 @@ TARGET_FIELDS = {
             "pd_no", "pd_nm", "pd_abrv_nm", "pd_pbcm", "isu_dt", "mat_dt",
             "isu_bal_amt", "pd_risk_gcd", "pd_risk_nm", "bd_knd", "bd_ofr_tcd",
             "curr_cd", "pd_ctry_cd", "pd_exg_mkt", "info_base_dt", "info_seq",
-            "eval_price", "buy_yield",
+            "eval_price", "buy_yield", "crd_grd", "crd_grd_dt",
         }
     ),
     "PREF01N001": frozenset(
@@ -120,6 +120,7 @@ TARGET_FIELDS = {
             "cu_base_index", "ref_base_index", "wu_inv_ast_type", "wu_inv_rgn",
             "pd_risk_nm", "pd_curr_cd", "pd_mkt_id", "pd_exg_mkt_cd",
             "du_last_aum", "cu_charge_rt", "du_last_nav", "du_clpr", "du_upt_dt",
+            "du_er_1y",
             "cu_strtegy",
         }
     ),
@@ -139,7 +140,7 @@ TARGET_FIELDS = {
             "trusc_xtn_itt_cd", "bmrk_nm", "or_attr_desc", "fd_ivst_rgn_desc",
             "ovrs_fd_desc", "zrin_fd_ivst_risk_gcd", "zrin_fd_ivst_risk_grd_nm",
             "prvo_pbff_desc", "curr_cd", "fd_nast_suma", "bns_bpr", "fd_sbpr",
-            "fd_price_bas_dt", "han_clas_nm", "han_clas_fee_type",
+            "fd_price_bas_dt", "fd_yr1_ern_r", "han_clas_nm", "han_clas_fee_type",
             "han_clas_sales_channel", "han_clas_policies",
         }
     ),
@@ -174,13 +175,14 @@ METRIC_FIELDS = {
         "buy_yield": ("BOND_BUY_YIELD", "PERCENT", "SOURCE_PERCENT", "info_base_dt"),
     },
     "PREF01N001": {
-        "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "SOURCE_RAW_UNVERIFIED", "du_upt_dt"),
+        "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "CURRENCY_UNIT", "du_upt_dt"),
         "cu_charge_rt": ("EXPENSE_RATIO", "PERCENT", "SOURCE_SCALE_UNVERIFIED", "du_upt_dt"),
         "du_last_nav": ("NAV", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
+        "du_er_1y": ("ONE_YEAR_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
     },
     "PREF02N001": {
-        "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "SOURCE_RAW_UNVERIFIED", "du_upt_dt"),
+        "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "CURRENCY_UNIT", "du_upt_dt"),
         "cu_charge_rt": ("EXPENSE_RATIO", "RATIO", "SOURCE_SCALE_UNVERIFIED", "du_upt_dt"),
         "du_last_nav": ("NAV", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
@@ -189,6 +191,7 @@ METRIC_FIELDS = {
         "fd_nast_suma": ("AUM", "CURRENCY_AMOUNT", "SOURCE_RAW_UNVERIFIED", "fd_price_bas_dt"),
         "bns_bpr": ("NAV", "CURRENCY_AMOUNT", "SOURCE_RAW", "fd_price_bas_dt"),
         "fd_sbpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "fd_price_bas_dt"),
+        "fd_yr1_ern_r": ("ONE_YEAR_RETURN", "PERCENT", "SOURCE_PERCENT", "fd_price_bas_dt"),
     },
 }
 
@@ -353,6 +356,14 @@ _RELATION_DOMAIN_CONTRACTS: dict[str, RelationDomainContract] = {
         ),
         frozenset({("ONTOLOGY_CONCEPT", "offering_type")}),
     ),
+    "HOLDS": RelationDomainContract(
+        _FINANCIAL_PRODUCT_GRAINS,
+        frozenset({("SECURITY", None)}),
+    ),
+    "SECURITY_ISSUED_BY": RelationDomainContract(
+        frozenset({("SECURITY", None)}),
+        frozenset({("ORGANIZATION", None)}),
+    ),
 }
 
 
@@ -377,15 +388,30 @@ class _Rows:
         )
         for table in order:
             rows = self._rows.pop(table, [])
+            if table is metric_observations:
+                rows = list({str(row["fact_id"]): row for row in rows}.values())
             # PostgreSQL's extended-query protocol allows at most 65,535
             # parameters.  A row batch can expand substantially (notably for
             # SourceFieldAssertion), so cap each statement independently of
             # the source-row flush interval.
             for offset in range(0, len(rows), 500):
                 chunk = rows[offset : offset + 500]
-                connection.execute(
-                    pg_insert(table).values(chunk).on_conflict_do_nothing()
-                )
+                statement = pg_insert(table).values(chunk)
+                if table is metric_observations:
+                    # Metric contracts can be tightened by a reviewed
+                    # transformer without duplicating canonical facts.
+                    excluded = statement.excluded
+                    statement = statement.on_conflict_do_update(
+                        index_elements=[metric_observations.c.fact_id],
+                        set_={
+                            column.name: getattr(excluded, column.name)
+                            for column in metric_observations.c
+                            if column.name != "fact_id"
+                        },
+                    )
+                else:
+                    statement = statement.on_conflict_do_nothing()
+                connection.execute(statement)
 
 
 def relation_domain_violations(connection) -> list[RelationDomainViolation]:
@@ -1485,7 +1511,7 @@ class CanonicalV2Rebuilder:
 
     def _metrics(self, rows: _Rows, prefix: str, primary_id: str, support_id: str | None, snapshot_id: str, cleaned: dict[str, Any], assertions: dict[str, str]) -> None:
         subject = primary_id
-        currency = _value(cleaned.get("pd_curr_cd") or cleaned.get("pd_trd_ccy") or cleaned.get("curr_cd"))
+        currency = _currency_code(cleaned.get("pd_curr_cd") or cleaned.get("pd_trd_ccy") or cleaned.get("curr_cd"))
         for field_name, (metric_code, unit, scale, date_field) in METRIC_FIELDS[prefix].items():
             value = _decimal(cleaned.get(field_name))
             assertion = assertions.get(field_name)
@@ -1500,9 +1526,46 @@ class CanonicalV2Rebuilder:
                 "numeric_value": value, "unit": unit, "scale_basis": scale,
                 "currency": currency, "observed_on": observed,
                 "quality_status": "SOURCE_ZERO" if value == 0 else "VALID",
-                "comparability_status": "NOT_COMPARABLE",
+                "comparability_status": (
+                    "COMPARABLE"
+                    if (
+                        metric_code == "AUM"
+                        and prefix in {"PREF01N001", "PREF02N001"}
+                        and currency in {"KRW", "USD"}
+                    )
+                    or (
+                        metric_code == "ONE_YEAR_RETURN"
+                        and prefix in {"PREF01N001", "PRFD01N001"}
+                    )
+                    else "NOT_COMPARABLE"
+                ),
             })
             self._evidence(rows, fact, assertion)
+        if prefix != "PRBD01N001":
+            return
+        rating = (_value(cleaned.get("crd_grd")) or "").upper()
+        rating_rank = {
+            value: rank
+            for rank, value in enumerate(
+                (
+                    "C0", "B-", "B+", "BB-", "BB0", "BBB-", "BBB0",
+                    "BBB+", "A-", "A0", "A+", "AA-", "AA0", "AA+", "AAA",
+                ),
+                start=1,
+            )
+        }.get(rating)
+        if support_id and rating_rank is not None and assertions.get("crd_grd"):
+            fact = self._fact(rows, support_id, snapshot_id, "METRIC", "CREDIT_RATING_ORDER")
+            rows.add(metric_observations, {
+                "fact_id": fact, "metric_code": "CREDIT_RATING_ORDER",
+                "subject_entity_id": support_id, "raw_value": rating,
+                "numeric_value": rating_rank, "unit": "ORDINAL",
+                "scale_basis": "CREDIT_RATING_V1", "currency": None,
+                "observed_on": _date(cleaned.get("crd_grd_dt")) or _date(cleaned.get("info_base_dt")),
+                "quality_status": "VALID", "comparability_status": "COMPARABLE",
+            })
+            self._evidence(rows, fact, assertions["crd_grd"])
+
 
     def _fact(self, rows: _Rows, subject: str, snapshot_id: str, kind: str, key: str, resolution: str = "RESOLVED") -> str:
         fact_id = _stable_id("fact", subject, snapshot_id, kind, key)
@@ -1594,6 +1657,8 @@ class CanonicalV2Rebuilder:
             ("NAV", "product.nav", "Net asset value"),
             ("PRICE", "product.price", "Observed source price"),
             ("BOND_BUY_YIELD", "bond.buy_yield", "Bond buy yield"),
+            ("ONE_YEAR_RETURN", "product.one_year_return", "Exact one-year source return"),
+            ("CREDIT_RATING_ORDER", "product.credit_rating", "Ordered credit rating"),
         )
         connection.execute(
             pg_insert(metric_definitions).values([
@@ -1905,6 +1970,8 @@ def _target_key(prefix: str, field_name: str, value: Any) -> str:
 
 def _currency_code(value: Any) -> str | None:
     normalized = _identifier_value(value)
+    if normalized and normalized.startswith("CURR_CD_"):
+        normalized = normalized.removeprefix("CURR_CD_")
     if normalized and re.fullmatch(r"[A-Z]{3}", normalized):
         return normalized
     return None

@@ -17,6 +17,7 @@ from sqlalchemy import (
     Select,
     and_,
     asc,
+    desc,
     exists,
     distinct,
     func,
@@ -100,8 +101,8 @@ class CanonicalV2SnapshotSelector:
         *,
         snapshot_date: str,
         generation: str = "260824",
-        ontology_version: str = "merged-optical-1.3",
-        transformer_version: str = "m10.8-b2-relations-v2",
+        ontology_version: str = "merged-optical-1.4",
+        transformer_version: str = "m10.9-c2-kodex-holdings-1",
         schema_version: str = CANONICAL_V2_SCHEMA_VERSION,
         required_datasets: Iterable[str] | None = None,
     ) -> None:
@@ -205,6 +206,9 @@ class CanonicalV2FieldRegistry:
             # Storage is numeric, but the approved comparison contracts are disabled.
             V2FieldMapping("product.aum", "metric", "AUM", False, True, False),
             V2FieldMapping("product.expense_ratio", "metric", "EXPENSE_RATIO", False, True, False),
+            V2FieldMapping("product.one_year_return", "metric", "ONE_YEAR_RETURN", False, True, False),
+            V2FieldMapping("product.credit_rating", "metric", "CREDIT_RATING_ORDER", True, True, False),
+            V2FieldMapping("product.current_sale_available", "bond_purchasable", "ORGANIZER_PURCHASABLE_BOND", True, False, False),
         )
         self._fields = {item.canonical_field: item for item in mappings}
         runtime = TeamOntologyRuntimeMapping()
@@ -251,6 +255,8 @@ class CanonicalV2FieldRegistry:
 class CompiledV2RDBQuery:
     statement: Select
     count_statement: Select
+    filtered_count_statement: Select
+    rankable_count_statement: Select
     projected_fields: tuple[str, ...]
     result_grain: V2ResultGrain
     ranking_applied: bool
@@ -336,14 +342,27 @@ class CanonicalV2QueryCompiler:
         product_types = step.inputs.get("product_types", [])
         if not isinstance(product_types, list):
             raise RDBQueryCompilationError("product_types must be a list")
-        public_fund = _PUBLIC_FUND in product_types
+        universe = step.inputs.get("product_universe")
+        if universe is not None and (
+            not isinstance(universe, dict)
+            or universe.get("operation") != "UNION"
+            or not isinstance(universe.get("operands"), list)
+        ):
+            raise RDBQueryCompilationError("product universe must be an allow-listed UNION")
+        public_fund = universe is None and _PUBLIC_FUND in product_types
         unknown = set(product_types) - set(_PRODUCT_TYPES) - {_PUBLIC_FUND}
         if unknown:
             raise RDBQueryCompilationError("unsupported canonical_v2 product type mapping")
         codes = {_PRODUCT_TYPES[value] for value in product_types if value in _PRODUCT_TYPES}
         if public_fund:
             codes.add("FUND")
-        if codes:
+        if universe is not None:
+            conditions.append(
+                self._product_universe_predicate(
+                    entity_id, base, universe["operands"], snapshot
+                )
+            )
+        elif codes:
             conditions.append(base.c.product_type.in_(sorted(codes)))
         if public_fund:
             if grain is not V2ResultGrain.FINANCIAL_PRODUCT:
@@ -361,10 +380,23 @@ class CanonicalV2QueryCompiler:
         for item in step.inputs.get("relations", []):
             conditions.append(self._compile_relation(item, entity_id, snapshot))
 
+        filtered_conditions = list(conditions)
+
         requested = step.inputs.get("requested_fields", [])
         if not isinstance(requested, list):
             raise RDBQueryCompilationError("requested_fields must be a list")
         projected = list(dict.fromkeys(requested or ["product.name"]))
+        for item in step.inputs.get("sort", []):
+            if isinstance(item, dict) and item.get("canonical_field"):
+                projected.append(str(item["canonical_field"]))
+        for item in step.inputs.get("filters", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("raw", {}).get("operator") in {"gt", "gte", "lt", "lte"}:
+                field = item.get("canonical_field")
+                if field and self._fields.field(field).project_enabled:
+                    projected.append(str(field))
+        projected = list(dict.fromkeys(projected))
         for field in projected:
             mapping = self._fields.field(field)
             if not mapping.project_enabled:
@@ -373,30 +405,43 @@ class CanonicalV2QueryCompiler:
         sort_items = step.inputs.get("sort", [])
         if not isinstance(sort_items, list):
             raise RDBQueryCompilationError("sort must be a list")
-        if sort_items:
-            # Current v2 metrics are NOT_COMPARABLE and no approved rank exists.
-            for item in sort_items:
-                if not isinstance(item, dict):
-                    raise RDBQueryCompilationError("sort item must be structured")
-                mapping = self._fields.field(item.get("canonical_field"))
-                if not mapping.sort_enabled:
-                    raise RDBQueryCompilationError(
-                        f"canonical_v2 sorting is semantically disabled for {mapping.canonical_field}"
-                    )
+        order_expressions = []
+        contracts = step.inputs.get("comparison_contracts", [])
+        if not isinstance(contracts, list):
+            raise RDBQueryCompilationError("comparison contracts must be structured")
+        for item in sort_items:
+            if not isinstance(item, dict):
+                raise RDBQueryCompilationError("sort item must be structured")
+            mapping = self._fields.field(item.get("canonical_field"))
+            contract = next(
+                (
+                    value for value in contracts
+                    if isinstance(value, dict)
+                    and value.get("canonical_field") == mapping.canonical_field
+                ),
+                None,
+            )
+            if contract is None or not contract.get("sort_capability"):
+                raise RDBQueryCompilationError(
+                    f"canonical_v2 sorting is semantically disabled for {mapping.canonical_field}"
+                )
+            metric_value = self._metric_value(entity_id, mapping.semantic_key, contract, snapshot)
+            conditions.append(metric_value.is_not(None))
+            direction = item.get("raw", {}).get("direction")
+            if direction not in {"asc", "desc"}:
+                raise RDBQueryCompilationError("unsupported sort direction")
+            order_expressions.append(
+                asc(metric_value) if direction == "asc" else desc(metric_value)
+            )
 
         limit = step.inputs.get("limit", self._default_limit)
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise RDBQueryCompilationError("canonical_v2 limit must be positive")
         limit = min(limit, self._max_limit)
-        statement = (
-            select(base)
-            .where(*conditions)
-            # Canonical entity IDs are an opaque, ASCII identifier namespace.
-            # Pin collation so result-window selection is stable across
-            # PostgreSQL deployments rather than depending on server locale.
-            .order_by(asc(entity_id.collate("C")))
-            .limit(limit)
-        )
+        statement = select(base).where(*conditions).order_by(
+            *order_expressions,
+            asc(entity_id.collate("C")),
+        ).limit(limit)
         return CompiledV2RDBQuery(
             statement=statement,
             count_statement=(
@@ -404,9 +449,19 @@ class CanonicalV2QueryCompiler:
                 .select_from(base)
                 .where(*conditions)
             ),
+            filtered_count_statement=(
+                select(func.count(distinct(entity_id)))
+                .select_from(base)
+                .where(*filtered_conditions)
+            ),
+            rankable_count_statement=(
+                select(func.count(distinct(entity_id)))
+                .select_from(base)
+                .where(*conditions)
+            ),
             projected_fields=tuple(projected),
             result_grain=grain,
-            ranking_applied=False,
+            ranking_applied=bool(order_expressions),
         )
 
     @staticmethod
@@ -510,11 +565,42 @@ class CanonicalV2QueryCompiler:
         values = value if operator is FilterOperator.IN else [value]
         if operator is FilterOperator.IN and not isinstance(value, list):
             raise RDBQueryCompilationError("IN filter requires canonical values")
-        if operator not in {FilterOperator.EQ, FilterOperator.NE, FilterOperator.IN}:
+        ordered = {FilterOperator.GT, FilterOperator.GTE, FilterOperator.LT, FilterOperator.LTE}
+        if operator not in {FilterOperator.EQ, FilterOperator.NE, FilterOperator.IN, *ordered}:
             raise RDBQueryCompilationError(
                 f"operator {operator.value} is unsupported for canonical field {mapping.canonical_field}"
             )
 
+        if mapping.kind == "metric" and mapping.semantic_key == "CREDIT_RATING_ORDER":
+            from app.data.metric_capabilities import MetricCapabilityRegistry
+
+            label = str(value).upper()
+            try:
+                threshold = MetricCapabilityRegistry.credit_rating_order[label]
+            except KeyError as exc:
+                raise RDBQueryCompilationError("invalid credit rating") from exc
+            metric_value = self._latest_metric_value(
+                entity_id, "CREDIT_RATING_ORDER", snapshot
+            )
+            predicate = {
+                FilterOperator.GT: metric_value > threshold,
+                FilterOperator.GTE: metric_value >= threshold,
+                FilterOperator.LT: metric_value < threshold,
+                FilterOperator.LTE: metric_value <= threshold,
+                FilterOperator.EQ: metric_value == threshold,
+                FilterOperator.NE: metric_value != threshold,
+            }.get(operator)
+            if predicate is None:
+                raise RDBQueryCompilationError("credit rating IN is unsupported")
+            return predicate
+        if mapping.kind == "bond_purchasable":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError("bond purchasability supports only eq true")
+            return self._organizer_purchasable_bond(entity_id, snapshot)
+        if operator in ordered:
+            raise RDBQueryCompilationError(
+                f"operator {operator.value} is unsupported for canonical field {mapping.canonical_field}"
+            )
         if mapping.kind == "product_type":
             try:
                 codes = [_PRODUCT_TYPES[item] for item in values]
@@ -565,6 +651,137 @@ class CanonicalV2QueryCompiler:
             return not_(predicate)
         return predicate
 
+    @staticmethod
+    def _metric_value(entity_id, metric_code, contract, snapshot):
+        conditions = [
+            metric_observations.c.subject_entity_id == entity_id,
+            metric_observations.c.metric_code == metric_code,
+            canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+            source_datasets.c.dataset_code.in_(
+                contract.get("datasets", [contract["dataset"]])
+            ),
+            metric_observations.c.unit == contract["unit"],
+            metric_observations.c.scale_basis == contract["scale"],
+            metric_observations.c.comparability_status == "COMPARABLE",
+            metric_observations.c.quality_status.in_(("VALID", "SOURCE_ZERO")),
+            metric_observations.c.observed_on <= snapshot.snapshot_date,
+        ]
+        # Dimensionless returns intentionally have no currency restriction.
+        # Currency-denominated metrics (for example AUM) remain source-scoped.
+        if contract.get("currency") is not None:
+            conditions.append(metric_observations.c.currency == contract["currency"])
+        return (
+            select(metric_observations.c.numeric_value)
+            .select_from(
+                metric_observations
+                .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+                .join(source_datasets, source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id)
+            )
+            .where(*conditions)
+            .order_by(metric_observations.c.observed_on.desc(), metric_observations.c.fact_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+
+    @staticmethod
+    def _latest_metric_value(entity_id, metric_code, snapshot):
+        return (
+            select(metric_observations.c.numeric_value)
+            .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+            .where(
+                metric_observations.c.subject_entity_id == entity_id,
+                metric_observations.c.metric_code == metric_code,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                metric_observations.c.comparability_status == "COMPARABLE",
+                metric_observations.c.quality_status.in_(("VALID", "SOURCE_ZERO")),
+                metric_observations.c.observed_on <= snapshot.snapshot_date,
+            )
+            .order_by(metric_observations.c.observed_on.desc(), metric_observations.c.fact_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+
+    @staticmethod
+    def _organizer_purchasable_bond(bond_id, snapshot):
+        lifecycle_end = exists(
+            select(1)
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.subject_entity_id == bond_id,
+                canonical_facts.c.semantic_key.in_(
+                    ("BOND_DELISTING_DATE", "BOND_LISTING_END_DATE")
+                ),
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                canonical_scalar_facts.c.date_value <= snapshot.snapshot_date,
+            )
+        )
+        return not_(lifecycle_end)
+
+    @staticmethod
+    def _dataset_entity_exists(entity_id, dataset_code, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                canonical_facts
+                .join(
+                    dataset_snapshots,
+                    dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id,
+                )
+                .join(
+                    source_datasets,
+                    source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+                )
+            )
+            .where(
+                canonical_facts.c.subject_entity_id == entity_id,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                source_datasets.c.dataset_code == dataset_code,
+            )
+        )
+
+    def _product_universe_predicate(self, entity_id, base, operands, snapshot):
+        if not operands or len(operands) != len(set(operands)):
+            raise RDBQueryCompilationError("product universe operands must be unique")
+        allowed = {"DomesticETF", "ForeignETF", "ETF", "PublicFund", "Fund"}
+        if set(operands) - allowed:
+            raise RDBQueryCompilationError("unsupported product universe operand")
+        branches = []
+        for operand in operands:
+            if operand == "DomesticETF":
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETF",
+                        self._dataset_entity_exists(entity_id, "PREF01N001", snapshot),
+                    )
+                )
+            elif operand == "ForeignETF":
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETF",
+                        self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
+                    )
+                )
+            elif operand == "ETF":
+                branches.append(base.c.product_type == "ETF")
+            elif operand == "PublicFund":
+                branches.append(
+                    and_(
+                        base.c.product_type == "FUND",
+                        self._public_fund_exists(entity_id, snapshot),
+                    )
+                )
+            else:
+                branches.append(base.c.product_type == "FUND")
+        return or_(*branches)
+
     def _compile_relation(self, item, entity_id, snapshot):
         if not isinstance(item, dict):
             raise RDBQueryCompilationError("relation constraint must be structured")
@@ -583,6 +800,8 @@ class CanonicalV2QueryCompiler:
             "hasInstrumentCountry": ("entity_relation", "HAS_INSTRUMENT_COUNTRY"),
             "hasShareClass": ("entity_relation", "HAS_SHARE_CLASS"),
             "hasSaleLot": ("entity_relation", "HAS_SALE_LOT"),
+            "holds": ("entity_relation", "HOLDS"),
+            "securityIssuedBy": ("entity_relation", "SECURITY_ISSUED_BY"),
         }
         try:
             kind, edge = relation_map[relation]
@@ -826,10 +1045,29 @@ class CanonicalV2RDBRetriever:
         with self._engine.connect() as connection:
             snapshot = self._selector.select(connection)
             compiled = self._compiler.compile(step, snapshot)
-            total_matches = int(connection.scalar(compiled.count_statement) or 0)
+            filtered_total = int(
+                connection.scalar(compiled.filtered_count_statement) or 0
+            )
+            rankable_total = int(
+                connection.scalar(compiled.rankable_count_statement) or 0
+            )
             rows = connection.execute(compiled.statement).mappings().all()
             entity_ids = [str(row["entity_id"]) for row in rows]
-            projected = self._project(connection, entity_ids, compiled.projected_fields, snapshot)
+            contracts = step.inputs.get("comparison_contracts", [])
+            projected = self._project(
+                connection,
+                entity_ids,
+                compiled.projected_fields,
+                snapshot,
+                contracts,
+            )
+            metric_details = self._metric_details(
+                connection,
+                entity_ids,
+                compiled.projected_fields,
+                snapshot,
+                contracts,
+            )
             child_types = {
                 mapping.semantic_key
                 for item in step.inputs.get("filters", [])
@@ -866,6 +1104,7 @@ class CanonicalV2RDBRetriever:
             )
             for field in compiled.projected_fields:
                 value = projected.get((entity_id, field))
+                field_metric = metric_details.get((entity_id, field), {})
                 records.append(
                     RetrievalRecord(
                         step_id=step.step_id,
@@ -889,6 +1128,10 @@ class CanonicalV2RDBRetriever:
                             "snapshot_ids": list(snapshot.snapshot_ids),
                             "dataset_snapshot": snapshot.snapshot_date.isoformat(),
                             "ranking_applied": compiled.ranking_applied,
+                            "comparison_contracts": step.inputs.get(
+                                "comparison_contracts", []
+                            ),
+                            **field_metric,
                             **(
                                 {"parent_fund_id": row["parent_fund_id"]}
                                 if "parent_fund_id" in row else {}
@@ -899,14 +1142,28 @@ class CanonicalV2RDBRetriever:
                 )
         return RetrievalResult(
             records=records,
-            total_matches=total_matches,
+            total_matches=filtered_total,
             returned_count=len({record.entity_id for record in records if record.entity_id}),
             window_limit=compiled.statement._limit_clause.value if compiled.statement._limit_clause is not None else None,
-            counts={"structured_total_matches": total_matches},
+            counts={
+                "structured_total_matches": filtered_total,
+                "filtered_total": filtered_total,
+                "rankable_total": rankable_total,
+                "missing_metric_total": filtered_total - rankable_total,
+            },
+            ranked_candidate_ids=(entity_ids if compiled.ranking_applied else []),
+            filtered_total=filtered_total,
+            rankable_total=rankable_total,
+            missing_metric_total=filtered_total - rankable_total,
+            requested_top_n=(
+                int(step.inputs["top_n"]["value"])
+                if isinstance(step.inputs.get("top_n"), dict)
+                else None
+            ),
         )
 
     @staticmethod
-    def _project(connection, entity_ids, fields, snapshot):
+    def _project(connection, entity_ids, fields, snapshot, contracts=()):
         result: dict[tuple[str, str], Any] = {}
         if not entity_ids:
             return result
@@ -922,6 +1179,11 @@ class CanonicalV2RDBRetriever:
             result[(str(row["product_id"]), "product.product_type")] = row["product_type_code"]
 
         registry = CanonicalV2FieldRegistry()
+        contract_by_field = {
+            str(item["canonical_field"]): item
+            for item in contracts
+            if isinstance(item, dict) and item.get("canonical_field")
+        }
         for field in fields:
             mapping = registry.field(field)
             if mapping.kind == "classification":
@@ -1035,8 +1297,14 @@ class CanonicalV2RDBRetriever:
                 ).all()
                 CanonicalV2RDBRetriever._collect_projection(result, field, rows)
             elif mapping.kind == "metric":
-                rows = connection.execute(
-                    select(metric_observations.c.subject_entity_id, metric_observations.c.numeric_value)
+                contract = contract_by_field.get(field)
+                value_column = (
+                    metric_observations.c.raw_value
+                    if mapping.semantic_key == "CREDIT_RATING_ORDER"
+                    else metric_observations.c.numeric_value
+                )
+                statement = (
+                    select(metric_observations.c.subject_entity_id, value_column)
                     .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
                     .join(metric_definitions, metric_definitions.c.metric_code == metric_observations.c.metric_code)
                     .where(
@@ -1044,9 +1312,136 @@ class CanonicalV2RDBRetriever:
                         metric_observations.c.metric_code == mapping.semantic_key,
                         canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
                         metric_observations.c.quality_status.in_(("VALID", "SOURCE_ZERO")),
-                    ).order_by(metric_observations.c.subject_entity_id, metric_observations.c.observed_on.desc())
+                    )
+                )
+                if contract is not None:
+                    statement = (
+                        statement
+                        .join(
+                            dataset_snapshots,
+                            dataset_snapshots.c.snapshot_id
+                            == canonical_facts.c.snapshot_id,
+                        )
+                        .join(
+                            source_datasets,
+                            source_datasets.c.dataset_id
+                            == dataset_snapshots.c.dataset_id,
+                        )
+                        .where(
+                            source_datasets.c.dataset_code.in_(
+                                contract.get("datasets", [contract["dataset"]])
+                            ),
+                            metric_observations.c.unit == contract["unit"],
+                            metric_observations.c.scale_basis == contract["scale"],
+                            metric_observations.c.comparability_status == "COMPARABLE",
+                            metric_observations.c.observed_on <= snapshot.snapshot_date,
+                        )
+                    )
+                    if contract.get("currency") is not None:
+                        statement = statement.where(
+                            metric_observations.c.currency == contract["currency"]
+                        )
+                rows = connection.execute(
+                    statement.order_by(
+                        metric_observations.c.subject_entity_id,
+                        metric_observations.c.observed_on.desc(),
+                        metric_observations.c.fact_id,
+                    )
                 ).all()
                 CanonicalV2RDBRetriever._collect_projection(result, field, rows)
+        return result
+
+    @staticmethod
+    def _metric_details(connection, entity_ids, fields, snapshot, contracts=()):
+        registry = CanonicalV2FieldRegistry()
+        metric_fields = {
+            registry.field(field).semantic_key: field
+            for field in fields
+            if registry.field(field).kind == "metric"
+        }
+        if not entity_ids or not metric_fields:
+            return {}
+        contract_by_field = {
+            str(item["canonical_field"]): item
+            for item in contracts
+            if isinstance(item, dict) and item.get("canonical_field")
+        }
+        rows = connection.execute(
+            select(
+                metric_observations.c.subject_entity_id,
+                metric_observations.c.metric_code,
+                metric_observations.c.fact_id,
+                metric_observations.c.raw_value,
+                metric_observations.c.numeric_value,
+                metric_observations.c.unit,
+                metric_observations.c.scale_basis,
+                metric_observations.c.currency,
+                metric_observations.c.observed_on,
+                fact_evidence_links.c.assertion_id,
+                source_datasets.c.dataset_code,
+                metric_observations.c.comparability_status,
+            )
+            .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+            .join(fact_evidence_links, fact_evidence_links.c.fact_id == metric_observations.c.fact_id)
+            .join(
+                dataset_snapshots,
+                dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id,
+            )
+            .join(
+                source_datasets,
+                source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+            )
+            .where(
+                metric_observations.c.subject_entity_id.in_(entity_ids),
+                metric_observations.c.metric_code.in_(metric_fields),
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                metric_observations.c.observed_on <= snapshot.snapshot_date,
+            )
+            .order_by(
+                metric_observations.c.subject_entity_id,
+                metric_observations.c.metric_code,
+                metric_observations.c.observed_on.desc(),
+                metric_observations.c.fact_id,
+                fact_evidence_links.c.assertion_id,
+            )
+        ).all()
+        result: dict[tuple[str, str], dict[str, Any]] = {}
+        for (
+            entity_id, metric_code, fact_id, raw_value, numeric_value, unit,
+            scale, currency, observed_on, assertion_id, dataset_code,
+            comparability_status,
+        ) in rows:
+            field = metric_fields[str(metric_code)]
+            contract = contract_by_field.get(field)
+            if contract is not None and (
+                dataset_code not in contract.get("datasets", [contract["dataset"]])
+                or unit != contract["unit"]
+                or scale != contract["scale"]
+                or (
+                    contract.get("currency") is not None
+                    and currency != contract["currency"]
+                )
+                or comparability_status != "COMPARABLE"
+            ):
+                continue
+            key = (str(entity_id), field)
+            item = result.setdefault(
+                key,
+                {
+                    "field_fact_id": str(fact_id),
+                    "field_evidence_assertion_ids": [],
+                    "metric_raw_value": raw_value,
+                    "metric_numeric_value": str(numeric_value) if numeric_value is not None else None,
+                    "metric_unit": unit,
+                    "metric_scale_basis": scale,
+                    "metric_currency": currency,
+                    "metric_dataset": dataset_code,
+                    "observed_at": observed_on.isoformat() if observed_on else None,
+                },
+            )
+            if str(fact_id) == item["field_fact_id"] and str(assertion_id) not in item["field_evidence_assertion_ids"]:
+                item["field_evidence_assertion_ids"].append(str(assertion_id))
         return result
 
     @staticmethod

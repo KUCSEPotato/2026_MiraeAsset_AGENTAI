@@ -225,7 +225,17 @@ def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
 
 def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
-    assert first.metric_status == {"NOT_COMPARABLE": sum(first.metric_counts.values())}
+    # M10.9-C1 enables comparability only for observations backed by an
+    # explicit source/grain-scoped contract (AUM, rating order, and exact 1Y
+    # returns). Organizer purchasability is a lifecycle rule, not a metric.
+    assert first.metric_status == {
+        "COMPARABLE": 33_397,
+        "NOT_COMPARABLE": 74_264,
+    }
+    assert first.metric_counts["ONE_YEAR_RETURN"] == 8_417
+    assert "CURRENT_SALE_AVAILABILITY" not in first.metric_counts
+    assert "BUYABLE_QUANTITY" not in first.metric_counts
+    assert sum(first.metric_status.values()) == sum(first.metric_counts.values())
     with engine.connect() as connection:
         value = connection.scalar(select(metric_observations.c.numeric_value).where(metric_observations.c.numeric_value.is_not(None)).limit(1))
         assert isinstance(value, Decimal)
@@ -251,7 +261,8 @@ def test_semantic_relation_correction_and_safe_fund_promotion(rebuilt) -> None:
     assert first.relation_counts["MANAGED_BY"] == 14_057
     assert first.relation_counts["HAS_TRUSTEE"] == 6_857
     assert first.relation_counts["HAS_BENCHMARK"] == 1_311
-    assert first.relation_counts["DENOMINATED_IN"] == 26_522
+    # PREF01's authoritative CURR_CD_KRW code is now normalized to KRW.
+    assert first.relation_counts["DENOMINATED_IN"] == 28_298
 
     with engine.connect() as connection:
         def product_relation_count(table, relation: str, product_type: str) -> int:

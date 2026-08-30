@@ -119,7 +119,7 @@ def test_sqlite_migration_url_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
 def test_fresh_upgrade_reports_schema_version_and_preserves_v1(v2_engine: Engine) -> None:
     inspector = inspect(v2_engine)
     assert CANONICAL_V2_SCHEMA in inspector.get_schema_names()
-    assert len(inspector.get_table_names(schema=CANONICAL_V2_SCHEMA)) == 36
+    assert len(inspector.get_table_names(schema=CANONICAL_V2_SCHEMA)) == 42
     assert inspector.has_table("m10_8_a_v1_sentinel")
     with v2_engine.connect() as connection:
         assert get_schema_version(connection) == CANONICAL_V2_SCHEMA_VERSION

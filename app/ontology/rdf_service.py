@@ -89,6 +89,10 @@ class RDFOntologyService:
             "product_type": "product.product_type",
             "aum": "product.aum",
             "expense_ratio": "product.expense_ratio",
+            "credit_rating": "product.credit_rating",
+            "current_sale_available": "product.current_sale_available",
+            "listing_country": "product.listing_country",
+            "currency": "product.currency",
         }.get(raw, raw)
         resolution = self.index.resolve_alias(semantic_slot, "field")
         if self.is_team_ontology or resolution.status is not GroundingStatus.UNRESOLVED:
@@ -123,6 +127,13 @@ class RDFOntologyService:
         return self.resolve_field(raw).canonical_field
 
     def resolve_relation(self, raw: str) -> OntologyResolution:
+        if isinstance(self.runtime_mapping, TeamOntologyRuntimeMapping):
+            mapping = self.runtime_mapping.relation(raw)
+            if (
+                mapping is not None
+                and mapping.capability is not SemanticCapabilityState.ACTIVE
+            ):
+                return OntologyResolution(raw, GroundingStatus.UNRESOLVED)
         return self.index.resolve_alias(raw, "relation")
 
     def is_compatible(
@@ -292,7 +303,9 @@ class RDFOntologyService:
     def _ground_sort(self, item) -> GroundedSort:
         resolution = self.resolve_field(item.field)
         mapping = self._field_mapping(item.field)
-        executable = mapping is None or "sort" in mapping.operations
+        executable = mapping is None or bool(
+            {"sort", "sort_contract"} & mapping.operations
+        )
         return GroundedSort(
             raw_sort=item,
             canonical_field=(

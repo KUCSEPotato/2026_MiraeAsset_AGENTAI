@@ -12,7 +12,6 @@ data/*.db-*
 data/semantic_search.json
 data/canonical_v2/
 .env.example
-!.env.example
 ory-finance-agent-key.pem
 tests/
 !tests/
@@ -29,5 +28,9 @@ tests/*
 !tests/test_m10_9_operations.py
 !tests/test_m10_9_hyperclova_answer.py
 !tests/test_m10_9_docker_deployment.py
+!tests/test_m10_9_c1_structured_operations.py
+!tests/test_m10_9_c1_postgresql.py
+!tests/test_m10_9_c2_holdings.py
+!tests/test_m10_9_c2_postgresql.py
 !tests/test_graph_retriever.py
 !tests/test_m8_ontology_integration.py

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Iterable
 
 from app.domain.models import (
@@ -13,7 +14,7 @@ from app.ontology.index import normalize_ontology_text
 
 ONTOLOGY_URI = "https://miraeasset.com/ontology/financial-product"
 ONTOLOGY_NAMESPACE = f"{ONTOLOGY_URI}#"
-ONTOLOGY_VERSION = "merged-optical-1.3"
+ONTOLOGY_VERSION = "merged-optical-1.4"
 SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-08-29.1"
 DATASET_SNAPSHOT = "2026-08-24"
 
@@ -300,6 +301,7 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
     prospective = SemanticCapabilityState.PROSPECTIVE
     exact_ops = frozenset({"filter", "project"})
     project = frozenset({"project"})
+    contract_sort = frozenset({"project", "sort_contract"})
     return (
         FieldMapping("product.name", "productName", ("상품명", "이름"), "rdb", "canonical_products.product_name", exact_ops),
         FieldMapping("product.short_name", "shortName", ("단축명", "약칭"), "rdb", "canonical_products.short_name", exact_ops),
@@ -316,14 +318,17 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         # Projection is safe, but cross-source comparisons are not.  The new
         # generation mixes currencies and does not provide an FX normalization
         # contract, so filter/sort stay disabled in Team mode.
-        FieldMapping("product.aum", "SizeMetric", ("순자산", "AUM", "운용규모"), "rdb", "canonical_products.aum", project, active, "row currency", None, None, "preserve_null", "reject_cross_currency_comparison"),
-        FieldMapping("product.expense_ratio", "CostMetric", ("총보수", "보수율", "운용보수"), "rdb", "canonical_products.expense_ratio", project, active, "source scale unverified", None, None),
+        FieldMapping("product.aum", "SizeMetric", ("순자산", "AUM", "운용규모"), "rdb", "canonical_v2.metric_observations", contract_sort, active, "row currency", "currency amount", "currency unit", "preserve_null", "reject_cross_currency_comparison"),
+        FieldMapping("product.expense_ratio", "CostMetric", ("총보수", "보수율", "운용보수"), "rdb", "canonical_v2.metric_observations", project, active, "source scale unverified", None, None),
+        FieldMapping("product.one_year_return", "PerformanceMetric", ("1년 수익률", "1년수익률", "연 수익률", "연수익률", "ONE_YEAR_RETURN"), "rdb", "canonical_v2.metric_observations.ONE_YEAR_RETURN", contract_sort, active, "source percent", "percent", "SOURCE_PERCENT", "preserve_null", "exclude_missing_from_rankable_set"),
         FieldMapping("product.nav", "NAVMetric", ("NAV", "기준가격"), "rdb", "canonical_products.nav", project, active, "row currency", None, None),
         FieldMapping("product.price", "PriceMetric", ("가격", "종가"), "rdb", "canonical_products.price", project, active, "row currency", None, None),
         FieldMapping("product.base_index", "hasUnderlyingIndex", ("기초지수", "추종지수"), "rdb+graph", "canonical_products.base_index/TRACKS_INDEX", exact_ops),
         FieldMapping("product.observed_at", "observedAt", ("관측일", "기준일"), "rdb", "canonical_products.observed_at", exact_ops),
         FieldMapping("product.strategy_description", "investmentStrategyDescription", ("전략", "투자전략"), "vector_bm25", "etf_attributes.strategy", project),
-        FieldMapping("product.credit_rating", "hasCreditRating", ("신용등급",), "rdb", "metric_observations.credit_rating", project, active),
+        FieldMapping("product.credit_rating", "hasCreditRating", ("신용등급", "credit_rating"), "rdb", "canonical_v2.metric_observations", frozenset({"filter", "project", "ordered_comparison"}), active, "ordinal", "ordinal", "CREDIT_RATING_V1"),
+        FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available", "구매 가능"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),
+        FieldMapping("product.listing_country", "listedInCountry", ("상장국가", "listing_country"), "rdb+graph", "LISTED_IN_COUNTRY", exact_ops),
         FieldMapping("product.maturity", "maturityOrFirstCallDate", ("만기", "만기일"), "rdb", "bond_attributes.maturity_date", project, prospective, "date", "date"),
         FieldMapping("product.return", "PerformanceMetric", ("수익률",), "rdb", "metric_observations.return", project, prospective, "percent", None),
         FieldMapping("product.yield", "YieldMetric", ("수익률", "채권수익률"), "rdb", "metric_observations.yield", project, prospective, "percent", None),
@@ -333,6 +338,11 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
 def _relation_mappings() -> tuple[RelationMapping, ...]:
     active = SemanticCapabilityState.ACTIVE
     unsupported = SemanticCapabilityState.UNSUPPORTED_BY_CURRENT_SNAPSHOT
+    holdings = (
+        active
+        if os.getenv("TRUSTED_HOLDINGS_RUNTIME_ENABLED", "0") == "1"
+        else unsupported
+    )
     return (
         RelationMapping("managedBy", "managedBy", ("운용사", "운용하는", "관리하는"), "MANAGED_BY"),
         RelationMapping("issuedBy", "issuedBy", ("발행사", "발행한"), "ISSUED_BY"),
@@ -350,6 +360,8 @@ def _relation_mappings() -> tuple[RelationMapping, ...]:
         RelationMapping("listedInMarket", "listedInMarket", ("상장시장",), "LISTED_IN_MARKET"),
         RelationMapping("listedInCountry", "listedInCountry", ("상장국가",), "LISTED_IN_COUNTRY"),
         RelationMapping("hasSaleLot", "hasSaleLot", ("판매 LOT",), "HAS_SALE_LOT"),
+        RelationMapping("holds", "holds", ("보유", "보유한"), "HOLDS", holdings),
+        RelationMapping("securityIssuedBy", "securityIssuedBy", ("증권 발행사",), "SECURITY_ISSUED_BY", holdings),
     )
 
 
@@ -361,6 +373,7 @@ def _metric_mappings() -> tuple[MetricFamilyMapping, ...]:
         MetricFamilyMapping("NAVMetric", ("nav.perShare", "nav.reference"), "product.nav", "canonical_products.nav", active),
         MetricFamilyMapping("SizeMetric", ("aum", "netAssets"), "product.aum", "canonical_products.aum", active),
         MetricFamilyMapping("CostMetric", ("fee", "expenseRate"), "product.expense_ratio", "canonical_products.expense_ratio", active),
+        MetricFamilyMapping("PerformanceMetric", ("return.1Y",), "product.one_year_return", "canonical_v2.metric_observations.ONE_YEAR_RETURN", active),
         MetricFamilyMapping("PerformanceMetric", ("return.1D", "return.1M", "return.1Y"), "product.return", "metric_observations", prospective),
         MetricFamilyMapping("YieldMetric", ("buyYield", "afterTaxYield", "corporateYield"), "product.yield", "metric_observations", prospective),
         MetricFamilyMapping("ValuationMetric", ("evaluatedPrice", "bondClosePrice"), "product.price", "canonical_products.price", active),

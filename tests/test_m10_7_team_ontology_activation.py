@@ -107,7 +107,10 @@ def test_observed_team_controlled_individuals_are_runtime_active() -> None:
     stripped = {value.strip() for value in unsupported}
     assert "미국" not in stripped
     assert "주식형" not in stripped
-    assert any("순자산" in value for value in unsupported)
+    # M10.9-C1 grounds AUM as a semantic metric.  Source/currency scope is
+    # validated later by the explicit comparison-contract boundary.
+    assert not any("순자산" in value for value in unsupported)
+    assert grounded.grounded_sort[0].canonical_field == "product.aum"
 
 
 def test_risk_grade_relation_target_uses_controlled_runtime_key() -> None:

@@ -44,6 +44,7 @@ class ConstraintStatus(str, Enum):
 
 class ConstraintSemanticType(str, Enum):
     PRODUCT_TYPE = "product_type"
+    PRODUCT_UNIVERSE = "product_universe"
     ENTITY = "entity"
     FILTER = "filter"
     SORT = "sort"
@@ -357,6 +358,48 @@ class SortSpec(BaseModel):
     constraint_id: str | None = None
 
 
+class SortOperation(BaseModel):
+    """Backend-neutral ordered operation carried by a structured QueryPlan."""
+
+    semantic_metric_key: str
+    direction: Literal["asc", "desc"]
+
+
+class TopN(BaseModel):
+    """A bounded result window; it is valid only with an explicit sort."""
+
+    value: int = Field(gt=0, le=1000)
+
+
+class OrderedComparison(BaseModel):
+    """An ordered comparison whose ordering contract is not lexical."""
+
+    semantic_field: str
+    operator: Literal["gt", "gte", "lt", "lte"]
+    value: ScalarValue
+
+
+class ProductUniverseUnion(BaseModel):
+    """Allow-listed product categories combined before global filtering/ranking."""
+
+    operands: list[
+        Literal[
+            "DomesticETF",
+            "ForeignETF",
+            "ETF",
+            "PublicFund",
+            "Fund",
+        ]
+    ] = Field(min_length=1, max_length=5)
+    constraint_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_operands(self) -> "ProductUniverseUnion":
+        if len(self.operands) != len(set(self.operands)):
+            raise ValueError("product-universe operands must be unique")
+        return self
+
+
 class RelationMention(BaseModel):
     raw_text: str
     direction: RelationDirection = RelationDirection.OUTGOING
@@ -392,6 +435,7 @@ class ParsedQuery(BaseModel):
     original_question: str
     intent: QueryIntent
     product_types: list[str] = Field(default_factory=list)
+    product_universe: ProductUniverseUnion | None = None
     entities: list[EntityMention] = Field(default_factory=list)
     filters: list[FilterSpec] = Field(default_factory=list)
     relations: list[str | RelationMention] = Field(default_factory=list)
@@ -547,6 +591,11 @@ class RetrievalResult(BaseModel):
     returned_count: int = Field(default=0, ge=0)
     window_limit: int | None = Field(default=None, ge=1)
     counts: dict[str, int] = Field(default_factory=dict)
+    ranked_candidate_ids: list[str] = Field(default_factory=list)
+    filtered_total: int | None = Field(default=None, ge=0)
+    rankable_total: int | None = Field(default=None, ge=0)
+    missing_metric_total: int | None = Field(default=None, ge=0)
+    requested_top_n: int | None = Field(default=None, ge=1)
 
 
 class StepExecutionResult(BaseModel):

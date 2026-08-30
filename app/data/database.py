@@ -20,10 +20,11 @@ class DatabaseSettings:
     rdb_max_limit: int = 10_000
     rdb_repository_version: Literal["v1", "v2"] = "v1"
     v2_generation: str = "260824"
-    v2_ontology_version: str = "merged-optical-1.3"
-    v2_transformer_version: str = "m10.8-b2-relations-v2"
+    v2_ontology_version: str = "merged-optical-1.4"
+    v2_transformer_version: str = "m10.9-c2-kodex-holdings-1"
     v2_multi_store_enabled: bool = False
     runtime_data_version: Literal["v1", "v2"] = "v1"
+    trusted_holdings_runtime_enabled: bool = False
     pool_size: int = 5
     max_overflow: int = 5
     pool_timeout_seconds: float = 30.0
@@ -75,13 +76,16 @@ class DatabaseSettings:
             rdb_repository_version=bundle.version,
             v2_generation=os.getenv("CANONICAL_V2_GENERATION", "260824"),
             v2_ontology_version=os.getenv(
-                "CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.3"
+                "CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.4"
             ),
             v2_transformer_version=os.getenv(
-                "CANONICAL_V2_TRANSFORMER_VERSION", "m10.8-b2-relations-v2"
+                "CANONICAL_V2_TRANSFORMER_VERSION", "m10.9-c2-kodex-holdings-1"
             ),
             v2_multi_store_enabled=bundle.uses_canonical_v2,
             runtime_data_version=bundle.version,
+            trusted_holdings_runtime_enabled=(
+                os.getenv("TRUSTED_HOLDINGS_RUNTIME_ENABLED", "0") == "1"
+            ),
             pool_size=int(os.getenv("DATABASE_POOL_SIZE", "5")),
             max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "5")),
             pool_timeout_seconds=float(os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "30")),

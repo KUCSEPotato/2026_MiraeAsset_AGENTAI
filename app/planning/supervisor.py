@@ -14,6 +14,7 @@ from app.domain.models import (
     RelationDirection,
 )
 from app.planning.serialization import has_structured_inputs, structured_query_inputs
+from app.data.metric_capabilities import MetricCapabilityRegistry
 
 
 class DeterministicSupervisorPlanner:
@@ -26,6 +27,9 @@ class DeterministicSupervisorPlanner:
         steps: list[QueryStep] = []
         semantic_step_id: str | None = None
         structured_inputs = structured_query_inputs(query)
+        structured_inputs, capability_unsupported = MetricCapabilityRegistry().prepare(
+            structured_inputs
+        )
         constraint_ids = _constraint_ids(query)
 
         semantic_search = bool(
@@ -76,6 +80,7 @@ class DeterministicSupervisorPlanner:
                         constraint_ids,
                         {
                             ConstraintSemanticType.PRODUCT_TYPE,
+                            ConstraintSemanticType.PRODUCT_UNIVERSE,
                             ConstraintSemanticType.FILTER,
                             ConstraintSemanticType.SORT,
                             ConstraintSemanticType.REQUESTED_FIELD,
@@ -268,7 +273,7 @@ class DeterministicSupervisorPlanner:
                 item.constraint_id
                 for item in query.semantic_constraints
                 if item.status is ConstraintStatus.UNSUPPORTED
-            ],
+            ] + capability_unsupported,
             constraint_coverage_required=bool(query.semantic_constraints),
         )
 
@@ -298,7 +303,7 @@ def _graph_paths(query: GroundedQuery) -> list[dict]:
     chained: dict[str, list] = {}
     for relation in resolved:
         if relation.chain_id is None:
-            paths.append(_path([relation]))
+            paths.extend(_allow_listed_paths(relation))
         else:
             chained.setdefault(relation.chain_id, []).append(relation)
     for chain_id in sorted(chained):
@@ -308,6 +313,43 @@ def _graph_paths(query: GroundedQuery) -> list[dict]:
         )
         paths.append(_path(relations))
     return paths
+
+
+def _allow_listed_paths(relation) -> list[dict]:
+    """Expand only reviewed bounded semantic paths; never infer arbitrary hops."""
+
+    if (
+        relation.canonical_relation == "holds"
+        and relation.target_value is not None
+    ):
+        common = {
+            "raw_relations": [relation.raw_text],
+            "constraint_ids": [relation.constraint_id] if relation.constraint_id else [],
+        }
+        # A Korean company/security surface name is not authoritative identity
+        # proof.  Search the two explicitly reviewed interpretations and let
+        # canonical graph identity decide; no fuzzy or LLM-created path exists.
+        return [
+            {
+                **common,
+                "relations": ["holds"],
+                "directions": [RelationDirection.OUTGOING.value],
+                "target_values": [relation.target_value],
+                "target_types": ["EquitySecurity"],
+            },
+            {
+                **common,
+                "relations": ["holds", "securityIssuedBy"],
+                "directions": [
+                    RelationDirection.OUTGOING.value,
+                    RelationDirection.OUTGOING.value,
+                ],
+                "raw_relations": [relation.raw_text, "증권 발행사"],
+                "target_values": [None, relation.target_value],
+                "target_types": ["EquitySecurity", "Organization"],
+            },
+        ]
+    return [_path([relation])]
 
 
 def _path(relations: list) -> dict:

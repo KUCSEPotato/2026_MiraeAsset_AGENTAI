@@ -8,6 +8,7 @@ from app.domain.models import (
 )
 from app.planning.serialization import structured_query_inputs
 from app.domain.models import ConstraintStatus
+from app.data.metric_capabilities import MetricCapabilityRegistry
 
 
 class DeterministicRuleRouter:
@@ -15,6 +16,7 @@ class DeterministicRuleRouter:
 
     async def create_plan(self, query: GroundedQuery) -> QueryPlan:
         inputs = structured_query_inputs(query)
+        inputs, capability_unsupported = MetricCapabilityRegistry().prepare(inputs)
         if inputs["result_limit"] is not None:
             inputs["limit"] = inputs["result_limit"]
         covered = [
@@ -33,5 +35,6 @@ class DeterministicRuleRouter:
                     covers_constraint_ids=covered,
                 )
             ],
+            unsupported_constraint_ids=capability_unsupported,
             constraint_coverage_required=bool(query.semantic_constraints),
         )

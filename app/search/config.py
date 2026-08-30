@@ -13,10 +13,10 @@ class SearchSettings:
     vector_top_k: int = 10
     candidate_limit: int = 10_000
     v2_index_path: Path = Path("data/canonical_v2/semantic_search.json")
-    v2_index_version: str = "m10.8-d-canonical-v2-semantic-1"
+    v2_index_version: str = "m10.9-c2-canonical-v2-semantic-1"
     v2_generation: str = "260824"
-    v2_ontology_version: str = "merged-optical-1.3"
-    v2_transformer_version: str = "m10.8-b2-relations-v2"
+    v2_ontology_version: str = "merged-optical-1.4"
+    v2_transformer_version: str = "m10.9-c2-kodex-holdings-1"
 
     @classmethod
     def from_env(cls) -> "SearchSettings":
@@ -35,10 +35,10 @@ class SearchSettings:
             vector_top_k=int(os.getenv("VECTOR_TOP_K", "10")),
             candidate_limit=int(os.getenv("SEMANTIC_CANDIDATE_LIMIT", "10000")),
             v2_index_path=Path(os.getenv("CANONICAL_V2_SEMANTIC_INDEX_PATH", "data/canonical_v2/semantic_search.json")),
-            v2_index_version=os.getenv("CANONICAL_V2_SEMANTIC_INDEX_VERSION", "m10.8-d-canonical-v2-semantic-1"),
+            v2_index_version=os.getenv("CANONICAL_V2_SEMANTIC_INDEX_VERSION", "m10.9-c2-canonical-v2-semantic-1"),
             v2_generation=os.getenv("CANONICAL_V2_GENERATION", "260824"),
-            v2_ontology_version=os.getenv("CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.3"),
-            v2_transformer_version=os.getenv("CANONICAL_V2_TRANSFORMER_VERSION", "m10.8-b2-relations-v2"),
+            v2_ontology_version=os.getenv("CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.4"),
+            v2_transformer_version=os.getenv("CANONICAL_V2_TRANSFORMER_VERSION", "m10.9-c2-kodex-holdings-1"),
         )
         for name, value in (
             ("EMBEDDING_DIMENSION", settings.embedding_dimension),
