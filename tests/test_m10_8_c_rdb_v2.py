@@ -128,7 +128,7 @@ def test_ready_snapshot_selection_is_exact(v2_engine, selector) -> None:
     with v2_engine.connect() as connection:
         selected = selector.select(connection)
     assert selected.generation == "260824"
-    assert selected.ontology_version == "merged-optical-1.3"
+    assert selected.ontology_version == "merged-optical-1.4"
     assert len(selected.snapshot_ids) == 4
 
 
