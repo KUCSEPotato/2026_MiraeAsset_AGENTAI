@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
-from sqlalchemy import Engine, or_, select
+from sqlalchemy import Engine, or_, select, true
 
 from app.data.cleaning import normalize_lookup_value
 from app.data.v2_schema import (
@@ -33,6 +34,7 @@ class CanonicalV2EntityLookup:
         "sale_lot": {"SALE_LOT"},
         "management_company": {"ORGANIZATION"},
         "organization": {"ORGANIZATION"},
+        "security": {"SECURITY"},
         "index": {"INDEX"},
     }
 
@@ -50,25 +52,73 @@ class CanonicalV2EntityLookup:
         if kinds is None:
             return []
         normalized = normalize_lookup_value(raw_text)
-        identifier_keys = {normalized, raw_text.strip().upper()}
+        qualified_ticker = (
+            re.fullmatch(r"([A-Z]{4}):([A-Z0-9.\-]{1,16})", raw_text.strip().upper())
+            if entity_type == "security"
+            else None
+        )
+        implicit_krx_ticker = (
+            re.fullmatch(r"\d{6}", raw_text.strip())
+            if entity_type == "security"
+            else None
+        )
+        if (
+            entity_type == "security"
+            and qualified_ticker is None
+            and implicit_krx_ticker is None
+            and re.fullmatch(r"[A-Z]{1,5}", raw_text.strip().upper())
+        ):
+            # A bare foreign ticker has no exchange identity and must not bind
+            # to whichever listing happens to be present in this snapshot.
+            return []
+        identifier_keys = {
+            qualified_ticker.group(2)
+            if qualified_ticker is not None
+            else normalized,
+            qualified_ticker.group(2)
+            if qualified_ticker is not None
+            else raw_text.strip().upper(),
+        }
+        eligibility = (
+            true()
+            if entity_type in {"organization", "security"}
+            else canonical_entities.c.query_eligible.is_(True)
+        )
         with self._engine.connect() as connection:
             self._selector.select(connection)
             collision_candidates = self._collision_candidates(
-                connection, identifier_keys
+                connection,
+                identifier_keys,
+                namespace=(
+                    qualified_ticker.group(1) if qualified_ticker
+                    else "KRX" if implicit_krx_ticker
+                    else None
+                ),
             )
+            identifier_conditions = [
+                entity_identifiers.c.normalized_value.in_(identifier_keys),
+                entity_identifiers.c.validation_status == "VALIDATED",
+                entity_identifiers.c.resolution_status == "RESOLVED",
+            ]
+            if qualified_ticker is not None:
+                identifier_conditions.extend((
+                    entity_identifiers.c.scheme_code == "TICKER",
+                    entity_identifiers.c.namespace == qualified_ticker.group(1),
+                ))
+            elif implicit_krx_ticker is not None:
+                identifier_conditions.extend((
+                    entity_identifiers.c.scheme_code == "TICKER",
+                    entity_identifiers.c.namespace == "KRX",
+                ))
             identifiers = connection.execute(
                 select(
                     entity_identifiers.c.entity_id,
                     entity_identifiers.c.scheme_code,
                     entity_identifiers.c.raw_value,
                     entity_identifiers.c.conflict_status,
-                ).where(
-                    entity_identifiers.c.normalized_value.in_(identifier_keys),
-                    entity_identifiers.c.validation_status == "VALIDATED",
-                    entity_identifiers.c.resolution_status == "RESOLVED",
-                )
+                ).where(*identifier_conditions)
             ).mappings().all()
-            names = connection.execute(
+            names = [] if qualified_ticker is not None else connection.execute(
                 select(
                     canonical_entities.c.entity_id,
                     canonical_entities.c.preferred_name,
@@ -76,14 +126,14 @@ class CanonicalV2EntityLookup:
                     canonical_entities.c.name_status,
                 ).where(
                     canonical_entities.c.entity_kind.in_(kinds),
-                    canonical_entities.c.query_eligible.is_(True),
+                    eligibility,
                     or_(
                         canonical_entities.c.entity_id == raw_text,
                         canonical_entities.c.normalized_preferred_name == normalized,
                     ),
                 )
             ).mappings().all()
-            aliases = connection.execute(
+            aliases = [] if qualified_ticker is not None else connection.execute(
                 select(
                     entity_aliases.c.entity_id,
                     entity_aliases.c.alias,
@@ -96,7 +146,7 @@ class CanonicalV2EntityLookup:
                 .where(
                     entity_aliases.c.normalized_alias == normalized,
                     canonical_entities.c.entity_kind.in_(kinds),
-                    canonical_entities.c.query_eligible.is_(True),
+                    eligibility,
                 )
             ).mappings().all()
 
@@ -119,7 +169,7 @@ class CanonicalV2EntityLookup:
                     select(canonical_entities).where(
                         canonical_entities.c.entity_id.in_(candidate_ids),
                         canonical_entities.c.entity_kind.in_(kinds),
-                        canonical_entities.c.query_eligible.is_(True),
+                        eligibility,
                     )
                 ).mappings()
             }
@@ -174,12 +224,20 @@ class CanonicalV2EntityLookup:
         return matches
 
     @staticmethod
-    def _collision_candidates(connection, normalized: set[str]) -> set[str]:
+    def _collision_candidates(
+        connection, normalized: set[str], *, namespace: str | None = None,
+    ) -> set[str]:
+        conditions = [
+            identifier_collision_cases.c.normalized_value.in_(normalized),
+            identifier_collision_cases.c.status == "OPEN",
+        ]
+        if namespace is not None:
+            conditions.extend((
+                identifier_collision_cases.c.scheme_code == "TICKER",
+                identifier_collision_cases.c.namespace == namespace,
+            ))
         rows = connection.execute(
-            select(identifier_collision_cases.c.candidate_entity_ids).where(
-                identifier_collision_cases.c.normalized_value.in_(normalized),
-                identifier_collision_cases.c.status == "OPEN",
-            )
+            select(identifier_collision_cases.c.candidate_entity_ids).where(*conditions)
         ).scalars()
         result: set[str] = set()
         for values in rows:

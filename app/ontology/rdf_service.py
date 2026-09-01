@@ -12,6 +12,7 @@ from app.domain.models import (
     GroundedSort,
     GroundingStatus,
     RelationMention,
+    ResolutionStatus,
     ResolvedQuery,
     SemanticCapabilityState,
 )
@@ -258,7 +259,24 @@ class RDFOntologyService:
             if item.canonical_field is not None:
                 canonical_fields[raw] = item.canonical_field
 
-        relations = [self._ground_relation(item) for item in parsed.relations]
+        resolved_targets = {
+            entity.raw_text.casefold(): entity.canonical_id
+            for entity in query.resolved_entities
+            if entity.resolution_status is ResolutionStatus.RESOLVED
+            and entity.canonical_id is not None
+            and entity.entity_type in {"organization", "security"}
+        }
+        relations = [
+            self._ground_relation(
+                item,
+                resolved_target_id=(
+                    resolved_targets.get(item.target_value.casefold())
+                    if item.target_value is not None
+                    else None
+                ),
+            )
+            for item in parsed.relations
+        ]
         constraints = grounded_constraint_statuses(
             parsed,
             resolved_entities=query.resolved_entities,
@@ -340,7 +358,9 @@ class RDFOntologyService:
             ),
         )
 
-    def _ground_relation(self, raw) -> GroundedRelation:
+    def _ground_relation(
+        self, raw, *, resolved_target_id: str | None = None,
+    ) -> GroundedRelation:
         mention = (
             raw
             if isinstance(raw, RelationMention)
@@ -354,7 +374,7 @@ class RDFOntologyService:
             else None
         )
         relation_status = resolution.status
-        target_value = mention.target_value
+        target_value = resolved_target_id or mention.target_value
         target_category = {
             "RiskGrade": "risk_grade",
             "BondType": "bond_type",

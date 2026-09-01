@@ -19,3 +19,7 @@ class RDBQueryCompilationError(RetrievalError):
 
 class GraphQueryCompilationError(RetrievalError):
     """A graph step used a non-allow-listed relation or traversal shape."""
+
+
+class IncompleteCandidateSetError(RetrievalError):
+    """Global ranking cannot proceed from a truncated upstream candidate set."""

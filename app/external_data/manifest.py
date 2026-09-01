@@ -92,6 +92,51 @@ class SnapshotWorkspace:
         self._records_by_category: dict[str, dict[str, ExternalSourceRecord]] = {}
         self._write_manifest()
 
+    @classmethod
+    def resume(
+        cls, root: Path, *, snapshot_id: str, snapshot_date: date,
+    ) -> SnapshotWorkspace:
+        """Resume only an explicitly unfinished BUILDING/PARTIAL snapshot."""
+
+        manifest = load_snapshot_manifest(
+            root, snapshot_date=snapshot_date, snapshot_id=snapshot_id,
+        )
+        if manifest is None:
+            raise FileNotFoundError("snapshot manifest does not exist")
+        if manifest.status not in {SnapshotStatus.BUILDING, SnapshotStatus.PARTIAL}:
+            raise ValueError("only BUILDING or PARTIAL snapshots may be resumed")
+        workspace = cls.__new__(cls)
+        workspace.root = root
+        workspace.snapshot_id = snapshot_id
+        workspace.snapshot_date = snapshot_date
+        workspace.path = root / "snapshots" / snapshot_date.isoformat() / snapshot_id
+        workspace.manifest = manifest
+        workspace.manifest.status = SnapshotStatus.BUILDING
+        workspace.manifest.completed_at = None
+        workspace._artifact_keys = {
+            (item.normalized_url, item.sha256) for item in manifest.raw_artifacts
+        }
+        workspace._record_ids = set()
+        workspace._records_by_category = {}
+        for entry in manifest.normalized_outputs:
+            relative = Path(entry.relative_path)
+            if relative.name != "source_records.jsonl" or len(relative.parts) < 3:
+                continue
+            category = relative.parts[0]
+            path = workspace.path / relative
+            records: dict[str, ExternalSourceRecord] = {}
+            if path.is_file():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line:
+                        continue
+                    record = ExternalSourceRecord.model_validate_json(line)
+                    records[record.source_record_id] = record
+                    workspace._record_ids.add(record.source_record_id)
+            workspace._records_by_category[category] = records
+        workspace.manifest.source_record_count = len(workspace._record_ids)
+        workspace._write_manifest()
+        return workspace
+
     def raw_directory(self, category: str) -> Path:
         return self._safe_category_directory(category, "raw")
 
@@ -201,6 +246,10 @@ class SnapshotWorkspace:
                 return records[source_record_id]
         return None
 
+    @property
+    def source_record_ids(self) -> frozenset[str]:
+        return frozenset(self._record_ids)
+
     def add_failure(self, failure: CrawlFailure) -> None:
         self.manifest.failures.append(failure)
         self.manifest.failed_source_count = len(self.manifest.failures)
@@ -238,7 +287,10 @@ class SnapshotWorkspace:
         return target
 
     def _write_manifest(self) -> None:
-        payload = self.manifest.model_dump_json(indent=2).encode() + b"\n"
+        payload = self.manifest.model_dump_json(
+            indent=2,
+            exclude_computed_fields=True,
+        ).encode() + b"\n"
         _atomic_write_bytes(self.path / "manifest.json", payload)
 
 

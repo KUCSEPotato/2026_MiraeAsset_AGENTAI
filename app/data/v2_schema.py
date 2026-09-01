@@ -32,7 +32,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 
 CANONICAL_V2_SCHEMA = "canonical_v2"
-CANONICAL_V2_SCHEMA_VERSION = "m10.9-c2-canonical-v2"
+CANONICAL_V2_SCHEMA_VERSION = "m10.9-c2.6-canonical-v2"
 
 _NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_name)s",
@@ -192,6 +192,45 @@ external_holding_records = Table(
     Column("payload_sha256", String(64), nullable=False),
     CheckConstraint("product_resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED')", name="product_resolution_status_allowed"),
     CheckConstraint("security_resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED', 'NON_SECURITY')", name="security_resolution_status_allowed"),
+)
+
+external_security_issuer_records = Table(
+    "external_security_issuer_records",
+    metadata,
+    Column("issuer_record_id", Text, primary_key=True),
+    Column(
+        "external_source_record_id", Text,
+        ForeignKey(f"{CANONICAL_V2_SCHEMA}.external_source_records.external_source_record_id"),
+        nullable=False,
+    ),
+    Column(
+        "canonical_source_record_id", Text,
+        ForeignKey(f"{CANONICAL_V2_SCHEMA}.source_records.source_record_id"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("security_ticker", Text, nullable=False),
+    Column("security_source_id", Text, nullable=False),
+    Column("issuer_source_id", Text, nullable=False),
+    Column("effective_date", Date, nullable=False),
+    Column("security_identity_status", String(24), nullable=False),
+    Column("issuer_identity_status", String(24), nullable=False),
+    Column("relation_validation_status", String(24), nullable=False),
+    Column("normalized_payload", JSONB, nullable=False),
+    Column("payload_sha256", String(64), nullable=False),
+    CheckConstraint(
+        "security_identity_status IN ('RESOLVED', 'AMBIGUOUS', 'CONFLICT', 'UNRESOLVED')",
+        name="security_identity_status_allowed",
+    ),
+    CheckConstraint(
+        "issuer_identity_status IN ('RESOLVED', 'AMBIGUOUS', 'CONFLICT', 'UNRESOLVED')",
+        name="issuer_identity_status_allowed",
+    ),
+    CheckConstraint(
+        "relation_validation_status IN ('RESOLVED', 'AMBIGUOUS', 'CONFLICT', 'UNRESOLVED')",
+        name="relation_validation_status_allowed",
+    ),
+    CheckConstraint("length(payload_sha256) = 64", name="payload_sha256_length"),
 )
 
 quarantine_records = Table(

@@ -115,6 +115,24 @@ class RuleBasedQueryAnalyzer:
             for item in entities
             if item.raw_text.casefold() not in bound_targets
         ]
+        # Holdings targets participate in Entity Resolution even though they
+        # are not result-grain anchors.  This keeps company names and explicit
+        # Security tickers on the same exact, canonical lookup boundary.
+        target_entity_types = {
+            "Organization": "organization",
+            "EquitySecurity": "security",
+            "Security": "security",
+        }
+        entities.extend(
+            EntityMention(
+                raw_text=_strip_korean_particle(str(item.target_value)),
+                entity_type=target_entity_types[item.target_type],
+            )
+            for item in relations
+            if item.raw_text == "보유한"
+            and item.target_value is not None
+            and item.target_type in target_entity_types
+        )
         result_limit, limit_span = self._extract_limit(question)
         aggregation, aggregation_span = self._extract_aggregation(question)
         temporal, temporal_span = self._extract_temporal(question)
@@ -153,6 +171,14 @@ class RuleBasedQueryAnalyzer:
             start, end = _find_span(question, value)
             add(start, end, ConstraintSemanticType.PRODUCT_TYPE,
                 payload={"value": value}, ref=("product_type", index))
+            # Repeated type words are semantically idempotent.  Keep one
+            # canonical constraint while marking every exact occurrence as
+            # represented so a provider-scope prefix plus result suffix does
+            # not create a false residual.
+            occupied.extend(
+                range(match.start(), match.end())
+                for match in re.finditer(re.escape(value), question, re.IGNORECASE)
+            )
 
         if product_universe is not None and universe_span is not None:
             add(
@@ -672,8 +698,26 @@ class RuleBasedQueryAnalyzer:
             ]
         target_patterns = (
             (re.compile(
+                r"^(?:검증된\s*)?(?:iShares|아이셰어즈)"
+                r"(?:\s*(?:해외\s*)?ETF)?\s*(?:보유종목\s*)?(?:범위|스코프)"
+                r"(?:에서)?\s*(.+?)(?:을|를)\s*보유한\s*(?:상품|ETF)",
+                re.IGNORECASE,
+            ), "보유한", "FinancialProduct", "Security",
+             lambda value: _strip_korean_particle(value)),
+            (re.compile(
+                r"^(?:검증된\s*)?(?:KODEX|TIGER|iShares|아이셰어즈)"
+                r"(?:\s*/\s*(?:KODEX|TIGER|iShares|아이셰어즈))*"
+                r"(?:\s*(?:long[- ]?only|롱온리|호환))?\s*"
+                r"(?:ETF\s*중|(?:ETF\s*)?범위(?:에서)?)\s*"
+                r"(.+?)(?:을|를)\s*보유한\s*(?:상품|ETF)",
+                re.IGNORECASE,
+            ), "보유한", "FinancialProduct", "Security",
+             lambda value: _strip_korean_particle(value)),
+            (re.compile(
                 r"^(.+?)(?:을|를)\s*보유한\s*"
                 r"(?:(?:국내\s*/\s*해외|국내|해외)\s*)?"
+                r"(?:검증된\s*KODEX(?:\s*(?:long[- ]?only|롱온리|호환))?\s*)?"
+                r"(?:(?:iShares|아이셰어즈)\s*)?"
                 r"(?:ETF|ETN|공모\s*펀드|펀드)",
                 re.IGNORECASE,
             ), "보유한", "FinancialProduct", "Security",
@@ -701,12 +745,33 @@ class RuleBasedQueryAnalyzer:
         target_results: list[tuple[int, range, RelationMention]] = []
         for pattern, alias, subject_type, target_type, normalize in target_patterns:
             for match in pattern.finditer(question):
+                if any(
+                    match.start() < existing.stop and match.end() > existing.start
+                    for _, existing, _ in target_results
+                ):
+                    continue
+                target_value = normalize(match.group(1).strip())
+                if alias == "보유한":
+                    # A six-digit KRX ticker or an exchange-qualified global
+                    # ticker identifies a Security.  A
+                    # lexical company target denotes the issuing Organization;
+                    # the planner must therefore require the reviewed two-hop
+                    # Security -> Organization path.  This is syntax-driven and
+                    # contains no company-name special cases.
+                    target_type = (
+                        "EquitySecurity"
+                        if re.fullmatch(
+                            r"(?:\d{6}|[A-Z]{1,5}|[A-Z]{4}:[A-Z0-9.\-]{1,16})",
+                            target_value.upper(),
+                        )
+                        else "Organization"
+                    )
                 target_results.append((
                     match.start(), range(match.start(), match.end()),
                     RelationMention(raw_text=alias, direction=RelationDirection.OUTGOING,
                                     subject_type=subject_type,
                                     target_raw_text=match.group(1), target_type=target_type,
-                                    target_value=normalize(match.group(1).strip())),
+                                    target_value=target_value),
                 ))
         aliases = (
             ("펀드 클래스", RelationDirection.OUTGOING),
@@ -751,6 +816,80 @@ class RuleBasedQueryAnalyzer:
         matches: list[tuple[int, int, str]] = []
         occupied: list[range] = []
 
+        combined_ready = re.search(
+            r"검증된\s*((?:(?:KODEX|TIGER|iShares|아이셰어즈)\s*/\s*)+"
+            r"(?:KODEX|TIGER|iShares|아이셰어즈))\s*(?:ETF\s*)?범위",
+            question, re.IGNORECASE,
+        )
+        if combined_ready:
+            provider_scopes = {
+                "kodex": "KODEX_LONG_ONLY_COMPATIBLE",
+                "tiger": "TIGER_LONG_ONLY_COMPATIBLE",
+                "ishares": "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
+                "아이셰어즈": "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
+            }
+            matches.extend(
+                (
+                    combined_ready.start() + position, combined_ready.end(),
+                    provider_scopes[provider.strip().casefold()],
+                )
+                for position, provider in enumerate(
+                    re.split(r"\s*/\s*", combined_ready.group(1))
+                )
+            )
+            occupied.append(range(combined_ready.start(), combined_ready.end()))
+
+        kodex_scope = re.search(
+            r"(?:검증된\s*KODEX(?:\s*(?:long[- ]?only|롱온리|호환))?\s*(?:ETF\s*)?범위|"
+            r"KODEX_LONG_ONLY_COMPATIBLE)",
+            question,
+            re.IGNORECASE,
+        )
+        if kodex_scope and not any(kodex_scope.start() in span for span in occupied):
+            matches.append((
+                kodex_scope.start(), kodex_scope.end(),
+                "KODEX_LONG_ONLY_COMPATIBLE",
+            ))
+            occupied.append(range(kodex_scope.start(), kodex_scope.end()))
+
+        kodex_full = re.search(r"KODEX\s*ETF", question, re.IGNORECASE)
+        if kodex_full and kodex_scope is None:
+            matches.append((kodex_full.start(), kodex_full.end(), "KODEX_FULL"))
+            occupied.append(range(kodex_full.start(), kodex_full.end()))
+
+        tiger_scope = re.search(
+            r"(?:검증된\s*TIGER(?:\s*(?:long[- ]?only|롱온리|호환))?\s*(?:ETF\s*)?범위|"
+            r"TIGER_LONG_ONLY_COMPATIBLE)", question, re.IGNORECASE,
+        )
+        if tiger_scope and not any(tiger_scope.start() in span for span in occupied):
+            matches.append((
+                tiger_scope.start(), tiger_scope.end(), "TIGER_LONG_ONLY_COMPATIBLE",
+            ))
+            occupied.append(range(tiger_scope.start(), tiger_scope.end()))
+        tiger_full = re.search(r"TIGER\s*ETF", question, re.IGNORECASE)
+        if tiger_full and tiger_scope is None and combined_ready is None:
+            matches.append((tiger_full.start(), tiger_full.end(), "TIGER_FULL"))
+            occupied.append(range(tiger_full.start(), tiger_full.end()))
+
+        ishares_scope = re.search(
+            r"(?:검증된\s*)?(?:iShares|아이셰어즈)"
+            r"(?:\s*(?:해외\s*ETF|ETF))?\s*(?:보유종목\s*)?(?:범위|스코프)",
+            question, re.IGNORECASE,
+        )
+        if ishares_scope:
+            matches.append((
+                ishares_scope.start(), ishares_scope.end(),
+                "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
+            ))
+            occupied.append(range(ishares_scope.start(), ishares_scope.end()))
+        ishares_full = re.search(
+            r"(?:iShares|아이셰어즈)\s*(?:해외\s*)?ETF",
+            question, re.IGNORECASE,
+        )
+        if ishares_full and ishares_scope is None:
+            matches.append((ishares_full.start(), ishares_full.end(), "ISHARES_US_FULL"))
+            occupied.append(range(ishares_full.start(), ishares_full.end()))
+
         combined = re.search(r"국내\s*/\s*해외\s*ETF", question, re.IGNORECASE)
         if combined:
             matches.extend(
@@ -774,12 +913,26 @@ class RuleBasedQueryAnalyzer:
 
         for pattern, operand in ((r"ETF", "ETF"), (r"펀드", "Fund")):
             for match in re.finditer(pattern, question, re.IGNORECASE):
+                if (
+                    kodex_scope is not None
+                    or tiger_scope is not None
+                    or ishares_scope is not None
+                    or combined_ready is not None
+                ) and operand == "ETF":
+                    continue
                 if any(match.start() in span for span in occupied):
                     continue
                 matches.append((match.start(), match.end(), operand))
 
         operands = list(dict.fromkeys(item[2] for item in sorted(matches)))
-        has_source_scope = any(item in {"DomesticETF", "ForeignETF"} for item in operands)
+        has_source_scope = any(
+            item in {
+                "DomesticETF", "ForeignETF", "KODEX_LONG_ONLY_COMPATIBLE",
+                "KODEX_FULL", "TIGER_LONG_ONLY_COMPATIBLE", "TIGER_FULL",
+                "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS", "ISHARES_US_FULL",
+            }
+            for item in operands
+        )
         if len(operands) < 2 and not has_source_scope:
             return None, None
         if not matches:

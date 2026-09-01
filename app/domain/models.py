@@ -389,8 +389,14 @@ class ProductUniverseUnion(BaseModel):
             "ETF",
             "PublicFund",
             "Fund",
+            "KODEX_LONG_ONLY_COMPATIBLE",
+            "KODEX_FULL",
+            "TIGER_LONG_ONLY_COMPATIBLE",
+            "TIGER_FULL",
+            "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
+            "ISHARES_US_FULL",
         ]
-    ] = Field(min_length=1, max_length=5)
+    ] = Field(min_length=1, max_length=9)
     constraint_id: str | None = None
 
     @model_validator(mode="after")

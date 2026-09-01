@@ -7,11 +7,11 @@ It downloads and preserves source material, records provenance and produces
 versioned source-level records. It does not create canonical products,
 companies, organizations, ontology assertions, Neo4j edges or recommendations.
 
-Current milestone: **Crawl-1 foundation plus a KODEX-only Crawl-2 holdings
-adapter**. The adapter implements only the confirmed Samsung Asset Management
-contract and must not be generalized to other managers. Public-fund holdings,
-other ETF managers, corporate subsidiaries and temporal-document adapters are
-not yet implemented.
+Current milestone: **Crawl-1 foundation plus reviewed KODEX and TIGER Crawl-2
+holdings adapters**. Each adapter has an explicit provider contract; shared
+normalization does not infer one provider's identifiers, weight units, or date
+semantics from the other. Public-fund holdings, foreign ETF holdings, corporate
+subsidiaries and temporal-document adapters are not yet implemented.
 
 ## Data flow
 
@@ -51,12 +51,12 @@ external_data/
         └── normalized/source_records.jsonl
 ```
 
-Snapshot directories are created with exclusive semantics. An existing
-snapshot ID is never overwritten. Content-addressed objects let unchanged bytes
-be reused across snapshots while every snapshot retains a direct artifact path.
-Repeating the CLI with the same explicit snapshot ID, provider and URL returns
-the existing `READY` manifest without new rows or files. Any differing or
-unfinished request must use a new snapshot ID rather than mutate history.
+Snapshot directories are created with exclusive semantics. `READY` and
+`FAILED` snapshots are immutable. A `BUILDING` or `PARTIAL` production-crawl
+snapshot may be explicitly resumed: existing exact raw artifacts, SourceRecords
+and semantic rows are loaded and validated before append-only acquisition
+continues. Content-addressed objects let unchanged bytes be reused while every
+snapshot retains a direct artifact path.
 
 ## Common SourceRecord
 
@@ -98,8 +98,8 @@ Downstream schema versions:
 - `external-corporate-v1`
 - `external-document-v1`
 
-`external-holdings-v1` is implemented only for the confirmed KODEX source
-contract. The corporate and document schemas remain reserved for later
+`external-holdings-v1` is implemented for the confirmed KODEX and TIGER source
+contracts. The corporate and document schemas remain reserved for later
 milestones.
 
 ## Source trust policy
@@ -249,8 +249,192 @@ contract:
 --effective-date 2026-08-29
 ```
 
-The future `holdings`, `corporate`, `documents` and `all` commands are not
-present yet because their source contracts have not been implemented.
+Run deterministic KODEX catalog discovery, exact PREF01 universe resolution and
+historical holdings acquisition:
+
+```bash
+uv run python scripts/crawl_external.py \
+  --output-dir external_data \
+  --request-interval 1.0 \
+  kodex-holdings \
+  --snapshot-date 2026-08-31 \
+  --snapshot-id kodex-production-20260824 \
+  --cutoff 2026-08-24
+```
+
+The command never imports or writes `canonical_v2`. `--product-id` is an exact
+fId subset intended only for reviewed live contract probes. The production run
+omits it and crawls every catalog product deterministically matched to PREF01.
+
+Run the independent TIGER historical adapter over its exact authoritative
+PREF01/ISIN universe. Passing the accepted KODEX snapshot also derives the
+reviewable TIGER long-only scope without writing PostgreSQL:
+
+```bash
+uv run python scripts/crawl_external.py \
+  --output-dir external_data \
+  --request-interval 1.0 \
+  tiger-holdings \
+  --snapshot-date 2026-09-01 \
+  --snapshot-id tiger-production-20260824-v1 \
+  --cutoff 2026-08-24 \
+  --kodex-snapshot-root external_data/<kodex-production-snapshot>
+```
+
+The official request uses the exact product ISIN and requested effective date.
+`retrieved_at` is never used as the portfolio date. TIGER reports portfolio
+weights as percent of NAV; cash and other non-security rows remain raw evidence
+and do not become `Security` or `HOLDS` facts.
+
+KODEX semantic holding IDs use provider, fId, effective portfolio date,
+stable constituent identity and holding grain. Exact raw hashes and
+SourceRecord IDs are deliberately excluded. `holdings.jsonl` contains the
+stable semantic projection; `holding_evidence_links.jsonl` maps one holding to
+one or more exact SourceRecords. Volatile `curp`, `risep`, `rcvTime`, retrieval
+time and raw hash therefore cannot change the semantic checksum.
+
+Three consecutive fetch failures stop the current pass and finalize `PARTIAL`
+instead of continuing to pressure a rate-limited provider. Per-pass product
+results are persisted after every product, so the same command can resume after
+a provider-safe cooldown without repeating successful terminal work.
+
+### KODEX READY policy
+
+A KODEX snapshot is `READY` only when all of these are true:
+
+- strict manifest serialize/write/load round-trip succeeds;
+- the full exact-resolved PREF01 universe has an accounted terminal status;
+- at least one holding source succeeds;
+- no schema/normalization or cutoff-unverified failures remain;
+- accounted fetch failures are at most 5% of eligible products;
+- a second pass has identical holding IDs, count and semantic checksum;
+- every normalized holding has a valid evidence link to a stored SourceRecord;
+- every normalized effective date is on or before 2026-08-24;
+- catalog matched/ambiguous/unmatched coverage is explicit;
+- `canonical_v2_writes` remains zero.
+
+`IDENTITY_UNRESOLVED` catalog products and `NO_HOLDINGS` products are allowed
+only when explicitly reported. Unknown/unattempted products, normalization
+contract violations, or unverified temporal semantics force `PARTIAL`.
+
+### KODEX long-only compatible scope
+
+The full production snapshot remains `PARTIAL`. A separate logical scope,
+`KODEX_LONG_ONLY_COMPATIBLE`, may be `READY` without copying or changing its
+raw evidence. Build (and optionally integrate) that scope with:
+
+```bash
+uv run python scripts/activate_kodex_scope.py \
+  --snapshot-root external_data/<snapshot> \
+  --database-url "$DATABASE_URL"
+```
+
+Eligibility is product-level and all-or-nothing. The source response must be
+complete and cutoff-compatible; every security row must have a deterministic
+six-digit KRX identity, verified weight semantics, non-negative quantity and
+evaluated value, and no unsupported derivative identifier. Cash rows are
+preserved as non-security evidence. One incompatible or unresolved portfolio
+row blocks the whole product; rows are never silently dropped to make a
+portfolio appear complete.
+
+The scoped manifest references the parent manifest, normalized holdings,
+holding-evidence links, SourceRecords, and raw checksums. It does not duplicate
+raw artifacts. Runtime holdings traversal is allowed only when the parsed
+universe is exactly the READY scope. `KODEX_FULL` and `DomesticETF` remain
+`PARTIAL`; generic `ForeignETF` is `PARTIAL` after C2.8 and `PublicFund`
+remains `NOT_READY`.
+
+### TIGER long-only compatible scope
+
+`TIGER_LONG_ONLY_COMPATIBLE` uses the same product-level all-or-nothing safety
+policy but its own provider contract and immutable scope manifest. Build and
+optionally integrate it with:
+
+```bash
+uv run python scripts/activate_tiger_scope.py \
+  --snapshot-root external_data/<tiger-production-snapshot> \
+  --kodex-snapshot-root external_data/<kodex-production-snapshot> \
+  --database-url "$DATABASE_URL"
+```
+
+Only exact six-digit KRX Security positions are eligible. Unsupported
+derivative/short identities block the complete product rather than being
+dropped. Runtime can select either READY provider scope or their bounded union;
+`TIGER_FULL` and generic `DomesticETF` coverage remain `PARTIAL`.
+
+### iShares foreign-ETF Security-holdings scope
+
+The C2.8 adapter uses BlackRock/iShares' official date-qualified fund-document
+CSV API. The response's `Fund Holdings as of` value is authoritative;
+`retrieved_at` and a current `latest-holdings.csv` response are never accepted
+as a historical date. Product identity is reconciled to PREF02 by ISIN first,
+then ticker plus exchange. Crawl the reviewed source candidates with:
+
+```bash
+uv run python scripts/crawl_external.py \
+  --output-dir external_data/c2_8 \
+  ishares-holdings \
+  --snapshot-date 2026-09-01 \
+  --snapshot-id ishares-production-20260824-v1 \
+  --cutoff 2026-08-24 \
+  --portfolio-date 2026-07-31
+```
+
+Constituent identity is ISIN when supplied, otherwise official exchange/MIC
+plus ticker. A bare foreign ticker or name cannot create a Security. Cash,
+money-market, FX and derivative positions remain classified source evidence;
+an unresolved Equity or unknown instrument blocks the entire product. The
+source candidate snapshot remains `PARTIAL`, while the evidence-backed
+`ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS` subset may be `READY`:
+
+```bash
+uv run python scripts/activate_ishares_scope.py \
+  --snapshot-root external_data/<ishares-production-snapshot> \
+  --database-url "$DATABASE_URL"
+```
+
+This scope does not activate all iShares or all `ForeignETF` products.
+`ISHARES_US_FULL` and generic `ForeignETF` remain `PARTIAL`. Foreign issuer
+relations are not inferred from a holding name. KRX constituents may reuse the
+separate authoritative KRX KIND issuer relation when that snapshot is READY.
+
+### KRX Security issuer evidence
+
+Company-name holdings queries use a separate authoritative relation snapshot.
+The crawler requests KRX KIND listed-company status for the exact evaluation
+cutoff and preserves the KOSPI, KOSDAQ, and KONEX HTML responses before writing
+source-grain `ExternalSecurityIssuerRecord` rows:
+
+```bash
+uv run python scripts/crawl_external.py \
+  --output-dir external_data/c2_6_issuer \
+  krx-security-issuers \
+  --snapshot-date 2026-08-31 \
+  --snapshot-id krx-kind-security-issuers-20260824-v2 \
+  --kodex-snapshot-root external_data/<kodex-production-snapshot> \
+  --tiger-snapshot-root external_data/<tiger-production-snapshot> \
+  --cutoff 2026-08-24
+```
+
+Security identity is exact six-digit KRX ticker identity. Organization reuse
+requires an exact-one deterministic legal-name match; otherwise an
+authoritative KRX `isurCd` identity may create a source-scoped Organization.
+Name collisions remain `AMBIGUOUS`, and non-representative preferred-share
+tickers absent from the company-grain response remain `UNRESOLVED`. No ticker
+prefix, fuzzy-name, or LLM inference is permitted.
+
+After review, integrate the immutable snapshot with:
+
+```bash
+uv run python scripts/activate_krx_issuers.py \
+  --snapshot-root external_data/c2_6_issuer/snapshots/<date>/<snapshot-id> \
+  --multi-provider \
+  --database-url "$DATABASE_URL"
+```
+
+The projection uses the existing canonical fact/evidence machinery and is
+idempotent. Runtime company-name traversal additionally requires all four
+issuer readiness gates and `TRUSTED_ISSUER_RUNTIME_ENABLED=1`.
 
 ## Configuration
 

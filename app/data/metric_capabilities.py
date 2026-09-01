@@ -155,10 +155,16 @@ class MetricCapabilityRegistry:
     ) -> tuple[ComparisonContract | None, str | None]:
         universe_input = inputs.get("product_universe") or {}
         universe = tuple(universe_input.get("operands", ()))
+        reviewed_domestic_holdings = {
+            "KODEX_LONG_ONLY_COMPATIBLE", "TIGER_LONG_ONLY_COMPATIBLE",
+        }
+        provider_union = bool(universe) and set(universe).issubset(
+            reviewed_domestic_holdings
+        )
         if canonical_field == "product.expense_ratio":
             return None, "expense_ratio_scale_unverified"
         if canonical_field == "product.one_year_return":
-            if universe == ("DomesticETF",):
+            if universe == ("DomesticETF",) or provider_union:
                 return PREF01_ONE_YEAR_RETURN, None
             if "PublicFund" in universe or "Fund" in universe:
                 return None, "public_fund_one_year_return_is_share_class_grain_only"
@@ -170,7 +176,7 @@ class MetricCapabilityRegistry:
 
         listing_country = self._eq_filter(inputs, "product.listing_country")
         currency = self._eq_filter(inputs, "product.currency")
-        if universe == ("DomesticETF",) or currency == "KRW":
+        if universe == ("DomesticETF",) or provider_union or currency == "KRW":
             return PREF01_AUM, None
         if listing_country == "US":
             return PREF02_AUM, None

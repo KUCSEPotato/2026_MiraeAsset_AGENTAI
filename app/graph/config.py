@@ -16,7 +16,7 @@ class GraphSettings:
     connection_timeout_seconds: float = 5.0
     connection_acquisition_timeout_seconds: float = 5.0
     max_transaction_retry_seconds: float = 5.0
-    v2_graph_projection_version: str = "m10.9-c2-canonical-v2-graph-1"
+    v2_graph_projection_version: str = "m10.9-c2.8-canonical-v2-graph-5"
     v2_generation: str = "260824"
     v2_ontology_version: str = "merged-optical-1.4"
     v2_transformer_version: str = "m10.9-c2-kodex-holdings-1"
@@ -49,7 +49,7 @@ class GraphSettings:
             ),
             v2_graph_projection_version=os.getenv(
                 "CANONICAL_V2_GRAPH_PROJECTION_VERSION",
-                "m10.9-c2-canonical-v2-graph-1",
+                "m10.9-c2.8-canonical-v2-graph-5",
             ),
             v2_generation=os.getenv("CANONICAL_V2_GENERATION", "260824"),
             v2_ontology_version=os.getenv(

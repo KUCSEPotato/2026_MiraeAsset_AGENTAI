@@ -118,9 +118,10 @@ class GraphQueryCompiler:
             target_node = f"n{index + 1}" if direction == "outgoing" else f"n{index}"
             value_parameter = f"target_value_{index}"
             conditions.append(
-                f"coalesce({target_node}.canonical_value, "
-                f"{target_node}.display_name, {target_node}.identifier_value) "
-                f"= ${value_parameter}"
+                f"({target_node}.entity_id = ${value_parameter} OR "
+                f"{target_node}.canonical_value = ${value_parameter} OR "
+                f"{target_node}.display_name = ${value_parameter} OR "
+                f"{target_node}.identifier_value = ${value_parameter})"
             )
             target_parameters[value_parameter] = str(target_value)
             if target_type is not None:

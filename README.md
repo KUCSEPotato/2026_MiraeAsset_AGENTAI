@@ -590,7 +590,7 @@ ONTOLOGY_VERSION=team-v1
 GRAPH_INGEST_BATCH_SIZE=1000
 GRAPH_QUERY_LIMIT=100
 GRAPH_MAX_DEPTH=2
-CANONICAL_V2_GRAPH_PROJECTION_VERSION=m10.9-c2-canonical-v2-graph-1
+CANONICAL_V2_GRAPH_PROJECTION_VERSION=m10.9-c2.5-step3-canonical-v2-graph-2
 CANONICAL_V2_SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/canonical_v2/semantic_search.json
 CANONICAL_V2_SEMANTIC_INDEX_VERSION=m10.9-c2-canonical-v2-semantic-1
 RUNTIME_ENVIRONMENT=production
@@ -783,7 +783,7 @@ global candidate set; arbitrary grouped boolean predicates remain unsupported.
 
 ## Trusted Holdings Canonical Integration (M10.9-C2)
 
-The holdings boundary consumes a normalized, manifest-backed KODEX snapshot;
+The holdings boundary consumes normalized, manifest-backed provider snapshots;
 it does not crawl or call provider APIs. Eligible rows resolve the source ETF
 and constituent by deterministic identifiers and materialize the temporal path:
 
@@ -796,12 +796,50 @@ Name-only identities, post-cutoff rows, collisions, and unproven issuers fail
 closed. Neo4j supports the reviewed reverse traversal and the two-hop issuer
 path without storing a separate `HELD_BY` fact.
 
-`TRUSTED_HOLDINGS_RUNTIME_ENABLED=0` is the production default. Enabling it
-requires a READY 2026-08-24 external manifest, evidence-backed PostgreSQL
-`HOLDS` facts, and an exactly reconciled compatible graph manifest. The current
-source-team repository artifact is a contract fixture rather than a complete
-production snapshot, so deployment must remain disabled until that independent
-data gate is satisfied. Public-fund holdings and sector inference remain out of
-scope.
+`TRUSTED_HOLDINGS_RUNTIME_ENABLED=0` is the deployment default. Enabling it
+requires one or more reviewed `KODEX_LONG_ONLY_COMPATIBLE`,
+`TIGER_LONG_ONLY_COMPATIBLE`, and
+`ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS` READY scopes, evidence-backed PostgreSQL `HOLDS`
+facts, and an exactly reconciled compatible graph manifest. The provider scopes
+can be queried separately or as one bounded union; candidates are deduplicated
+before a single global ranking. Only questions explicitly constrained to a
+selected READY scope may traverse holdings. `KODEX_FULL`, `TIGER_FULL`,
+`ISHARES_US_FULL`, `DomesticETF`, and generic `ForeignETF` remain partial
+coverage, while `PublicFund` remains unsupported; those generic universes
+therefore fail closed. Public-fund
+holdings, sector inference, and short/derivative/leveraged position semantics
+remain out of scope.
+
+## Authoritative Security Issuer Mapping (M10.9-C2.6)
+
+The scoped company-name path is prebuilt from the KRX KIND exact-cutoff
+listed-company result:
+
+```text
+KODEX_LONG_ONLY_COMPATIBLE or TIGER_LONG_ONLY_COMPATIBLE Product
+  -> HOLDS -> EquitySecurity
+  -> SECURITY_ISSUED_BY -> Organization
+```
+
+Every graph edge retains its canonical fact ID, evidence assertion IDs, source
+fields, and source-record keys. Company names resolve to an exact canonical
+Organization and use only the reviewed two-hop path; a six-digit ticker
+resolves to a canonical Security and keeps the narrower one-hop path. Exact
+name collisions, missing representative-ticker evidence, and unknown companies
+fail closed. The issuer snapshot is built over the exact union of selected
+provider Security identities. This does not expand holdings coverage:
+`KODEX_FULL`, `TIGER_FULL`, `DomesticETF`, generic ETF, Foreign ETF, and Public
+Fund remain incomplete or unsupported as declared by the holdings coverage
+registry.
+
+Production activation requires both:
+
+```text
+TRUSTED_HOLDINGS_RUNTIME_ENABLED=1
+TRUSTED_ISSUER_RUNTIME_ENABLED=1
+```
+
+`/health` reports `issuer_source`, `canonical_issuer`, `graph_issuer`, and
+`company_query` readiness independently before the v2 bundle becomes READY.
 
 # 2026_MiraeAsset_AGENTAI

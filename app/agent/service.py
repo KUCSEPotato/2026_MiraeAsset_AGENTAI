@@ -34,16 +34,20 @@ from app.agent.interfaces import (
 from app.domain.models import (
     AnswerabilityReasonCode,
     ParseProvenance,
+    ResolutionStatus,
     RetrievalSource,
     ValidationResult,
 )
 from app.data.database import DatabaseSettings, create_database_engine
+from app.data.holdings_coverage import KODEX_READY_SCOPE, TIGER_READY_SCOPE
 from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 from app.data.v2_schema import (
     canonical_facts,
+    dataset_snapshots,
     entity_relations,
     external_snapshot_manifests,
     fact_evidence_links,
+    source_datasets,
 )
 from app.data.schema import metadata as database_metadata
 from app.evidence.answer import DeterministicEvidenceAnswerGenerator
@@ -209,6 +213,19 @@ class PipelineAnswerService:
             plan = await self._planner.create_plan(grounded_query)
         except UnsupportedQuerySemanticsError as exc:
             trace.append("semantic_safety")
+            entity_reason = (
+                AnswerabilityReasonCode.ENTITY_AMBIGUOUS
+                if any(
+                    item.resolution_status is ResolutionStatus.AMBIGUOUS
+                    for item in resolved_query.resolved_entities
+                )
+                else AnswerabilityReasonCode.ENTITY_NOT_FOUND
+                if any(
+                    item.resolution_status is ResolutionStatus.UNRESOLVED
+                    for item in resolved_query.resolved_entities
+                )
+                else AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT
+            )
             return await self._semantic_safety_result(
                 question,
                 trace,
@@ -221,6 +238,7 @@ class PipelineAnswerService:
                     for reason in exc.reasons
                     if reason.startswith("unsupported_comparison:")
                 ],
+                reason_code=entity_reason,
             )
         planning_latency_ms = _elapsed_ms(planning_started)
         trace.append("planning")
@@ -362,12 +380,15 @@ class PipelineAnswerService:
         ontology_latency_ms: float = 0.0,
         planning_latency_ms: float = 0.0,
         unsupported_details: list[str] | None = None,
+        reason_code: AnswerabilityReasonCode = (
+            AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT
+        ),
     ) -> AgentResult:
         details = list(dict.fromkeys(unsupported_details or []))
         validation = ValidationResult(
             answerable=False,
-            reason_codes=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT],
-            reasons=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value, *details],
+            reason_codes=[reason_code],
+            reasons=[reason_code.value, *details],
         )
         final_answer = await self._safe_response_generator.generate(validation)
         return AgentResult(
@@ -377,7 +398,7 @@ class PipelineAnswerService:
                     "validation": {
                         "answerable": False,
                         "reason_codes": [
-                            AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value
+                            reason_code.value
                         ],
                         "reasons": details,
                     },
@@ -392,7 +413,7 @@ class PipelineAnswerService:
                     "validation_summary": {
                         "answerable": False,
                         "reason_codes": [
-                            AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT.value
+                            reason_code.value
                         ],
                         "reasons": details,
                     },
@@ -488,6 +509,10 @@ def create_production_answer_service(
         generation=settings.v2_generation,
         ontology_version=settings.v2_ontology_version,
         transformer_version=settings.v2_transformer_version,
+        include_trusted_holdings=settings.trusted_holdings_runtime_enabled,
+        trusted_holdings_scopes=settings.trusted_holdings_scopes,
+        include_trusted_issuers=settings.trusted_issuer_runtime_enabled,
+        trusted_issuer_scope=settings.trusted_issuer_scope,
     )
 
     if ontology_service is None:
@@ -518,6 +543,30 @@ def create_production_answer_service(
             "PENDING"
             if settings.runtime_bundle.uses_canonical_v2
             and settings.trusted_holdings_runtime_enabled
+            else "DISABLED"
+        ),
+        "issuer_source_readiness": (
+            "PENDING"
+            if settings.runtime_bundle.uses_canonical_v2
+            and settings.trusted_issuer_runtime_enabled
+            else "DISABLED"
+        ),
+        "canonical_issuer_readiness": (
+            "PENDING"
+            if settings.runtime_bundle.uses_canonical_v2
+            and settings.trusted_issuer_runtime_enabled
+            else "DISABLED"
+        ),
+        "graph_issuer_readiness": (
+            "PENDING"
+            if settings.runtime_bundle.uses_canonical_v2
+            and settings.trusted_issuer_runtime_enabled
+            else "DISABLED"
+        ),
+        "company_query_readiness": (
+            "PENDING"
+            if settings.runtime_bundle.uses_canonical_v2
+            and settings.trusted_issuer_runtime_enabled
             else "DISABLED"
         ),
         "graph_projection_version": resolved_graph_settings.v2_graph_projection_version if settings.runtime_bundle.uses_canonical_v2 else resolved_graph_settings.graph_version,
@@ -630,7 +679,9 @@ def create_production_answer_service(
             async def assert_v2_graph_ready() -> None:
                 manifest = await backend.assert_ready(expected_snapshot=settings.snapshot_date)
                 if settings.trusted_holdings_runtime_enabled:
-                    rdb_holds = await asyncio.to_thread(_v2_holds_count, engine)
+                    rdb_holds = await asyncio.to_thread(
+                        _v2_holds_count, engine, v2_snapshot_selector
+                    )
                     graph_holds = int(manifest.relation_counts.get("HOLDS", 0))
                     if rdb_holds <= 0 or graph_holds != rdb_holds:
                         raise RuntimeError(
@@ -641,7 +692,37 @@ def create_production_answer_service(
                 await asyncio.to_thread(_assert_v2_rdb_ready, engine, v2_snapshot_selector)
 
             async def assert_v2_holdings_ready() -> None:
-                await asyncio.to_thread(_assert_v2_holdings_ready, engine)
+                await asyncio.to_thread(
+                    _assert_v2_holdings_ready, engine, settings.trusted_holdings_scopes
+                )
+
+            async def assert_v2_issuer_source_ready() -> None:
+                await asyncio.to_thread(
+                    _assert_v2_issuer_source_ready, engine, settings.trusted_issuer_scope
+                )
+
+            async def assert_v2_canonical_issuer_ready() -> None:
+                await asyncio.to_thread(
+                    _assert_v2_canonical_issuer_ready, engine, v2_snapshot_selector
+                )
+
+            async def assert_v2_graph_issuer_ready() -> None:
+                manifest = await backend.assert_ready(
+                    expected_snapshot=settings.snapshot_date
+                )
+                rdb_issuers = await asyncio.to_thread(
+                    _v2_issuer_count, engine, v2_snapshot_selector
+                )
+                graph_issuers = int(
+                    manifest.relation_counts.get("SECURITY_ISSUED_BY", 0)
+                )
+                if rdb_issuers <= 0 or graph_issuers != rdb_issuers:
+                    raise RuntimeError(
+                        "C2.6 SECURITY_ISSUED_BY PostgreSQL/Neo4j reconciliation failed"
+                    )
+
+            async def assert_v2_company_query_ready() -> None:
+                await assert_v2_graph_issuer_ready()
 
             async def assert_v2_semantic_ready() -> None:
                 await asyncio.to_thread(
@@ -661,7 +742,23 @@ def create_production_answer_service(
                     if settings.trusted_holdings_runtime_enabled
                     else []
                 ),
+                *(
+                    [
+                        ("issuer_source", assert_v2_issuer_source_ready),
+                        ("canonical_issuer", assert_v2_canonical_issuer_ready),
+                    ]
+                    if settings.trusted_issuer_runtime_enabled
+                    else []
+                ),
                 ("graph", assert_v2_graph_ready),
+                *(
+                    [
+                        ("graph_issuer", assert_v2_graph_issuer_ready),
+                        ("company_query", assert_v2_company_query_ready),
+                    ]
+                    if settings.trusted_issuer_runtime_enabled
+                    else []
+                ),
                 ("semantic_index", assert_v2_semantic_ready),
             ])
         elif settings.rdb_repository_version == "v1" and resolved_graph_settings.configured:
@@ -783,8 +880,11 @@ def _assert_v2_rdb_ready(
         selector.select(connection)
 
 
-def _v2_holds_count(engine: Engine) -> int:
+def _v2_holds_count(
+    engine: Engine, selector: CanonicalV2SnapshotSelector | None = None,
+) -> int:
     with engine.connect() as connection:
+        snapshot_ids = selector.select(connection).snapshot_ids if selector else None
         return int(connection.scalar(
             select(func.count())
             .select_from(entity_relations.join(
@@ -794,21 +894,53 @@ def _v2_holds_count(engine: Engine) -> int:
             .where(
                 entity_relations.c.relation_type == "HOLDS",
                 canonical_facts.c.resolution_status == "RESOLVED",
+                *(
+                    (canonical_facts.c.snapshot_id.in_(snapshot_ids),)
+                    if snapshot_ids is not None else ()
+                ),
             )
         ) or 0)
 
 
-def _assert_v2_holdings_ready(engine: Engine) -> None:
+def _v2_issuer_count(
+    engine: Engine, selector: CanonicalV2SnapshotSelector | None = None,
+) -> int:
+    with engine.connect() as connection:
+        snapshot_ids = selector.select(connection).snapshot_ids if selector else None
+        return int(connection.scalar(
+            select(func.count())
+            .select_from(entity_relations.join(
+                canonical_facts,
+                canonical_facts.c.fact_id == entity_relations.c.fact_id,
+            ))
+            .where(
+                entity_relations.c.relation_type == "SECURITY_ISSUED_BY",
+                canonical_facts.c.resolution_status == "RESOLVED",
+                *(
+                    (canonical_facts.c.snapshot_id.in_(snapshot_ids),)
+                    if snapshot_ids is not None else ()
+                ),
+            )
+        ) or 0)
+
+
+def _assert_v2_holdings_ready(
+    engine: Engine,
+    expected_scopes: tuple[str, ...] = (KODEX_READY_SCOPE,),
+) -> None:
     """Fail closed unless trusted source, canonical facts and evidence agree."""
 
     with engine.connect() as connection:
-        manifests = int(connection.scalar(
-            select(func.count()).select_from(external_snapshot_manifests).where(
+        manifest_scopes = set(connection.execute(
+            select(external_snapshot_manifests.c.manifest_json["scope"].as_string())
+            .where(
                 external_snapshot_manifests.c.status == "READY",
                 external_snapshot_manifests.c.data_cutoff_date
                 == date.fromisoformat("2026-08-24"),
+                external_snapshot_manifests.c.manifest_json["scope"].as_string()
+                .in_(expected_scopes),
             )
-        ) or 0)
+        ).scalars().all())
         facts = int(connection.scalar(
             select(func.count()).select_from(entity_relations).where(
                 entity_relations.c.relation_type == "HOLDS"
@@ -820,14 +952,91 @@ def _assert_v2_holdings_ready(engine: Engine) -> None:
                 entity_relations.join(
                     fact_evidence_links,
                     fact_evidence_links.c.fact_id == entity_relations.c.fact_id,
+                ).join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == entity_relations.c.fact_id,
                 )
             )
             .where(entity_relations.c.relation_type == "HOLDS")
         ) or 0)
-    if manifests <= 0 or facts <= 0 or evidenced != facts:
+    if manifest_scopes != set(expected_scopes) or facts <= 0 or evidenced != facts:
         raise RuntimeError(
             "trusted holdings runtime is not canonical-data READY"
         )
+
+
+def _assert_v2_issuer_source_ready(
+    engine: Engine, expected_scope: str = KODEX_READY_SCOPE,
+) -> None:
+    with engine.connect() as connection:
+        count = int(connection.scalar(
+            select(func.count())
+            .select_from(
+                external_snapshot_manifests
+                .join(
+                    dataset_snapshots,
+                    dataset_snapshots.c.snapshot_id
+                    == external_snapshot_manifests.c.canonical_snapshot_id,
+                )
+                .join(
+                    source_datasets,
+                    source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+                )
+            )
+            .where(
+                source_datasets.c.dataset_code == "KRX_SECURITY_ISSUER",
+                external_snapshot_manifests.c.status == "READY",
+                external_snapshot_manifests.c.data_cutoff_date
+                == date.fromisoformat("2026-08-24"),
+                dataset_snapshots.c.metadata_json["scope"].as_string()
+                == expected_scope,
+            )
+        ) or 0)
+    if count != 1:
+        raise RuntimeError("authoritative issuer source is not READY")
+
+
+def _assert_v2_canonical_issuer_ready(
+    engine: Engine, selector: CanonicalV2SnapshotSelector | None = None,
+) -> None:
+    with engine.connect() as connection:
+        snapshot_ids = selector.select(connection).snapshot_ids if selector else None
+        facts = int(connection.scalar(
+            select(func.count())
+            .select_from(entity_relations.join(
+                canonical_facts,
+                canonical_facts.c.fact_id == entity_relations.c.fact_id,
+            ))
+            .where(
+                entity_relations.c.relation_type == "SECURITY_ISSUED_BY",
+                canonical_facts.c.resolution_status == "RESOLVED",
+                *(
+                    (canonical_facts.c.snapshot_id.in_(snapshot_ids),)
+                    if snapshot_ids is not None else ()
+                ),
+            )
+        ) or 0)
+        evidenced = int(connection.scalar(
+            select(func.count(distinct(entity_relations.c.fact_id)))
+            .select_from(
+                entity_relations.join(
+                    fact_evidence_links,
+                    fact_evidence_links.c.fact_id == entity_relations.c.fact_id,
+                ).join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == entity_relations.c.fact_id,
+                )
+            )
+            .where(
+                entity_relations.c.relation_type == "SECURITY_ISSUED_BY",
+                *(
+                    (canonical_facts.c.snapshot_id.in_(snapshot_ids),)
+                    if snapshot_ids is not None else ()
+                ),
+            )
+        ) or 0)
+    if facts <= 0 or evidenced != facts:
+        raise RuntimeError("canonical issuer relations are not evidence READY")
 
 
 def _assert_runtime_bundle_configuration(

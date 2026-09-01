@@ -306,12 +306,87 @@ def test_postgresql_graph_projection_reconciles_c2_facts(engine) -> None:
     # NAVER is a valid canonical Security even though its source product is
     # ambiguous; no HOLDS fact is emitted for that unresolved product.
     assert data.stats.nodes_by_type["EquitySecurity"] == 4
+    security_nodes = [node for node in data.nodes if node.node_type == "EquitySecurity"]
+    assert security_nodes
+    assert all(node.properties["exchange"] == "KRX" for node in security_nodes)
     holds = [edge for edge in data.edges if edge.edge_type == "HOLDS"]
     assert len(holds) == 4
     assert all(edge.object_id.startswith("security:") for edge in holds)
     assert all(edge.properties["effective_date"] == "2026-08-24" for edge in holds)
     assert all(edge.properties["canonical_fact_id"] for edge in holds)
     assert all(edge.properties["evidence_assertion_ids"] for edge in holds)
+    assert all(edge.properties["source_fields"] for edge in holds)
+    assert all(edge.properties["source_record_keys"] for edge in holds)
+
+
+def test_global_security_identity_is_exchange_scoped_and_isin_stable(
+    engine, tmp_path: Path,
+) -> None:
+    source = _source(tmp_path, "extrec:global-identity", "2ETFONE")
+    base = _holding(
+        90, source=source, product_isin="KR7000000001",
+        product_source_id="2ETFONE", security_ticker="ABC",
+        security_name="Global Security",
+        constituent_status=IdentityStatus.VERIFIED_IDENTIFIER,
+    ).model_copy(update={
+        "product_category": ProductCategory.FOREIGN_ETF,
+        "source_provider": "BlackRock iShares",
+    })
+    connection = engine.connect()
+    transaction = connection.begin()
+    try:
+        integrator = TrustedHoldingsCanonicalIntegrator(connection)
+        xnas, xnas_created = integrator._resolve_security(
+            base.model_copy(update={
+                "constituent_exchange": "XNAS",
+                "constituent_source_id": "XNAS:ABC",
+            }), source
+        )
+        xlon, xlon_created = integrator._resolve_security(
+            base.model_copy(update={
+                "constituent_exchange": "XLON",
+                "constituent_source_id": "XLON:ABC",
+            }), source
+        )
+        assert xnas_created and xlon_created
+        assert xnas.entity_id != xlon.entity_id
+
+        first_isin, first_created = integrator._resolve_security(
+            base.model_copy(update={
+                "constituent_ticker": "ONE",
+                "constituent_exchange": "XNYS",
+                "constituent_isin": "US0000000091",
+                "constituent_source_id": "XNYS:ONE",
+            }), source,
+        )
+        second_isin, second_created = integrator._resolve_security(
+            base.model_copy(update={
+                "constituent_ticker": "TWO",
+                "constituent_exchange": "XNAS",
+                "constituent_isin": "US0000000091",
+                "constituent_source_id": "KODEX-ISIN-ALIAS",
+                "source_provider": KODEX_PROVIDER,
+            }), source,
+        )
+        assert first_created and not second_created
+        assert first_isin.entity_id == second_isin.entity_id
+
+        unresolved, created = integrator._resolve_security(
+            base.model_copy(update={
+                "constituent_exchange": None,
+                "constituent_isin": None,
+                "constituent_source_id": None,
+            }), source,
+        )
+        assert unresolved.status == "UNRESOLVED"
+        assert not created
+
+        krx = integrator._identifier("TICKER", "KRX", "005930", "SECURITY")
+        assert krx.status == "RESOLVED"
+        assert krx.entity_id != xnas.entity_id
+    finally:
+        transaction.rollback()
+        connection.close()
 
 
 def test_real_neo4j_holds_reconciliation_and_reverse_traversal(engine) -> None:

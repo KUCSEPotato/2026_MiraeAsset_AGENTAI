@@ -25,6 +25,9 @@ class DatabaseSettings:
     v2_multi_store_enabled: bool = False
     runtime_data_version: Literal["v1", "v2"] = "v1"
     trusted_holdings_runtime_enabled: bool = False
+    trusted_holdings_scopes: tuple[str, ...] = ("KODEX_LONG_ONLY_COMPATIBLE",)
+    trusted_issuer_runtime_enabled: bool = False
+    trusted_issuer_scope: str = "KODEX_LONG_ONLY_COMPATIBLE"
     pool_size: int = 5
     max_overflow: int = 5
     pool_timeout_seconds: float = 30.0
@@ -85,6 +88,17 @@ class DatabaseSettings:
             runtime_data_version=bundle.version,
             trusted_holdings_runtime_enabled=(
                 os.getenv("TRUSTED_HOLDINGS_RUNTIME_ENABLED", "0") == "1"
+            ),
+            trusted_holdings_scopes=tuple(
+                item.strip() for item in os.getenv(
+                    "TRUSTED_HOLDINGS_SCOPES", "KODEX_LONG_ONLY_COMPATIBLE"
+                ).split(",") if item.strip()
+            ),
+            trusted_issuer_runtime_enabled=(
+                os.getenv("TRUSTED_ISSUER_RUNTIME_ENABLED", "0") == "1"
+            ),
+            trusted_issuer_scope=os.getenv(
+                "TRUSTED_ISSUER_SCOPE", "KODEX_LONG_ONLY_COMPATIBLE"
             ),
             pool_size=int(os.getenv("DATABASE_POOL_SIZE", "5")),
             max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "5")),

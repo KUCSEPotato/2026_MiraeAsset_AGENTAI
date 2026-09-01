@@ -5,6 +5,7 @@ from app.domain.models import (
     RetrievalRecord,
     RetrievalSource,
 )
+from app.retrieval.exceptions import IncompleteCandidateSetError
 
 
 class InternalTransformExecutor:
@@ -26,6 +27,30 @@ class InternalTransformExecutor:
         ]
         if not dependency_records:
             return []
+        ranking_requested = (
+            step.operation is QueryOperation.RANK_CANDIDATES
+            and bool(
+                step.inputs.get("sort")
+                or step.inputs.get("sort_operations")
+                or step.inputs.get("comparison_contracts")
+            )
+        )
+        if ranking_requested:
+            primary = context.step_results[step.depends_on[0]]
+            metadata = primary.retrieval_metadata
+            rankable = metadata.get("rankable_total")
+            returned = metadata.get("returned_count")
+            ranked_ids = metadata.get("ranked_candidate_ids")
+            if (
+                not isinstance(rankable, int)
+                or not isinstance(returned, int)
+                or rankable > returned
+                or not isinstance(ranked_ids, list)
+                or len(ranked_ids) != returned
+            ):
+                raise IncompleteCandidateSetError(
+                    "global ranking requires a complete pre-ranked RDB candidate set"
+                )
 
         entity_sets = [
             {record.entity_id for record in records if record.entity_id is not None}
@@ -39,6 +64,7 @@ class InternalTransformExecutor:
             if step.operation is QueryOperation.RANK_CANDIDATES
             else _primary_evidence_records(dependency_records)
         )
+        selected_entity_ids: list[str] = []
         for record in primary_records:
             entity_id = record.entity_id
             if entity_id is None or entity_id not in common_entity_ids:
@@ -46,6 +72,34 @@ class InternalTransformExecutor:
             if entity_id in emitted:
                 continue
             emitted.add(entity_id)
+            selected_entity_ids.append(entity_id)
+        limit = step.inputs.get("limit")
+        if limit is not None:
+            if not isinstance(limit, int) or limit <= 0:
+                raise ValueError("internal transform limit must be positive")
+            selected_entity_ids = selected_entity_ids[:limit]
+
+        # A ranked RDB result can contain several projected fact records for one
+        # entity (for example name plus the ranking metric).  Select the Top-N
+        # entity IDs first, then retain every projected record for those IDs so
+        # the intersection cannot discard the metric evidence used to rank it.
+        selected = set(selected_entity_ids)
+        records_to_emit = (
+            [record for record in primary_records if record.entity_id in selected]
+            if step.operation is QueryOperation.RANK_CANDIDATES
+            else [
+                next(
+                    record
+                    for record in primary_records
+                    if record.entity_id == entity_id
+                )
+                for entity_id in selected_entity_ids
+            ]
+        )
+        for record in records_to_emit:
+            entity_id = record.entity_id
+            if entity_id is None:
+                continue
             matching_records = [
                 candidate
                 for records in dependency_records
@@ -91,19 +145,14 @@ class InternalTransformExecutor:
                             "origin_step_id": record.step_id,
                             "dependency_step_ids": step.depends_on,
                             "transform_operation": step.operation.value,
-                            "ranking_applied": False,
+                            "ranking_applied": ranking_requested,
                             "fusion_provenance": fusion_provenance,
                             "semantic_matches": semantic_matches,
                         },
                     },
                 )
             )
-        limit = step.inputs.get("limit")
-        if limit is None:
-            return transformed
-        if not isinstance(limit, int) or limit <= 0:
-            raise ValueError("internal transform limit must be positive")
-        return transformed[:limit]
+        return transformed
 
 
 def _primary_evidence_records(

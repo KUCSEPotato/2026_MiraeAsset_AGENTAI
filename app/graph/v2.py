@@ -33,6 +33,9 @@ from app.data.v2_schema import (
     ontology_concepts,
     organization_relations,
     organizations,
+    securities,
+    source_field_assertions,
+    source_records,
 )
 from app.derived.manifest import DerivedStoreManifest, DerivedStoreStatus
 from app.graph.config import GraphSettings
@@ -42,7 +45,7 @@ from app.graph.models import GraphBuildData, GraphBuildStats, GraphEdge, GraphNo
 V2_GRAPH_NODE_LABEL = "M108DNode"
 V2_GRAPH_METADATA_LABEL = "M108DDerivedStoreMetadata"
 V2_GRAPH_METADATA_KEY = "canonical-v2-graph"
-V2_GRAPH_PROJECTION_VERSION = "m10.9-c2-canonical-v2-graph-1"
+V2_GRAPH_PROJECTION_VERSION = "m10.9-c2.8-canonical-v2-graph-5"
 V2_TRANSFORMER_VERSION = "m10.9-c2-kodex-holdings-1"
 
 V2_RELATIONS = frozenset(
@@ -104,6 +107,8 @@ class CanonicalV2GraphExtractor:
         self._nodes: dict[str, GraphNode] = {}
         self._edges: dict[str, GraphEdge] = {}
         self._evidence_by_fact: dict[str, list[str]] = defaultdict(list)
+        self._source_fields_by_fact: dict[str, list[str]] = defaultdict(list)
+        self._source_record_keys_by_fact: dict[str, list[str]] = defaultdict(list)
         self._holding_by_fact: dict[str, Mapping[str, Any]] = {}
         self._stats = GraphBuildStats()
 
@@ -116,11 +121,20 @@ class CanonicalV2GraphExtractor:
                 select(
                     canonical_entities.c.entity_id, canonical_entities.c.entity_kind,
                     canonical_entities.c.preferred_name, canonical_entities.c.query_eligible,
-                    product_type,
+                    product_type, securities.c.ticker, securities.c.isin,
+                    securities.c.exchange,
                 )
-                .select_from(canonical_entities.outerjoin(
-                    financial_products, financial_products.c.product_id == canonical_entities.c.entity_id
-                ))
+                .select_from(
+                    canonical_entities
+                    .outerjoin(
+                        financial_products,
+                        financial_products.c.product_id == canonical_entities.c.entity_id,
+                    )
+                    .outerjoin(
+                        securities,
+                        securities.c.security_id == canonical_entities.c.entity_id,
+                    )
+                )
                 .order_by(canonical_entities.c.entity_id)
             ).mappings()
             for row in rows:
@@ -175,6 +189,8 @@ class CanonicalV2GraphExtractor:
             entity_id=str(row["entity_id"]), node_type=node_type, labels=labels,
             properties={
                 "display_name": row["preferred_name"], "canonical_value": row["preferred_name"],
+                "identifier_value": row["ticker"], "ticker": row["ticker"],
+                "isin": row["isin"], "exchange": row["exchange"],
                 "entity_kind": kind, "product_type": product,
                 "node_type": node_type,
                 "query_eligible": bool(row["query_eligible"]), "dataset_snapshot": self._snapshot,
@@ -207,6 +223,10 @@ class CanonicalV2GraphExtractor:
             "canonical_fact_id": fact_id, "dataset_snapshot": self._snapshot,
             "generation": self._generation, "ontology_version": self._ontology_version,
             "evidence_assertion_ids": sorted(self._evidence_by_fact.get(fact_id, [])),
+            "source_fields": sorted(set(self._source_fields_by_fact.get(fact_id, []))),
+            "source_record_keys": sorted(
+                set(self._source_record_keys_by_fact.get(fact_id, []))
+            ),
         }
         if holding is not None:
             properties.update({
@@ -227,12 +247,31 @@ class CanonicalV2GraphExtractor:
 
     def _extract_relation_metadata(self, connection) -> None:
         rows = connection.execute(
-            select(fact_evidence_links.c.fact_id, fact_evidence_links.c.assertion_id)
+            select(
+                fact_evidence_links.c.fact_id,
+                fact_evidence_links.c.assertion_id,
+                source_field_assertions.c.source_column,
+                source_records.c.source_primary_key,
+            )
             .join(canonical_facts, canonical_facts.c.fact_id == fact_evidence_links.c.fact_id)
+            .join(
+                source_field_assertions,
+                source_field_assertions.c.assertion_id
+                == fact_evidence_links.c.assertion_id,
+            )
+            .join(
+                source_records,
+                source_records.c.source_record_id
+                == source_field_assertions.c.source_record_id,
+            )
             .where(canonical_facts.c.snapshot_id.in_(self._snapshot_ids))
         )
-        for fact_id, assertion_id in rows:
+        for fact_id, assertion_id, source_field, source_record_key in rows:
             self._evidence_by_fact[str(fact_id)].append(str(assertion_id))
+            self._source_fields_by_fact[str(fact_id)].append(str(source_field))
+            self._source_record_keys_by_fact[str(fact_id)].append(
+                str(source_record_key)
+            )
         rows = connection.execute(
             select(holding_fact_details)
             .join(canonical_facts, canonical_facts.c.fact_id == holding_fact_details.c.fact_id)

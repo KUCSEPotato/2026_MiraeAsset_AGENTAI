@@ -76,7 +76,7 @@ class KodexPdfPayload(BaseModel):
     pdfExcelDownloadUrl: str
     nowCnt: int
     list: list[KodexHoldingItem]
-    rcvTime: str
+    rcvTime: str | None = None
 
     @field_validator("gijunYMD")
     @classmethod
@@ -207,10 +207,22 @@ class KodexHoldingsAdapter:
             effective_date=effective_date, quality_status=QualityStatus.VALID,
         )
         self._workspace.write_source_records(category="holdings", records=[record])
-        holdings = tuple(self._normalize(response, product, record))
-        output = write_holdings(
-            self._workspace, holdings, source_record_id=record.source_record_id,
-        )
+        try:
+            holdings = tuple(self._normalize(response, product, record))
+        except ValueError as exc:
+            self._add_failure(fetch, FailureStage.VALIDATE, exc)
+            raise KodexSchemaError(
+                "KODEX holding values violate the approved normalization contract"
+            ) from exc
+        if not holdings:
+            return KodexAdapterResult(fetch, record, (), None)
+        try:
+            output = write_holdings(
+                self._workspace, holdings, source_record_id=record.source_record_id,
+            )
+        except HoldingsContractError as exc:
+            self._add_failure(fetch, FailureStage.VALIDATE, exc)
+            raise KodexSchemaError("KODEX semantic holding contract failed") from exc
         return KodexAdapterResult(fetch, record, holdings, output)
 
     def _normalize(
@@ -245,13 +257,16 @@ class KodexHoldingsAdapter:
                 else NumericStatus.RAW_ONLY
             )
             overall_identity = constituent_status
-            constituent_key = source_id or "name_sha256:" + hashlib.sha256(name.encode()).hexdigest()
+            constituent_key = (
+                f"ticker:KRX:{ticker}" if ticker else
+                f"provider_security_id:{source_id}" if source_id else
+                "name_sha256:" + hashlib.sha256(name.encode()).hexdigest()
+            )
             row_id = deterministic_holding_id(
                 source_provider=KODEX_PROVIDER,
                 product_source_id=product.source_id,
                 constituent_key=constituent_key,
                 effective_date=response.pdf.effective_date,
-                source_record_id=record.source_record_id,
             )
             rows.append(ExternalHolding(
                 holding_record_id=row_id,
@@ -326,6 +341,8 @@ class KodexHoldingsAdapter:
                 "not_modified": fetch.not_modified,
                 "fetch_attempts": fetch.attempts,
                 "data_cutoff_date": self._cutoff_date.isoformat(),
+                "product_source_id": fetch.normalized_url.split("/product-pdf/", 1)[-1]
+                .split(".do", 1)[0],
             },
         )
 

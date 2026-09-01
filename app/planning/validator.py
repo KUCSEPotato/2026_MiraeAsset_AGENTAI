@@ -104,14 +104,9 @@ class StructuredQueryPlanValidator:
             for item in sorted(required - covered)
         )
 
-        if query.parsed_query.sort and any(
-            step.source is RetrievalSource.INTERNAL
-            and step.operation is QueryOperation.RANK_CANDIDATES
-            for step in plan.steps
-        ):
+        if query.parsed_query.sort and not _ranking_execution_is_guaranteed(plan):
             errors.append("ranking_execution_not_guaranteed")
         return _deduplicate(errors)
-
     def _semantic_safety_errors(
         self,
         plan: QueryPlan,
@@ -224,6 +219,45 @@ def _extract_canonical_fields(inputs: dict) -> set[str]:
             fields.add(item["canonical_field"])
     fields.update(inputs.get("requested_fields", []))
     return fields
+
+
+def _ranking_execution_is_guaranteed(plan: QueryPlan) -> bool:
+    """Accept one global RDB ordering followed by an intersection/window.
+
+    Runtime additionally rejects a truncated rankable set before the internal
+    transform, so provider branches are never independently ranked/concatenated.
+    """
+
+    ranking_steps = [
+        step for step in plan.steps
+        if step.source is RetrievalSource.INTERNAL
+        and step.operation is QueryOperation.RANK_CANDIDATES
+    ]
+    if not ranking_steps:
+        return True
+    by_id = {step.step_id: step for step in plan.steps}
+    for rank in ranking_steps:
+        if not rank.depends_on:
+            return False
+        upstream = by_id.get(rank.depends_on[0])
+        if (
+            upstream is None
+            or upstream.source is not RetrievalSource.RDB
+            or upstream.operation is not QueryOperation.SEARCH_PRODUCTS
+            or not upstream.inputs.get("sort")
+            or upstream.inputs.get("sort") != rank.inputs.get("sort")
+            or not upstream.inputs.get("comparison_contracts")
+        ):
+            return False
+        upstream_limit = upstream.inputs.get("limit")
+        output_limit = rank.inputs.get("limit")
+        if (
+            not isinstance(upstream_limit, int)
+            or not isinstance(output_limit, int)
+            or output_limit > upstream_limit
+        ):
+            return False
+    return True
 
 
 def _extract_canonical_concepts(inputs: dict) -> set[str]:

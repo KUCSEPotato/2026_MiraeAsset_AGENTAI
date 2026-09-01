@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -22,11 +22,17 @@ from app.data.metric_capabilities import (
     CROSS_PRODUCT_RETURN_CONTRACTS,
 )
 from app.domain.models import (
+    ExecutionContext,
+    QueryPlan,
     QueryOperation,
     QueryStep,
     ResolvedQuery,
+    RetrievalRecord,
     RetrievalSource,
+    StepExecutionResult,
+    StepExecutionStatus,
 )
+from app.execution.transforms import InternalTransformExecutor
 from app.ontology.loader import OntologyLoader
 from app.ontology.rdf_service import RDFOntologyService
 from app.planning.coordinator import QueryPlanner
@@ -199,7 +205,7 @@ def test_holdings_boundary_is_structured_without_production_fact_fabrication(
     assert len(parsed.relations) == 1
     relation = parsed.relations[0]
     assert relation.raw_text == "보유한"
-    assert relation.target_type == "Security"
+    assert relation.target_type == "Organization"
     assert relation.target_value == security
     assert parsed.sort[0].field == "연 수익률"
     assert parsed.result_limit.value == 10
@@ -364,3 +370,94 @@ def test_allowlisted_cross_product_shape_compiles_one_global_ranking() -> None:
     assert sql.count("ORDER BY") >= 2  # metric scalar observation + global rank
     assert sql.count("LIMIT 10") == 1
     assert "PREF01N001" in sql and "PREF02N001" in sql
+
+
+def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() -> None:
+    rdb_step = QueryStep(
+        step_id="rdb",
+        source=RetrievalSource.RDB,
+        operation=QueryOperation.SEARCH_PRODUCTS,
+    )
+    graph_step = QueryStep(
+        step_id="graph",
+        source=RetrievalSource.GRAPH,
+        operation=QueryOperation.RELATIONSHIP_SEARCH,
+    )
+    rank_step = QueryStep(
+        step_id="rank",
+        source=RetrievalSource.INTERNAL,
+        operation=QueryOperation.RANK_CANDIDATES,
+        inputs={
+            "limit": 2,
+            "sort": [{"canonical_field": "product.one_year_return"}],
+            "comparison_contracts": [{"metric": "ONE_YEAR_RETURN"}],
+        },
+        depends_on=["rdb", "graph"],
+    )
+    plan = QueryPlan(planner="supervisor", steps=[rdb_step, graph_step, rank_step])
+    now = datetime.now(UTC)
+
+    def result(step: QueryStep, records: list[RetrievalRecord], metadata=None):
+        return StepExecutionResult(
+            step_id=step.step_id,
+            source=step.source,
+            status=StepExecutionStatus.SUCCESS,
+            records=records,
+            retrieval_metadata=metadata or {},
+            started_at=now,
+            finished_at=now,
+            duration_seconds=0,
+        )
+
+    rdb_records = [
+        RetrievalRecord(
+            source="rdb",
+            source_id=f"rdb:{entity_id}:{field}",
+            entity_id=entity_id,
+            payload={"field": field, "value": value},
+        )
+        for entity_id, name, metric in (
+            ("etf:1", "first", "20.0"),
+            ("etf:2", "second", "10.0"),
+            ("etf:3", "third", "5.0"),
+        )
+        for field, value in (
+            ("product.name", name),
+            ("product.one_year_return", metric),
+        )
+    ]
+    graph_records = [
+        RetrievalRecord(
+            source="graph",
+            source_id=f"graph:{entity_id}",
+            entity_id=entity_id,
+            payload={"field": "relation.holds", "value": "security:samsung"},
+        )
+        for entity_id in ("etf:1", "etf:2", "etf:3")
+    ]
+    context = ExecutionContext(
+        plan=plan,
+        step_results={
+            "rdb": result(
+                rdb_step,
+                rdb_records,
+                {
+                    "rankable_total": 3,
+                    "returned_count": 3,
+                    "ranked_candidate_ids": ["etf:1", "etf:2", "etf:3"],
+                },
+            ),
+            "graph": result(graph_step, graph_records),
+        },
+    )
+
+    records = asyncio.run(InternalTransformExecutor().execute(rank_step, context))
+
+    assert [record.entity_id for record in records] == [
+        "etf:1", "etf:1", "etf:2", "etf:2"
+    ]
+    assert [record.payload["field"] for record in records] == [
+        "product.name", "product.one_year_return",
+        "product.name", "product.one_year_return",
+    ]
+    assert all(record.metadata["ranking_applied"] for record in records)

@@ -9,11 +9,16 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.external_data.models import EXTERNAL_HOLDINGS_SCHEMA, SourceTrustTier
+from app.external_data.models import (
+    EXTERNAL_HOLDING_EVIDENCE_SCHEMA,
+    EXTERNAL_HOLDINGS_SCHEMA,
+    SourceTrustTier,
+)
 
 
 class ProductCategory(StrEnum):
     DOMESTIC_ETF = "DOMESTIC_ETF"
+    FOREIGN_ETF = "FOREIGN_ETF"
 
 
 class IdentityStatus(StrEnum):
@@ -26,6 +31,7 @@ class IdentityStatus(StrEnum):
 
 class WeightUnit(StrEnum):
     PERCENT_OF_NON_CASH_ASSETS = "PERCENT_OF_NON_CASH_ASSETS"
+    PERCENT_OF_NET_ASSET_VALUE = "PERCENT_OF_NET_ASSET_VALUE"
 
 
 class WeightScale(StrEnum):
@@ -34,6 +40,22 @@ class WeightScale(StrEnum):
 
 class QuantityUnit(StrEnum):
     UNITS_PER_CREATION_UNIT = "UNITS_PER_CREATION_UNIT"
+    UNITS = "UNITS"
+
+
+class PositionCategory(StrEnum):
+    EQUITY_SECURITY = "EQUITY_SECURITY"
+    CASH = "CASH"
+    MONEY_MARKET = "MONEY_MARKET"
+    DERIVATIVE = "DERIVATIVE"
+    FX = "FX"
+    OTHER = "OTHER"
+
+
+class PositionSemanticStatus(StrEnum):
+    CANONICALIZABLE = "CANONICALIZABLE"
+    NON_SECURITY = "NON_SECURITY"
+    UNSUPPORTED = "UNSUPPORTED"
 
 
 class NumericStatus(StrEnum):
@@ -64,12 +86,17 @@ class ExternalHolding(BaseModel):
     product_name_raw: str | None = None
     product_ticker: str | None = None
     product_isin: str | None = None
+    product_exchange: str | None = None
     product_source_id: str
 
     constituent_name_raw: str
     constituent_ticker: str | None = None
     constituent_isin: str | None = None
+    constituent_exchange: str | None = None
     constituent_source_id: str | None = None
+    constituent_instrument_type: str | None = None
+    position_category: PositionCategory | None = None
+    position_semantic_status: PositionSemanticStatus | None = None
 
     weight_raw: str | None = None
     weight_normalized: Decimal | None = None
@@ -167,16 +194,60 @@ class ExternalHolding(BaseModel):
             separators=(",", ":"),
         )
 
+    def semantic_canonical_json(self) -> str:
+        """Serialize only the stable historical holding fact.
+
+        Retrieval/source-record fields belong to evidence links.  Excluding
+        them here keeps semantic output stable when an exact raw KODEX
+        response changes only in current-market or retrieval metadata.
+        """
+
+        payload = self.model_dump(
+            mode="json",
+            exclude={
+                "retrieved_at",
+                "source_record_id",
+                "source_url",
+                "source_trust_tier",
+                "snapshot_id",
+            },
+        )
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+class ExternalHoldingEvidenceLink(BaseModel):
+    """Many-to-one provenance from exact source responses to one holding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = EXTERNAL_HOLDING_EVIDENCE_SCHEMA
+    holding_record_id: str
+    source_record_id: str
+
+    def canonical_json(self) -> str:
+        return json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
 
 def deterministic_holding_id(
     *, source_provider: str, product_source_id: str,
-    constituent_key: str, effective_date: date, source_record_id: str,
+    constituent_key: str, effective_date: date,
+    holding_grain: str = "PORTFOLIO_HOLDING",
 ) -> str:
     payload = "|".join((
         source_provider,
         product_source_id,
         constituent_key,
         effective_date.isoformat(),
-        source_record_id,
+        holding_grain,
     ))
     return "holding_" + hashlib.sha256(payload.encode()).hexdigest()

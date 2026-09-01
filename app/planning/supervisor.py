@@ -15,6 +15,7 @@ from app.domain.models import (
 )
 from app.planning.serialization import has_structured_inputs, structured_query_inputs
 from app.data.metric_capabilities import MetricCapabilityRegistry
+from app.data.holdings_coverage import HoldingsCoverageRegistry
 
 
 class DeterministicSupervisorPlanner:
@@ -31,6 +32,23 @@ class DeterministicSupervisorPlanner:
             structured_inputs
         )
         constraint_ids = _constraint_ids(query)
+        holdings_relations = [
+            relation for relation in query.grounded_relations
+            if relation.canonical_relation in {"holds", "securityIssuedBy"}
+        ]
+        holdings_scope_ready = (
+            not holdings_relations
+            or HoldingsCoverageRegistry().is_ready_exact_scope(
+                query.parsed_query.product_universe.operands
+                if query.parsed_query.product_universe is not None
+                else None
+            )
+        )
+        coverage_unsupported = [
+            relation.constraint_id
+            for relation in holdings_relations
+            if not holdings_scope_ready and relation.constraint_id is not None
+        ]
 
         semantic_search = bool(
             query.parsed_query.requires_semantic_search
@@ -136,7 +154,7 @@ class DeterministicSupervisorPlanner:
                 )
             )
 
-        graph_paths = _graph_paths(query)
+        graph_paths = _graph_paths(query, allow_holdings=holdings_scope_ready)
         resolved_source_ids = [
             entity.canonical_id
             for entity in query.resolved_entities
@@ -273,7 +291,7 @@ class DeterministicSupervisorPlanner:
                 item.constraint_id
                 for item in query.semantic_constraints
                 if item.status is ConstraintStatus.UNSUPPORTED
-            ] + capability_unsupported,
+            ] + capability_unsupported + coverage_unsupported,
             constraint_coverage_required=bool(query.semantic_constraints),
         )
 
@@ -292,12 +310,16 @@ def _ids_for(
     return [item for kind in kinds for item in values.get(kind, [])]
 
 
-def _graph_paths(query: GroundedQuery) -> list[dict]:
+def _graph_paths(query: GroundedQuery, *, allow_holdings: bool = True) -> list[dict]:
     resolved = [
         relation
         for relation in query.grounded_relations
         if relation.status is GroundingStatus.RESOLVED
         and relation.canonical_relation is not None
+        and (
+            allow_holdings
+            or relation.canonical_relation not in {"holds", "securityIssuedBy"}
+        )
     ]
     paths: list[dict] = []
     chained: dict[str, list] = {}
@@ -326,18 +348,8 @@ def _allow_listed_paths(relation) -> list[dict]:
             "raw_relations": [relation.raw_text],
             "constraint_ids": [relation.constraint_id] if relation.constraint_id else [],
         }
-        # A Korean company/security surface name is not authoritative identity
-        # proof.  Search the two explicitly reviewed interpretations and let
-        # canonical graph identity decide; no fuzzy or LLM-created path exists.
-        return [
-            {
-                **common,
-                "relations": ["holds"],
-                "directions": [RelationDirection.OUTGOING.value],
-                "target_values": [relation.target_value],
-                "target_types": ["EquitySecurity"],
-            },
-            {
+        if relation.target_type == "Organization":
+            return [{
                 **common,
                 "relations": ["holds", "securityIssuedBy"],
                 "directions": [
@@ -347,8 +359,16 @@ def _allow_listed_paths(relation) -> list[dict]:
                 "raw_relations": [relation.raw_text, "증권 발행사"],
                 "target_values": [None, relation.target_value],
                 "target_types": ["EquitySecurity", "Organization"],
-            },
-        ]
+            }]
+        if relation.target_type in {"Security", "EquitySecurity"}:
+            return [{
+                **common,
+                "relations": ["holds"],
+                "directions": [RelationDirection.OUTGOING.value],
+                "target_values": [relation.target_value],
+                "target_types": ["EquitySecurity"],
+            }]
+        return []
     return [_path([relation])]
 
 

@@ -116,14 +116,40 @@ def downgrade() -> None:
         "DELETE FROM canonical_v2.canonical_facts f USING canonical_v2.entity_relations r "
         "WHERE f.fact_id = r.fact_id AND r.relation_type IN ('HOLDS', 'SECURITY_ISSUED_BY')"
     ))
+    op.drop_table("holding_fact_details", schema=schema)
+    op.drop_table("external_holding_records", schema=schema)
+    op.execute(sa.text(
+        "DELETE FROM canonical_v2.source_record_entities "
+        "WHERE entity_kind = 'SECURITY' OR source_record_id LIKE 'normalized:holding:%'"
+    ))
+    op.execute(sa.text(
+        "DELETE FROM canonical_v2.source_field_assertions "
+        "WHERE source_record_id LIKE 'normalized:holding:%'"
+    ))
+    op.execute(sa.text(
+        "DELETE FROM canonical_v2.source_records "
+        "WHERE source_record_id LIKE 'normalized:holding:%'"
+    ))
+    op.execute(sa.text(
+        "DELETE FROM canonical_v2.entity_aliases a USING canonical_v2.securities s "
+        "WHERE a.entity_id = s.security_id"
+    ))
     op.execute(sa.text(
         "DELETE FROM canonical_v2.entity_identifiers i USING canonical_v2.securities s "
         "WHERE i.entity_id = s.security_id"
     ))
     op.execute(sa.text("DELETE FROM canonical_v2.securities"))
     op.execute(sa.text("DELETE FROM canonical_v2.canonical_entities WHERE entity_kind = 'SECURITY'"))
-    for table in ("holding_fact_details", "external_holding_records", "external_source_records", "external_raw_artifacts", "external_snapshot_manifests"):
+    for table in ("external_source_records", "external_raw_artifacts", "external_snapshot_manifests"):
         op.drop_table(table, schema=schema)
+    op.execute(sa.text(
+        "DELETE FROM canonical_v2.dataset_snapshots "
+        "WHERE dataset_id = 'dataset:kodex-holdings'"
+    ))
+    op.execute(sa.text(
+        "DELETE FROM canonical_v2.source_datasets "
+        "WHERE dataset_id = 'dataset:kodex-holdings'"
+    ))
     op.drop_index("ix_securities_isin", table_name="securities", schema=schema)
     op.drop_index("ix_securities_ticker_exchange", table_name="securities", schema=schema)
     op.drop_table("securities", schema=schema)

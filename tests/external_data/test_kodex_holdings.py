@@ -96,8 +96,19 @@ def test_real_kodex_shape_normalizes_multiple_constituents_and_scale(tmp_path: P
     normalized = workspace.path / result.normalized_output.relative_path  # type: ignore[union-attr]
     assert raw.read_bytes() == FIXTURE
     rows = [json.loads(line) for line in normalized.read_text().splitlines()]
-    assert {row["source_record_id"] for row in rows} == {result.source_record.source_record_id}
-    assert {row["snapshot_id"] for row in rows} == {workspace.snapshot_id}
+    assert all("source_record_id" not in row and "retrieved_at" not in row for row in rows)
+    evidence = [
+        json.loads(line)
+        for line in (
+            workspace.path / "holdings/normalized/holding_evidence_links.jsonl"
+        ).read_text().splitlines()
+    ]
+    assert {row["source_record_id"] for row in evidence} == {
+        result.source_record.source_record_id
+    }
+    assert {row["holding_record_id"] for row in evidence} == {
+        row.holding_record_id for row in result.holdings
+    }
     assert workspace.manifest.data_cutoff_date == DATA_CUTOFF_DATE
 
 
@@ -175,5 +186,6 @@ def test_manifest_registers_source_and_holdings_outputs(tmp_path: Path) -> None:
     assert manifest.normalized_row_counts == {
         "external-source-record-v1": 1,
         "external-holdings-v1": 3,
+        "external-holding-evidence-link-v1": 3,
     }
     assert manifest.raw_file_count == 1

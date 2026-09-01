@@ -147,6 +147,7 @@ def _record_from_path(
         {
             "edge_id": edge.get("edge_id"),
             "canonical_fact_id": edge.get("canonical_fact_id"),
+            "evidence_assertion_ids": edge.get("evidence_assertion_ids", []),
             "edge_type": edge.get("edge_type"),
             "source_dataset": edge.get("source_dataset"),
             "source_record_keys": edge.get("source_record_keys", []),

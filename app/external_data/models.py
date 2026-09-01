@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 
 EXTERNAL_SOURCE_RECORD_SCHEMA = "external-source-record-v1"
 EXTERNAL_HOLDINGS_SCHEMA = "external-holdings-v1"
+EXTERNAL_HOLDING_EVIDENCE_SCHEMA = "external-holding-evidence-link-v1"
+EXTERNAL_KODEX_CATALOG_SCHEMA = "external-kodex-catalog-v1"
+EXTERNAL_KODEX_RESOLUTION_SCHEMA = "external-kodex-pref01-resolution-v1"
 EXTERNAL_CORPORATE_SCHEMA = "external-corporate-v1"
 EXTERNAL_DOCUMENT_SCHEMA = "external-document-v1"
 

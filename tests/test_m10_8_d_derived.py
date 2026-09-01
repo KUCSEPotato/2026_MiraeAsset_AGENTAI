@@ -16,6 +16,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
 
 from app.data.v2_schema import (
+    CANONICAL_V2_SCHEMA_VERSION,
     canonical_facts,
     dataset_snapshots,
     entity_classifications,
@@ -26,7 +27,11 @@ from app.data.v2_schema import (
 from app.graph.config import GraphSettings
 from app.graph.compiler import GraphQueryCompiler
 from app.graph.mapping import GraphMappingRegistry
-from app.graph.v2 import CanonicalV2GraphBackend, CanonicalV2GraphExtractor
+from app.graph.v2 import (
+    V2_TRANSFORMER_VERSION,
+    CanonicalV2GraphBackend,
+    CanonicalV2GraphExtractor,
+)
 from app.domain.models import QueryOperation, QueryStep, RetrievalSource
 from app.retrieval.exceptions import GraphQueryCompilationError
 from app.retrieval.rdb_v2 import CanonicalV2SnapshotSelector
@@ -79,7 +84,12 @@ def _database_url() -> str:
 def engine():
     result = create_engine(_database_url(), future=True)
     with result.connect() as connection:
-        assert connection.scalar(select(func.count()).select_from(dataset_snapshots).where(dataset_snapshots.c.status == "READY")) == 4
+        # Supplemental READY sources (for example the reviewed KODEX holdings
+        # scope) do not change the four-dataset canonical_v2 base selection.
+        selection = CanonicalV2SnapshotSelector(
+            snapshot_date="2026-08-24"
+        ).select(connection)
+        assert len(selection.snapshot_ids) == 4
     yield result
     result.dispose()
 
@@ -167,8 +177,8 @@ def test_v2_semantic_documents_are_canonical_and_stable(engine, selection, tmp_p
     store = SemanticIndexStore(settings.index_path)
     manifest = store.validate_derived_manifest(
         generation="260824", snapshot="2026-08-24", ontology_version="merged-optical-1.3",
-        canonical_schema_version="m10.8-b-canonical-v2",
-        transformer_version="m10.8-b2-relations-v2",
+        canonical_schema_version=CANONICAL_V2_SCHEMA_VERSION,
+        transformer_version=V2_TRANSFORMER_VERSION,
         projection_version=V2_SEMANTIC_PROJECTION_VERSION,
     )
     assert manifest.document_count == len(documents)

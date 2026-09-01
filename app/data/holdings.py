@@ -18,6 +18,7 @@ from sqlalchemy import Connection, and_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.data.v2_schema import (
+    CANONICAL_V2_SCHEMA_VERSION,
     canonical_entities,
     canonical_facts,
     dataset_snapshots,
@@ -33,17 +34,25 @@ from app.data.v2_schema import (
     identifier_collision_cases,
     identifier_schemes,
     securities,
+    source_datasets,
     source_field_assertions,
     source_records,
 )
 from app.external_data.holdings.contract import DATA_CUTOFF_DATE, validate_holdings
 from app.external_data.holdings.models import ExternalHolding, IdentityStatus
+from app.external_data.holdings.provider_contracts import (
+    KODEX_CONTRACT,
+    PROVIDER_CONTRACTS,
+    HoldingsProviderContract,
+    provider_contract,
+)
 from app.external_data.models import ExternalSourceRecord, QualityStatus, SourceTrustTier
 
 
-KODEX_PROVIDER = "Samsung Asset Management KODEX"
-HOLDINGS_TRANSFORMER_VERSION = "m10.9-c2-kodex-holdings-1"
+KODEX_PROVIDER = KODEX_CONTRACT.provider
+HOLDINGS_TRANSFORMER_VERSION = KODEX_CONTRACT.transformer_version
 _KOREAN_EQUITY_TICKER = re.compile(r"\d{6}\Z")
+KODEX_CANONICAL_SNAPSHOT_ID = KODEX_CONTRACT.canonical_snapshot_id
 
 
 class HoldingsIntegrationError(ValueError):
@@ -52,6 +61,82 @@ class HoldingsIntegrationError(ValueError):
 
 class IdentifierCollisionError(HoldingsIntegrationError):
     pass
+
+
+def ensure_kodex_canonical_snapshot(
+    connection: Connection,
+    *,
+    scope_manifest_sha256: str,
+    portfolio_row_count: int,
+) -> str:
+    """Register the reviewed external scope as one canonical_v2 source snapshot."""
+
+    return ensure_holdings_canonical_snapshot(
+        connection,
+        contract=KODEX_CONTRACT,
+        scope_manifest_sha256=scope_manifest_sha256,
+        portfolio_row_count=portfolio_row_count,
+    )
+
+
+def ensure_holdings_canonical_snapshot(
+    connection: Connection,
+    *,
+    contract: HoldingsProviderContract,
+    scope_manifest_sha256: str,
+    portfolio_row_count: int,
+) -> str:
+    """Register one reviewed provider scope as a canonical_v2 snapshot."""
+
+    if connection.dialect.name != "postgresql":
+        raise HoldingsIntegrationError("trusted holdings canonical integration is PostgreSQL-only")
+    connection.execute(
+        pg_insert(source_datasets).values(
+            dataset_id=contract.dataset_id,
+            dataset_code=contract.dataset_code,
+            display_name=contract.display_name,
+            source_system=contract.provider,
+            schema_contract_version=contract.schema_contract_version,
+            is_authoritative=True,
+        ).on_conflict_do_nothing()
+    )
+    schema_sha256 = hashlib.sha256(contract.schema_contract_version.encode()).hexdigest()
+    connection.execute(
+        pg_insert(dataset_snapshots).values(
+            snapshot_id=contract.canonical_snapshot_id,
+            dataset_id=contract.dataset_id,
+            snapshot_date=DATA_CUTOFF_DATE,
+            generation="external",
+            ontology_version="merged-optical-1.4",
+            semantic_mapping_version=contract.semantic_mapping_version,
+            transformer_version=contract.transformer_version,
+            database_schema_version=CANONICAL_V2_SCHEMA_VERSION,
+            data_sha256=scope_manifest_sha256,
+            schema_sha256=schema_sha256,
+            source_row_count=portfolio_row_count,
+            accepted_row_count=portfolio_row_count,
+            quarantined_row_count=0,
+            status="READY",
+            reconciliation_status="PASSED",
+            row_count_reconciled=True,
+            metadata_json={
+                "coverage_scope": contract.coverage_scope,
+                "source_snapshot_status": "PARTIAL",
+            },
+        ).on_conflict_do_nothing()
+    )
+    stored = connection.execute(
+        select(
+            dataset_snapshots.c.data_sha256,
+            dataset_snapshots.c.source_row_count,
+            dataset_snapshots.c.status,
+        ).where(dataset_snapshots.c.snapshot_id == contract.canonical_snapshot_id)
+    ).one()
+    if stored != (scope_manifest_sha256, portfolio_row_count, "READY"):
+        raise HoldingsIntegrationError(
+            f"existing {contract.dataset_code} canonical snapshot is incompatible"
+        )
+    return contract.canonical_snapshot_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +151,9 @@ class TrustedHoldingsSnapshot:
     artifact_root: Path
     source_records: Sequence[ExternalSourceRecord]
     holdings: Sequence[ExternalHolding]
+    manifest_path: Path | None = None
+    source_snapshot_id: str | None = None
+    provider_contract: HoldingsProviderContract = KODEX_CONTRACT
 
 
 @dataclass(slots=True)
@@ -96,7 +184,7 @@ class _Resolution:
 
 
 class TrustedHoldingsCanonicalIntegrator:
-    """Fail-closed canonicalizer for validated KODEX holdings snapshots."""
+    """Fail-closed canonicalizer for reviewed provider holdings snapshots."""
 
     def __init__(
         self,
@@ -155,7 +243,7 @@ class TrustedHoldingsCanonicalIntegrator:
             raise HoldingsIntegrationError("external holdings manifest cutoff mismatch")
         if len(snapshot.manifest_sha256) != 64:
             raise HoldingsIntegrationError("manifest SHA-256 is invalid")
-        manifest_path = snapshot.artifact_root / "manifest.json"
+        manifest_path = snapshot.manifest_path or snapshot.artifact_root / "manifest.json"
         if not manifest_path.is_file():
             raise HoldingsIntegrationError("external snapshot manifest artifact is missing")
         manifest_bytes = manifest_path.read_bytes()
@@ -167,15 +255,20 @@ class TrustedHoldingsCanonicalIntegrator:
         if any(item.source_record_id not in source_ids for item in snapshot.holdings):
             raise HoldingsIntegrationError("holding references an absent External SourceRecord")
         for source in snapshot.source_records:
-            if source.snapshot_id != snapshot.external_snapshot_id:
+            expected_source_snapshot = (
+                snapshot.source_snapshot_id or snapshot.external_snapshot_id
+            )
+            if source.snapshot_id != expected_source_snapshot:
                 raise HoldingsIntegrationError("External SourceRecord snapshot mismatch")
             if source.quality_status is not QualityStatus.VALID:
                 raise HoldingsIntegrationError("non-VALID external source cannot create canonical facts")
             if (
-                source.source_provider != KODEX_PROVIDER
+                source.source_provider != snapshot.provider_contract.provider
                 or source.source_trust_tier is not SourceTrustTier.AUTHORITATIVE
             ):
-                raise HoldingsIntegrationError("C2 accepts authoritative KODEX evidence only")
+                raise HoldingsIntegrationError(
+                    "holdings evidence does not match the reviewed provider contract"
+                )
             if source.effective_date is None or source.effective_date > DATA_CUTOFF_DATE:
                 raise HoldingsIntegrationError("external source effective date is missing/post-cutoff")
             artifact = (snapshot.artifact_root / source.raw_artifact_path).resolve()
@@ -226,11 +319,22 @@ class TrustedHoldingsCanonicalIntegrator:
             if result.status != "UNRESOLVED":
                 return self._require_etf(result)
         if row.product_ticker:
-            result = self._identifier("TICKER", "KRX", row.product_ticker, "FINANCIAL_PRODUCT")
+            namespace = row.product_exchange or (
+                "KRX" if row.product_category.value == "DOMESTIC_ETF" else None
+            )
+            result = (
+                self._identifier(
+                    "TICKER", namespace, row.product_ticker, "FINANCIAL_PRODUCT"
+                )
+                if namespace is not None
+                else _Resolution("UNRESOLVED")
+            )
             if result.status != "UNRESOLVED":
                 return self._require_etf(result)
+        contract = provider_contract(row.source_provider)
         return self._require_etf(self._identifier(
-            "PROVIDER_SOURCE_ID", "KODEX", row.product_source_id, "FINANCIAL_PRODUCT"
+            "PROVIDER_SOURCE_ID", contract.product_identifier_namespace,
+            row.product_source_id, "FINANCIAL_PRODUCT"
         ))
 
     def _require_etf(self, result: _Resolution) -> _Resolution:
@@ -245,17 +349,36 @@ class TrustedHoldingsCanonicalIntegrator:
                           source: ExternalSourceRecord) -> tuple[_Resolution, bool]:
         if row.constituent_identity_status is IdentityStatus.NON_SECURITY:
             return _Resolution("NON_SECURITY"), False
-        candidates = []
+        ticker_namespace = row.constituent_exchange or (
+            "KRX" if row.product_category.value == "DOMESTIC_ETF" else None
+        )
+        candidates: list[tuple[str, str, str]] = []
         if row.constituent_isin:
             candidates.append(("ISIN", "iso-6166", row.constituent_isin))
-        if row.constituent_ticker:
-            candidates.append(("TICKER", "KRX", row.constituent_ticker))
+        if row.constituent_ticker and ticker_namespace:
+            candidates.append(("TICKER", ticker_namespace, row.constituent_ticker))
+        contract = provider_contract(row.source_provider)
         if row.constituent_source_id:
-            candidates.append(("PROVIDER_SOURCE_ID", "KODEX_SECURITY", row.constituent_source_id))
+            candidates.append((
+                "PROVIDER_SOURCE_ID", contract.security_identifier_namespace,
+                row.constituent_source_id,
+            ))
+        resolutions: list[_Resolution] = []
         for scheme, namespace, value in candidates:
             found = self._identifier(scheme, namespace, value, "SECURITY")
-            if found.status != "UNRESOLVED":
+            if found.status == "AMBIGUOUS":
                 return found, False
+            if found.status == "RESOLVED":
+                resolutions.append(found)
+        resolved_ids = {item.entity_id for item in resolutions}
+        if len(resolved_ids) > 1:
+            return _Resolution("AMBIGUOUS"), False
+        if resolutions:
+            resolved = resolutions[0]
+            self._attach_security_identifiers(
+                resolved.entity_id or "", candidates, primary=False
+            )
+            return resolved, False
 
         # Creating a Security requires provider-backed identifier evidence.  A
         # verified ISIN is strongest; a six-digit KRX ticker/provider code is
@@ -266,10 +389,13 @@ class TrustedHoldingsCanonicalIntegrator:
             and row.constituent_identity_status is IdentityStatus.VERIFIED_IDENTIFIER
         ):
             identity = ("ISIN", "iso-6166", row.constituent_isin.upper())
-        elif row.constituent_ticker and _KOREAN_EQUITY_TICKER.fullmatch(row.constituent_ticker):
-            identity = ("TICKER", "KRX", row.constituent_ticker)
+        elif row.constituent_ticker and ticker_namespace:
+            identity = ("TICKER", ticker_namespace, row.constituent_ticker.upper())
         elif row.constituent_source_id and _KOREAN_EQUITY_TICKER.fullmatch(row.constituent_source_id):
-            identity = ("PROVIDER_SOURCE_ID", "KODEX_SECURITY", row.constituent_source_id)
+            identity = (
+                "PROVIDER_SOURCE_ID", contract.security_identifier_namespace,
+                row.constituent_source_id,
+            )
         if identity is None:
             return _Resolution("UNRESOLVED"), False
         primary_scheme, primary_namespace, primary_value = identity
@@ -287,19 +413,26 @@ class TrustedHoldingsCanonicalIntegrator:
         self._insert(securities, {
             "security_id": security_id, "entity_kind": "SECURITY", "security_type": "EQUITY",
             "ticker": row.constituent_ticker, "isin": row.constituent_isin,
-            "exchange": "KRX", "issuer_resolution_status": "UNRESOLVED",
+            "exchange": ticker_namespace, "issuer_resolution_status": "UNRESOLVED",
         })
-        identifiers = []
-        if row.constituent_isin:
-            identifiers.append(("ISIN", "iso-6166", row.constituent_isin.upper(), "ISIN" == primary_scheme))
-        if row.constituent_ticker:
-            identifiers.append(("TICKER", "KRX", row.constituent_ticker, "TICKER" == primary_scheme))
-        if row.constituent_source_id:
-            identifiers.append((
-                "PROVIDER_SOURCE_ID", "KODEX_SECURITY", row.constituent_source_id,
-                "PROVIDER_SOURCE_ID" == primary_scheme,
-            ))
-        for scheme, namespace, value, primary in identifiers:
+        self._attach_security_identifiers(
+            security_id,
+            candidates,
+            primary=True,
+            primary_identity=(primary_scheme, primary_namespace, primary_value),
+        )
+        return _Resolution("RESOLVED", security_id, f"{primary_scheme}:{primary_namespace}"), True
+
+    def _attach_security_identifiers(
+        self,
+        security_id: str,
+        identifiers: Sequence[tuple[str, str, str]],
+        *,
+        primary: bool,
+        primary_identity: tuple[str, str, str] | None = None,
+    ) -> None:
+        for scheme, namespace, raw_value in identifiers:
+            value = raw_value.strip().upper()
             label = "Exchange-scoped ticker" if scheme == "TICKER" else (
                 "ISO 6166 security identifier" if scheme == "ISIN"
                 else "Authoritative provider security ID"
@@ -309,9 +442,10 @@ class TrustedHoldingsCanonicalIntegrator:
                 "entity_id": security_id, "scheme_code": scheme, "namespace": namespace,
                 "raw_value": value, "normalized_value": value,
                 "validation_status": "VALIDATED", "resolution_status": "RESOLVED",
-                "conflict_status": "NONE", "is_primary": primary, "source_record_id": None,
+                "conflict_status": "NONE",
+                "is_primary": primary and primary_identity == (scheme, namespace, value),
+                "source_record_id": None,
             })
-        return _Resolution("RESOLVED", security_id, f"{primary_scheme}:{primary_namespace}"), True
 
     def _identifier(self, scheme: str, namespace: str, value: str,
                     entity_kind: str) -> _Resolution:
@@ -380,7 +514,8 @@ class TrustedHoldingsCanonicalIntegrator:
             "source_column": "normalized_holding", "raw_value": row.constituent_name_raw,
             "normalized_value": row.constituent_source_id,
             "mapping_category": "ENTITY_RELATION", "target_semantic_key": "holds",
-            "quality_status": "VALID", "transformation_rule": HOLDINGS_TRANSFORMER_VERSION,
+            "quality_status": "VALID",
+            "transformation_rule": snapshot.provider_contract.transformer_version,
         })
         return canonical_source_id, assertion_id
 
@@ -402,7 +537,7 @@ class TrustedHoldingsCanonicalIntegrator:
             row.weight_normalized is not None
             and row.weight_unit is not None
             and row.weight_scale is not None
-            and row.source_provider == KODEX_PROVIDER
+            and row.source_provider in {item.provider for item in PROVIDER_CONTRACTS.values()}
         )
         self._insert(holding_fact_details, {
             "fact_id": fact_id, "effective_date": row.effective_date,
@@ -424,9 +559,19 @@ class TrustedHoldingsCanonicalIntegrator:
         if row.constituent_isin:
             keys.append(("ISIN", "iso-6166", row.constituent_isin.upper()))
         if row.constituent_ticker:
-            keys.append(("TICKER", "KRX", row.constituent_ticker.upper()))
+            ticker_namespace = row.constituent_exchange or (
+                "KRX" if row.product_category.value == "DOMESTIC_ETF" else None
+            )
+            if ticker_namespace is not None:
+                keys.append((
+                    "TICKER", ticker_namespace, row.constituent_ticker.upper()
+                ))
         if row.constituent_source_id:
-            keys.append(("PROVIDER_SOURCE_ID", "KODEX_SECURITY", row.constituent_source_id.upper()))
+            contract = provider_contract(row.source_provider)
+            keys.append((
+                "PROVIDER_SOURCE_ID", contract.security_identifier_namespace,
+                row.constituent_source_id.upper(),
+            ))
         organization_id = next((self._issuer_mapping[key] for key in keys if key in self._issuer_mapping), None)
         if organization_id is None:
             return False

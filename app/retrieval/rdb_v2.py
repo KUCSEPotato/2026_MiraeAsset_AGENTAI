@@ -38,6 +38,7 @@ from app.data.v2_schema import (
     entity_classifications,
     entity_identifiers,
     entity_relations,
+    external_snapshot_manifests,
     fact_evidence_links,
     financial_products,
     fund_share_classes,
@@ -50,6 +51,11 @@ from app.data.v2_schema import (
     source_datasets,
     source_field_assertions,
     source_records,
+)
+from app.data.holdings_coverage import (
+    ISHARES_READY_SCOPE,
+    KODEX_READY_SCOPE,
+    TIGER_READY_SCOPE,
 )
 from app.domain.models import (
     ExecutionContext,
@@ -105,6 +111,10 @@ class CanonicalV2SnapshotSelector:
         transformer_version: str = "m10.9-c2-kodex-holdings-1",
         schema_version: str = CANONICAL_V2_SCHEMA_VERSION,
         required_datasets: Iterable[str] | None = None,
+        include_trusted_holdings: bool = False,
+        trusted_holdings_scopes: Iterable[str] | None = None,
+        include_trusted_issuers: bool = False,
+        trusted_issuer_scope: str = "KODEX_LONG_ONLY_COMPATIBLE",
     ) -> None:
         try:
             self._snapshot_date = date.fromisoformat(snapshot_date)
@@ -115,6 +125,12 @@ class CanonicalV2SnapshotSelector:
         self._transformer_version = transformer_version
         self._schema_version = schema_version
         self._required = frozenset(required_datasets or self.REQUIRED_DATASETS)
+        self._include_trusted_holdings = include_trusted_holdings
+        self._trusted_holdings_scopes = tuple(
+            trusted_holdings_scopes or (KODEX_READY_SCOPE,)
+        )
+        self._include_trusted_issuers = include_trusted_issuers
+        self._trusted_issuer_scope = trusted_issuer_scope
 
     def select(self, connection) -> V2SnapshotSelection:
         rows = connection.execute(
@@ -155,6 +171,87 @@ class CanonicalV2SnapshotSelector:
                 "canonical_v2 READY/PASSED snapshot unavailable: " + "; ".join(details)
             )
         selected = [by_code[key][0] for key in sorted(by_code)]
+        if self._include_trusted_holdings:
+            holding_rows = connection.execute(
+                select(
+                    dataset_snapshots.c.snapshot_id,
+                    dataset_snapshots.c.dataset_id,
+                    source_datasets.c.dataset_code,
+                )
+                .join(
+                    source_datasets,
+                    source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+                )
+                .join(
+                    external_snapshot_manifests,
+                    external_snapshot_manifests.c.canonical_snapshot_id
+                    == dataset_snapshots.c.snapshot_id,
+                )
+                .where(
+                    dataset_snapshots.c.snapshot_date == self._snapshot_date,
+                    dataset_snapshots.c.status == "READY",
+                    dataset_snapshots.c.reconciliation_status == "PASSED",
+                    dataset_snapshots.c.row_count_reconciled.is_(True),
+                    source_datasets.c.dataset_code.in_((
+                        "KODEX_HOLDINGS", "TIGER_HOLDINGS", "ISHARES_US_HOLDINGS",
+                    )),
+                    external_snapshot_manifests.c.status == "READY",
+                    external_snapshot_manifests.c.data_cutoff_date == self._snapshot_date,
+                    external_snapshot_manifests.c.manifest_json["scope"].as_string()
+                    .in_(self._trusted_holdings_scopes),
+                )
+            ).mappings().all()
+            by_scope = {}
+            for row in holding_rows:
+                scope = connection.scalar(select(
+                    external_snapshot_manifests.c.manifest_json["scope"].as_string()
+                ).where(
+                    external_snapshot_manifests.c.canonical_snapshot_id == row["snapshot_id"]
+                ))
+                by_scope.setdefault(str(scope), []).append(dict(row))
+            invalid = {
+                scope for scope in self._trusted_holdings_scopes
+                if len(by_scope.get(scope, [])) != 1
+            }
+            if invalid:
+                raise V2SnapshotUnavailableError(
+                    "exactly one READY snapshot is required for each trusted Holdings scope: "
+                    + ",".join(sorted(invalid))
+                )
+            selected.extend(by_scope[scope][0] for scope in self._trusted_holdings_scopes)
+        if self._include_trusted_issuers:
+            issuer_rows = connection.execute(
+                select(
+                    dataset_snapshots.c.snapshot_id,
+                    dataset_snapshots.c.dataset_id,
+                    source_datasets.c.dataset_code,
+                )
+                .join(
+                    source_datasets,
+                    source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+                )
+                .join(
+                    external_snapshot_manifests,
+                    external_snapshot_manifests.c.canonical_snapshot_id
+                    == dataset_snapshots.c.snapshot_id,
+                )
+                .where(
+                    dataset_snapshots.c.snapshot_date == self._snapshot_date,
+                    dataset_snapshots.c.status == "READY",
+                    dataset_snapshots.c.reconciliation_status == "PASSED",
+                    dataset_snapshots.c.row_count_reconciled.is_(True),
+                    source_datasets.c.dataset_code == "KRX_SECURITY_ISSUER",
+                    external_snapshot_manifests.c.status == "READY",
+                    external_snapshot_manifests.c.data_cutoff_date == self._snapshot_date,
+                    dataset_snapshots.c.metadata_json["scope"].as_string()
+                    == self._trusted_issuer_scope,
+                )
+            ).mappings().all()
+            if len(issuer_rows) != 1:
+                raise V2SnapshotUnavailableError(
+                    "exactly one READY KRX_SECURITY_ISSUER snapshot is required"
+                )
+            selected.append(dict(issuer_rows[0]))
         return V2SnapshotSelection(
             snapshot_date=self._snapshot_date,
             generation=self._generation,
@@ -750,7 +847,10 @@ class CanonicalV2QueryCompiler:
     def _product_universe_predicate(self, entity_id, base, operands, snapshot):
         if not operands or len(operands) != len(set(operands)):
             raise RDBQueryCompilationError("product universe operands must be unique")
-        allowed = {"DomesticETF", "ForeignETF", "ETF", "PublicFund", "Fund"}
+        allowed = {
+            "DomesticETF", "ForeignETF", "ETF", "PublicFund", "Fund",
+            KODEX_READY_SCOPE, TIGER_READY_SCOPE, ISHARES_READY_SCOPE,
+        }
         if set(operands) - allowed:
             raise RDBQueryCompilationError("unsupported product universe operand")
         branches = []
@@ -760,6 +860,13 @@ class CanonicalV2QueryCompiler:
                     and_(
                         base.c.product_type == "ETF",
                         self._dataset_entity_exists(entity_id, "PREF01N001", snapshot),
+                    )
+                )
+            elif operand in {KODEX_READY_SCOPE, TIGER_READY_SCOPE, ISHARES_READY_SCOPE}:
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETF",
+                        self._holding_exists_for_scope(entity_id, operand, snapshot),
                     )
                 )
             elif operand == "ForeignETF":
@@ -781,6 +888,38 @@ class CanonicalV2QueryCompiler:
             else:
                 branches.append(base.c.product_type == "FUND")
         return or_(*branches)
+
+    @staticmethod
+    def _holding_exists_for_scope(entity_id, scope, snapshot):
+        dataset_id = {
+            KODEX_READY_SCOPE: "dataset:kodex-holdings",
+            TIGER_READY_SCOPE: "dataset:tiger-holdings",
+            ISHARES_READY_SCOPE: "dataset:ishares-us-holdings",
+        }[scope]
+        selected_snapshot_ids = tuple(
+            snapshot_id
+            for snapshot_id, selected_dataset_id in zip(
+                snapshot.snapshot_ids, snapshot.dataset_ids, strict=True
+            )
+            if selected_dataset_id == dataset_id
+        )
+        if len(selected_snapshot_ids) != 1:
+            raise RDBQueryCompilationError(
+                f"selected snapshot does not contain exactly one {scope} dataset"
+            )
+        # Use a semijoinable subject set.  A correlated EXISTS over all
+        # canonical products caused PostgreSQL to rescan the large relation
+        # store per product when two provider branches were OR-composed.
+        return entity_id.in_(
+            select(entity_relations.c.subject_entity_id).select_from(
+                entity_relations
+                .join(canonical_facts, canonical_facts.c.fact_id == entity_relations.c.fact_id)
+            ).where(
+                entity_relations.c.relation_type == "HOLDS",
+                canonical_facts.c.snapshot_id.in_(selected_snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        )
 
     def _compile_relation(self, item, entity_id, snapshot):
         if not isinstance(item, dict):

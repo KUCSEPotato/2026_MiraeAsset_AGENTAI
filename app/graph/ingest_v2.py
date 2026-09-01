@@ -23,6 +23,10 @@ async def ingest_graph_v2() -> dict:
                 generation=database.v2_generation,
                 ontology_version=database.v2_ontology_version,
                 transformer_version=database.v2_transformer_version,
+                include_trusted_holdings=database.trusted_holdings_runtime_enabled,
+                trusted_holdings_scopes=database.trusted_holdings_scopes,
+                include_trusted_issuers=database.trusted_issuer_runtime_enabled,
+                trusted_issuer_scope=database.trusted_issuer_scope,
             ).select(connection)
         extractor = CanonicalV2GraphExtractor(
             engine, snapshot_ids=selection.snapshot_ids,
