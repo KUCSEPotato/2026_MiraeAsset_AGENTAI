@@ -1,33 +1,97 @@
-@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+# Generated from candidates/new_optical_ontology.ttl by scripts/modularize_ontology.py.
+# Do not edit semantics in this module independently of the merged baseline.
+
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-fp:DomesticETF a owl:Class ;
-    rdfs:subClassOf fp:ETF ;
-    skos:prefLabel "국내 ETF"@ko ;
-    skos:prefLabel "Domestic ETF"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "domestic_etf" .
+fin:ETFShape a sh:NodeShape ;
+    sh:not [ sh:class fin:ETN ] ;
+    sh:property [ sh:maxCount 0 ;
+            sh:message "ETF must not use issuedBy; use managedBy when source evidence represents the management role."@en ;
+            sh:path fin:issuedBy ] ;
+    sh:targetClass fin:ETF .
 
-fp:DomesticETN a owl:Class ;
-    rdfs:subClassOf fp:ETN ;
-    skos:prefLabel "국내 ETN"@ko ;
-    skos:prefLabel "Domestic ETN"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "domestic_etf" .
+fin:ETNShape a sh:NodeShape ;
+    sh:not [ sh:class fin:ETF ] ;
+    sh:property [ sh:maxCount 0 ;
+            sh:message "ETN must not receive ETF ManagementStyle assertions."@en ;
+            sh:path fin:hasManagementStyle ],
+        [ sh:maxCount 0 ;
+            sh:message "ETN must not receive ETF ReplicationMethod assertions."@en ;
+            sh:path fin:hasReplicationMethod ],
+        [ sh:maxCount 0 ;
+            sh:message "ETN must not use managedBy for the source field routed as issuer."@en ;
+            sh:path fin:managedBy ] ;
+    sh:targetClass fin:ETN .
 
-fp:leverageFactor a owl:DatatypeProperty ;
-    rdfs:domain fp:ExchangeTradedProduct ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "레버리지 배수"@ko ;
-    skos:prefLabel "leverage factor"@en ;
-    fp:conceptCategory "field" .
+fin:leverageFactor a owl:DatatypeProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range xsd:decimal .
 
-fp:distributionCycle a owl:DatatypeProperty ;
-    rdfs:domain fp:DomesticETF ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "분배주기"@ko ;
-    skos:prefLabel "distribution cycle"@en ;
-    fp:conceptCategory "field" .
+fin:tracksIndex a owl:ObjectProperty ;
+    rdfs:comment "Assert only with explicit tracking evidence."@en ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Index ;
+    rdfs:subPropertyOf fin:hasUnderlyingIndex ;
+    fin:alias "추종하는"@ko ;
+    fin:canonicalName "tracksIndex" ;
+    fin:conceptCategory "relation" .
+
+fin:ManagementStyle a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:ReplicationMethod a owl:Class ;
+    rdfs:subClassOf fin:IndexExposureMethod .
+
+fin:hasIndexExposureMethod a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:IndexExposureMethod .
+
+fin:hasManagementStyle a owl:ObjectProperty ;
+    rdfs:domain fin:ETF ;
+    rdfs:range fin:ManagementStyle .
+
+fin:hasReplicationMethod a owl:ObjectProperty ;
+    rdfs:domain fin:ETF ;
+    rdfs:range fin:ReplicationMethod ;
+    rdfs:subPropertyOf fin:hasIndexExposureMethod .
+
+fin:hasUnderlyingIndex a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Index ;
+    fin:alias "기초지수"@ko,
+        "추종지수"@ko ;
+    fin:canonicalName "hasUnderlyingIndex" ;
+    fin:conceptCategory "relation" .
+
+fin:IndexExposureMethod a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:ETN a owl:Class ;
+    rdfs:label "ETN"@en,
+        "상장지수증권"@ko ;
+    rdfs:subClassOf fin:DebtSecurity,
+        fin:ExchangeTradedProduct ;
+    fin:alias "ETN",
+        "상장지수증권"@ko ;
+    fin:canonicalName "FinancialProduct.ETN" ;
+    fin:conceptCategory "product_type" .
+
+fin:ETF a owl:Class ;
+    rdfs:label "ETF"@en,
+        "상장지수펀드"@ko ;
+    rdfs:subClassOf fin:ExchangeTradedProduct,
+        fin:FundProduct ;
+    owl:disjointWith fin:ETN ;
+    fin:alias "ETF",
+        "상장지수펀드"@ko ;
+    fin:canonicalName "FinancialProduct.ETF" ;
+    fin:conceptCategory "product_type" .
+
+fin:ExchangeTradedProduct a owl:Class ;
+    rdfs:label "Exchange-traded product"@en,
+        "상장지수상품"@ko ;
+    rdfs:subClassOf fin:FinancialProduct .

@@ -1,51 +1,112 @@
-@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+# Generated from candidates/new_optical_ontology.ttl by scripts/modularize_ontology.py.
+# Do not edit semantics in this module independently of the merged baseline.
+
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-fp:PublicFundFamily a owl:Class ;
-    rdfs:subClassOf fp:PublicFund ;
-    skos:prefLabel "공모펀드 패밀리"@ko ;
-    skos:prefLabel "Public Fund Family"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "public_fund" .
+fin:FundShareClassShape a sh:NodeShape ;
+    sh:property [ sh:class fin:OfferingType ;
+            sh:maxCount 1 ;
+            sh:path fin:hasOfferingType ],
+        [ sh:class fin:Fund ;
+            sh:maxCount 1 ;
+            sh:message "Each materialized FundShareClass must resolve to exactly one parent Fund."@en ;
+            sh:minCount 1 ;
+            sh:path [ sh:inversePath fin:hasShareClass ] ] ;
+    sh:targetClass fin:FundShareClass .
 
-fp:PublicFundClass a owl:Class ;
-    rdfs:subClassOf fp:FundClass ;
-    skos:prefLabel "공모펀드 클래스"@ko ;
-    skos:prefLabel "Public Fund Class"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "public_fund" .
+fin:availableThroughSalesChannel a owl:ObjectProperty ;
+    rdfs:domain fin:FundShareClass ;
+    rdfs:range fin:SalesChannel .
 
-fp:FundType a owl:Class ;
-    skos:prefLabel "펀드 유형"@ko ;
-    fp:conceptCategory "entity_type" .
+fin:classificationScheme a owl:ObjectProperty ;
+    rdfs:domain fin:FundClassification ;
+    rdfs:range fin:ClassificationScheme .
 
-fp:RedemptionType a owl:Class ;
-    skos:prefLabel "환매 유형"@ko ;
-    fp:conceptCategory "entity_type" .
+fin:establishedInCountry a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:Country .
 
-fp:IssuanceType a owl:Class ;
-    skos:prefLabel "발행 유형"@ko ;
-    fp:conceptCategory "entity_type" .
+fin:hasBenchmark a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:Index ;
+    fin:alias "벤치마크"@ko ;
+    fin:canonicalName "hasBenchmark" ;
+    fin:conceptCategory "relation" .
 
-fp:ListingType a owl:Class ;
-    skos:prefLabel "상장 유형"@ko ;
-    fp:conceptCategory "entity_type" .
+fin:hasFundAttribute a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:FundAttribute .
 
-fp:InvestorEligibility a owl:Class ;
-    skos:prefLabel "투자자 자격"@ko ;
-    fp:conceptCategory "entity_type" .
+fin:hasFundClassification a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:FundClassification .
 
-fp:classCode a owl:DatatypeProperty ;
-    rdfs:domain fp:FundClass ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "클래스 코드"@ko ;
-    fp:conceptCategory "field" .
+fin:hasFundSetupType a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:FundSetupType .
 
-fp:benchmarkName a owl:DatatypeProperty ;
-    rdfs:domain fp:Fund ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "벤치마크명"@ko ;
-    fp:conceptCategory "field" .
+fin:hasInvestorType a owl:ObjectProperty ;
+    rdfs:range fin:InvestorType .
+
+fin:hasManagementAttribute a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:ManagementAttribute .
+
+fin:hasShareClassFeeType a owl:ObjectProperty ;
+    rdfs:domain fin:FundShareClass ;
+    rdfs:range fin:ShareClassFeeType .
+
+fin:hasTrustee a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:Trustee .
+
+fin:FundAttribute a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:FundSetupType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:InvestorType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:ManagementAttribute a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:SalesChannel a owl:Class ;
+    rdfs:subClassOf fin:Channel .
+
+fin:ShareClassFeeType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:Trustee a owl:Class ;
+    rdfs:label "Trustee"@en,
+        "수탁사"@ko ;
+    rdfs:subClassOf fin:Organization .
+
+fin:hasShareClass a owl:ObjectProperty ;
+    rdfs:domain fin:Fund ;
+    rdfs:range fin:FundShareClass ;
+    fin:alias "판매 클래스"@ko,
+        "펀드 클래스"@ko ;
+    fin:canonicalName "hasShareClass" ;
+    fin:conceptCategory "relation" .
+
+fin:FundClassification a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:FundShareClass a owl:Class ;
+    rdfs:label "Fund share class"@en,
+        "펀드 판매 클래스"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:Fund a owl:Class ;
+    rdfs:label "Fund"@en,
+        "펀드"@ko ;
+    rdfs:subClassOf fin:FundProduct ;
+    fin:alias "펀드"@ko ;
+    fin:canonicalName "FinancialProduct.Fund" ;
+    fin:conceptCategory "product_type" .

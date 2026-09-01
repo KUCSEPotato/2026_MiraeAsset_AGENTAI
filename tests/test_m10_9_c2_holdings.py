@@ -146,7 +146,7 @@ def test_canonical_schema_has_security_and_temporal_holding_grains() -> None:
 
 
 def test_team_ontology_v14_has_non_overloaded_security_relations() -> None:
-    graph = Graph().parse("ontology/candidates/new_optical_ontology.ttl", format="turtle")
+    graph = OntologyLoader(Path("ontology"), version="team-v1").load().graph
     ontology = next(graph.subjects(RDF.type, OWL.Ontology))
     assert str(graph.value(ontology, OWL.versionInfo)) == "merged-optical-1.4"
     assert (FIN.EquitySecurity, RDFS.subClassOf, FIN.Security) in graph
@@ -158,9 +158,7 @@ def test_team_ontology_v14_has_non_overloaded_security_relations() -> None:
 
 
 def test_shacl_rejects_holds_targeting_organization() -> None:
-    ontology = Graph().parse(
-        "ontology/candidates/new_optical_ontology.ttl", format="turtle"
-    )
+    ontology = OntologyLoader(Path("ontology"), version="team-v1").load().graph
     data = Graph()
     product = FIN.TestETF
     organization = FIN.TestOrganization

@@ -1,45 +1,37 @@
-@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+# Generated from candidates/new_optical_ontology.ttl by scripts/modularize_ontology.py.
+# Do not edit semantics in this module independently of the merged baseline.
+
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-fp:ForeignETF a owl:Class ;
-    rdfs:subClassOf fp:ETF ;
-    skos:prefLabel "해외 ETF"@ko ;
-    skos:prefLabel "Foreign ETF"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "foreign_etf" .
+fin:investmentStrategyDescription a owl:DatatypeProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range xsd:string .
 
-fp:ForeignETN a owl:Class ;
-    rdfs:subClassOf fp:ETN ;
-    skos:prefLabel "해외 ETN"@ko ;
-    skos:prefLabel "Foreign ETN"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "foreign_etf" .
+fin:listedInCountry a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Country .
 
-fp:hasInvestmentStrategy a owl:ObjectProperty ;
-    rdfs:domain fp:ForeignETF ;
-    rdfs:range fp:InvestmentStrategy ;
-    skos:prefLabel "투자전략"@ko ;
-    fp:conceptCategory "relation" .
+fin:listedInMarket a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Market .
 
-fp:hasReplicationMethod a owl:ObjectProperty ;
-    rdfs:domain fp:ForeignETF ;
-    rdfs:range fp:ReplicationMethod ;
-    skos:prefLabel "복제방식"@ko ;
-    fp:conceptCategory "relation" .
+fin:listedOnExchange a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Exchange .
 
-fp:strategyDescription a owl:DatatypeProperty ;
-    rdfs:domain fp:ForeignETF ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "전략 설명"@ko ;
-    skos:prefLabel "strategy description"@en ;
-    fp:conceptCategory "field" .
+fin:tradedInCurrency a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Currency .
 
-fp:replicationMethodDescription a owl:DatatypeProperty ;
-    rdfs:domain fp:ForeignETF ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "복제방식 설명"@ko ;
-    skos:prefLabel "replication method description"@en ;
-    fp:conceptCategory "field" .
+fin:Exchange a owl:Class ;
+    rdfs:label "Exchange"@en,
+        "거래소"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:Market a owl:Class ;
+    rdfs:label "Market"@en,
+        "시장"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .

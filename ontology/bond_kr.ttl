@@ -1,69 +1,289 @@
-@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+# Generated from candidates/new_optical_ontology.ttl by scripts/modularize_ontology.py.
+# Do not edit semantics in this module independently of the merged baseline.
+
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-fp:DomesticBond a owl:Class ;
-    rdfs:subClassOf fp:Bond ;
-    skos:prefLabel "국내채권"@ko ;
-    skos:prefLabel "Domestic Bond"@en ;
-    fp:conceptCategory "dataset_class" ;
-    fp:sourceDataset "domestic_bond" .
+fin:BOND_TYPE_ASSET_BACKED_BENEFICIARY_CERTIFICATE a fin:BondType ;
+    skos:prefLabel "유동화수익증권"@ko ;
+    fin:alias "유동화수익증권"@ko ;
+    fin:canonicalName "BondType.유동화수익증권" ;
+    fin:conceptCategory "bond_type" .
 
-fp:CorporateBond a owl:Class ;
-    rdfs:subClassOf fp:DomesticBond ;
-    skos:prefLabel "회사채"@ko ;
-    skos:prefLabel "Corporate Bond"@en ;
-    fp:conceptCategory "bond_category" .
+fin:BOND_TYPE_ASSET_BACKED_CORPORATE a fin:BondType ;
+    skos:prefLabel "유동화회사채"@ko ;
+    fin:alias "유동화회사채"@ko ;
+    fin:canonicalName "BondType.유동화회사채" ;
+    fin:conceptCategory "bond_type" .
 
-fp:SpecialBond a owl:Class ;
-    rdfs:subClassOf fp:DomesticBond ;
-    skos:prefLabel "특수채"@ko ;
-    skos:prefLabel "Special Bond"@en ;
-    fp:conceptCategory "bond_category" .
+fin:BOND_TYPE_BROKER_DEALER a fin:BondType ;
+    skos:prefLabel "투자매매.중개채"@ko ;
+    fin:alias "투자매매.중개채"@ko ;
+    fin:canonicalName "BondType.투자매매.중개채" ;
+    fin:conceptCategory "bond_type" .
 
-fp:GovernmentAndPublicBond a owl:Class ;
-    rdfs:subClassOf fp:DomesticBond ;
-    skos:prefLabel "국공채"@ko ;
-    skos:prefLabel "Government and Public Bond"@en ;
-    fp:conceptCategory "bond_category" .
+fin:BOND_TYPE_COLLECTIVE_INVESTMENT_COMPANY a fin:BondType ;
+    skos:prefLabel "집합투자회사채"@ko ;
+    fin:alias "집합투자회사채"@ko ;
+    fin:canonicalName "BondType.집합투자회사채" ;
+    fin:conceptCategory "bond_type" .
 
-fp:IndividualInvestmentGovernmentBond a owl:Class ;
-    rdfs:subClassOf fp:DomesticBond ;
-    skos:prefLabel "개인투자용국채"@ko ;
-    skos:prefLabel "Individual Investment Government Bond"@en ;
-    fp:conceptCategory "bond_category" .
+fin:BOND_TYPE_CONDUIT a fin:BondType ;
+    skos:prefLabel "Conduit회사채"@ko ;
+    fin:alias "Conduit회사채"@ko ;
+    fin:canonicalName "BondType.Conduit회사채" ;
+    fin:conceptCategory "bond_type" .
 
-fp:hasCreditRating a owl:ObjectProperty ;
-    rdfs:domain fp:Bond ;
-    rdfs:range fp:RiskGrade ;
-    rdfs:subPropertyOf fp:hasRiskGrade ;
-    skos:prefLabel "신용등급"@ko ;
-    skos:prefLabel "credit rating"@en ;
-    fp:conceptCategory "relation" .
+fin:BOND_TYPE_CREDIT_CARD a fin:BondType ;
+    skos:prefLabel "신용카드채"@ko ;
+    fin:alias "신용카드채"@ko ;
+    fin:canonicalName "BondType.신용카드채" ;
+    fin:conceptCategory "bond_type" .
 
-fp:issueDate a owl:DatatypeProperty ;
-    rdfs:domain fp:Bond ;
-    rdfs:range xsd:date ;
-    skos:prefLabel "발행일"@ko ;
-    fp:conceptCategory "field" .
+fin:BOND_TYPE_FACILITY_LEASE a fin:BondType ;
+    skos:prefLabel "시설대여채(리스)"@ko ;
+    fin:alias "시설대여채(리스)"@ko ;
+    fin:canonicalName "BondType.시설대여채(리스)" ;
+    fin:conceptCategory "bond_type" .
 
-fp:maturityDate a owl:DatatypeProperty ;
-    rdfs:domain fp:Bond ;
-    rdfs:range xsd:date ;
-    skos:prefLabel "만기일"@ko ;
-    fp:conceptCategory "field" .
+fin:BOND_TYPE_FINANCIAL_HOLDING a fin:BondType ;
+    skos:prefLabel "금융지주회사채"@ko ;
+    fin:alias "금융지주회사채"@ko ;
+    fin:canonicalName "BondType.금융지주회사채" ;
+    fin:conceptCategory "bond_type" .
 
-fp:yield a owl:DatatypeProperty ;
-    rdfs:domain fp:Bond ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "수익률"@ko ;
-    skos:prefLabel "yield"@en ;
-    fp:conceptCategory "field" .
+fin:BOND_TYPE_FOREIGN_EXCHANGE_STABILIZATION a fin:BondType ;
+    skos:prefLabel "외국환평형기금"@ko ;
+    fin:alias "외국환평형기금"@ko ;
+    fin:canonicalName "BondType.외국환평형기금" ;
+    fin:conceptCategory "bond_type" .
 
-fp:issueBalance a owl:DatatypeProperty ;
-    rdfs:domain fp:Bond ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "발행잔액"@ko ;
-    fp:conceptCategory "field" .
+fin:BOND_TYPE_GENERAL_BANK a fin:BondType ;
+    skos:prefLabel "일반은행채"@ko ;
+    fin:alias "일반은행채"@ko ;
+    fin:canonicalName "BondType.일반은행채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_GENERAL_CORPORATE a fin:BondType ;
+    skos:prefLabel "일반회사채"@ko ;
+    fin:alias "일반회사채"@ko ;
+    fin:canonicalName "BondType.일반회사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_GENERAL_SPECIAL_CORPORATE a fin:BondType ;
+    skos:prefLabel "일반특수법인채"@ko ;
+    fin:alias "일반특수법인채"@ko ;
+    fin:canonicalName "BondType.일반특수법인채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_INSTALLMENT_FINANCE a fin:BondType ;
+    skos:prefLabel "할부금융채"@ko ;
+    fin:alias "할부금융채"@ko ;
+    fin:canonicalName "BondType.할부금융채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_INSURANCE_COMPANY a fin:BondType ;
+    skos:prefLabel "보험회사채"@ko ;
+    fin:alias "보험회사채"@ko ;
+    fin:canonicalName "BondType.보험회사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_KOREAN_TREASURY a fin:BondType ;
+    skos:prefLabel "국고채권"@ko ;
+    fin:alias "국고채권"@ko ;
+    fin:canonicalName "BondType.국고채권" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_LOCAL_CORPORATION_COMPENSATION a fin:BondType ;
+    skos:prefLabel "지방공사보상채권"@ko ;
+    fin:alias "지방공사보상채권"@ko ;
+    fin:canonicalName "BondType.지방공사보상채권" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_LOCAL_PUBLIC_CORPORATION a fin:BondType ;
+    skos:prefLabel "일반지방공사채"@ko ;
+    fin:alias "일반지방공사채"@ko ;
+    fin:canonicalName "BondType.일반지방공사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_MBS a fin:BondType ;
+    skos:prefLabel "MBS"@en ;
+    fin:alias "MBS" ;
+    fin:canonicalName "BondType.MBS" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_MONETARY_STABILIZATION a fin:BondType ;
+    skos:prefLabel "통화안정채권"@ko ;
+    fin:alias "통화안정채권"@ko ;
+    fin:canonicalName "BondType.통화안정채권" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_NATIONAL_HOUSING_1 a fin:BondType ;
+    skos:prefLabel "국민주택1종"@ko ;
+    fin:alias "국민주택1종"@ko ;
+    fin:canonicalName "BondType.국민주택1종" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_NATIONAL_HOUSING_2 a fin:BondType ;
+    skos:prefLabel "국민주택2종"@ko ;
+    fin:alias "국민주택2종"@ko ;
+    fin:canonicalName "BondType.국민주택2종" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_OTHER_FINANCE_COMPANY a fin:BondType ;
+    skos:prefLabel "기타금융회사채"@ko ;
+    fin:alias "기타금융회사채"@ko ;
+    fin:canonicalName "BondType.기타금융회사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_OTHER_FINANCIAL_INVESTMENT a fin:BondType ;
+    skos:prefLabel "기타금융투자전업회사채"@ko ;
+    fin:alias "기타금융투자전업회사채"@ko ;
+    fin:canonicalName "BondType.기타금융투자전업회사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_REAL_ESTATE_INVESTMENT_COMPANY a fin:BondType ;
+    skos:prefLabel "부동산투자회사채"@ko ;
+    fin:alias "부동산투자회사채"@ko ;
+    fin:canonicalName "BondType.부동산투자회사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_REGIONAL_DEVELOPMENT a fin:BondType ;
+    skos:prefLabel "지역개발채"@ko ;
+    fin:alias "지역개발채"@ko ;
+    fin:canonicalName "BondType.지역개발채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_SECURITIES_FINANCE a fin:BondType ;
+    skos:prefLabel "증권금융채(특수금융)"@ko ;
+    fin:alias "증권금융채(특수금융)"@ko ;
+    fin:canonicalName "BondType.증권금융채(특수금융)" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_SPAC a fin:BondType ;
+    skos:prefLabel "기업인수목적회사채"@ko ;
+    fin:alias "기업인수목적회사채"@ko ;
+    fin:canonicalName "BondType.기업인수목적회사채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_SPECIAL_BANK a fin:BondType ;
+    skos:prefLabel "특수은행채"@ko ;
+    fin:alias "특수은행채"@ko ;
+    fin:canonicalName "BondType.특수은행채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_SPECIAL_COMPENSATION a fin:BondType ;
+    skos:prefLabel "특수보상채권"@ko ;
+    fin:alias "특수보상채권"@ko ;
+    fin:canonicalName "BondType.특수보상채권" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_SUBSCRIPTION_LOCAL a fin:BondType ;
+    skos:prefLabel "모집지방채"@ko ;
+    fin:alias "모집지방채"@ko ;
+    fin:canonicalName "BondType.모집지방채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_TREASURY_BILL a fin:BondType ;
+    skos:prefLabel "재정증권"@ko ;
+    fin:alias "재정증권"@ko ;
+    fin:canonicalName "BondType.재정증권" ;
+    fin:conceptCategory "bond_type" .
+
+fin:BOND_TYPE_URBAN_RAIL a fin:BondType ;
+    skos:prefLabel "도시철도공채"@ko ;
+    fin:alias "도시철도공채"@ko ;
+    fin:canonicalName "BondType.도시철도공채" ;
+    fin:conceptCategory "bond_type" .
+
+fin:SaleLotShape a sh:NodeShape ;
+    sh:property [ sh:class fin:Bond ;
+            sh:maxCount 1 ;
+            sh:message "Each SaleLot must belong to exactly one Bond."@en ;
+            sh:minCount 1 ;
+            sh:path [ sh:inversePath fin:hasSaleLot ] ] ;
+    sh:targetClass fin:SaleLot .
+
+fin:availableThroughTradingChannel a owl:ObjectProperty ;
+    rdfs:domain fin:SaleLot ;
+    rdfs:range fin:TradingChannel .
+
+fin:hasBondType a owl:ObjectProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:BondType .
+
+fin:hasCreditRating a owl:ObjectProperty ;
+    rdfs:domain fin:DebtSecurity ;
+    rdfs:range fin:CreditRating .
+
+fin:hasInstrumentCountry a owl:ObjectProperty ;
+    rdfs:comment "Instrument-country semantics only; do not silently reinterpret as issuer country."@en ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:Country .
+
+fin:hasInterestPaymentType a owl:ObjectProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:InterestPaymentType .
+
+fin:hasInterestRateType a owl:ObjectProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:InterestRateType .
+
+fin:hasTradingType a owl:ObjectProperty ;
+    rdfs:domain fin:SaleLot ;
+    rdfs:range fin:TradingType .
+
+fin:issueDate a owl:DatatypeProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range xsd:date .
+
+fin:lotSequence a owl:DatatypeProperty ;
+    rdfs:domain fin:SaleLot ;
+    rdfs:range xsd:positiveInteger .
+
+fin:maturityOrFirstCallDate a owl:DatatypeProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range xsd:date .
+
+fin:totalIssueAmount a owl:DatatypeProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range xsd:decimal .
+
+fin:CreditRating a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:InterestPaymentType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:InterestRateType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:TradingChannel a owl:Class ;
+    rdfs:subClassOf fin:Channel .
+
+fin:TradingType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:hasSaleLot a owl:ObjectProperty ;
+    rdfs:domain fin:Bond ;
+    rdfs:range fin:SaleLot .
+
+fin:SaleLot a owl:Class ;
+    rdfs:label "Bond sale lot"@en,
+        "채권 판매 LOT"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:Bond a owl:Class ;
+    rdfs:label "Bond"@en,
+        "채권"@ko ;
+    rdfs:subClassOf fin:DebtSecurity ;
+    fin:alias "채권"@ko ;
+    fin:canonicalName "FinancialProduct.Bond" ;
+    fin:conceptCategory "product_type" .
+
+fin:BondType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .

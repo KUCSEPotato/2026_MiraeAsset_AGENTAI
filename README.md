@@ -54,9 +54,12 @@ Question
   runtime key와 mapping version을 별도로 유지합니다.
 - M2 fake semantic components는 격리 테스트와 failure simulation을 위해 유지합니다.
 
-Team mode는 authoritative artifact
-`ontology/candidates/new_optical_ontology.ttl`을 version/URI와 함께 검증하고 한 번
-index합니다. Ontology meaning과 PostgreSQL/Neo4j physical mapping은 versioned
+Team mode는 제출용 module
+`ontology/common.ttl`, `bond_kr.ttl`, `etf_kr.ttl`, `etf_gl.ttl`,
+`fund_pub.ttl`을 모두 load한 뒤 version/URI를 검증하고 한 번 index합니다. 하나라도
+누락되거나 parse에 실패하면 초기화를 중단합니다. Split 이전 merged artifact
+`ontology/candidates/new_optical_ontology.ttl`은 graph-level semantic equivalence
+검증 기준선으로 유지됩니다. Ontology meaning과 PostgreSQL/Neo4j physical mapping은 versioned
 `TeamOntologyRuntimeMapping`에서 분리됩니다. `legacy` mode는 명시적 v1 rollback과
 migration regression에만 남습니다. Runtime은 authoritative data에 실제로 매핑되는
 controlled individual만 executable constraint로 사용합니다.

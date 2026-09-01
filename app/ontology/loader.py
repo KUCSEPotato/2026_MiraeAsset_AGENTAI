@@ -18,8 +18,14 @@ from app.ontology.runtime_mapping import (
 LEGACY_ONTOLOGY_FILES = (
     "core.ttl", "products.ttl", "entities.ttl", "observations.ttl", "mappings.ttl"
 )
-TEAM_V1_ONTOLOGY_FILES = ("candidates/new_optical_ontology.ttl",)
-V7_ONTOLOGY_FILES = TEAM_V1_ONTOLOGY_FILES
+TEAM_V1_ONTOLOGY_FILES = (
+    "common.ttl",
+    "bond_kr.ttl",
+    "etf_kr.ttl",
+    "etf_gl.ttl",
+    "fund_pub.ttl",
+)
+V7_ONTOLOGY_FILES = ("candidates/new_optical_ontology.ttl",)
 MANDATORY_ONTOLOGY_FILES = LEGACY_ONTOLOGY_FILES
 
 
@@ -61,11 +67,11 @@ class OntologyLoader:
     def load(self) -> LoadedOntology:
         if self._loaded is not None:
             return self._loaded
-        names = (
-            TEAM_V1_ONTOLOGY_FILES
-            if self.version in {"v7", "team-v1"}
-            else LEGACY_ONTOLOGY_FILES
-        )
+        names = {
+            "legacy": LEGACY_ONTOLOGY_FILES,
+            "v7": V7_ONTOLOGY_FILES,
+            "team-v1": TEAM_V1_ONTOLOGY_FILES,
+        }[self.version]
         files = tuple(self.root / name for name in names)
         missing = [path.name for path in files if not path.is_file()]
         if missing:

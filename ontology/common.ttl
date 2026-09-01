@@ -1,376 +1,1038 @@
-@prefix fp: <https://miraeasset-agent.ai/ontology/> .
+# Generated from candidates/new_optical_ontology.ttl by scripts/modularize_ontology.py.
+# Do not edit semantics in this module independently of the merged baseline.
+
+@prefix fin: <https://miraeasset.com/ontology/financial-product#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-fp:FinancialProductOntology a owl:Ontology ;
-    rdfs:label "Financial Product Ontology v0"@en .
+<https://miraeasset.com/ontology/financial-product> a owl:Ontology ;
+    rdfs:label "Mirae Asset Financial Product QA Ontology"@en ;
+    rdfs:comment """
+Implementation rule:
+- Do not materialize PriceObservation, NAVObservation, PerformanceObservation,
+  YieldObservation, FeeObservation, or other high-churn metric nodes in RDF for
+  the competition QA runtime.
+- Store numeric and time-varying values in RDB keyed by canonical product,
+  fund-share-class, bond, or sale-lot identifiers.
+- Store stable product, organization, identifier, index, classification,
+  channel, and grain relations in the graph.
+- Keep long-form overseas ETP strategy text in Vector/BM25.
+- Preserve source dataset, row, column, and raw value metadata so the
+  Answerability Gate can validate every factual claim before generation.
+"""@en,
+        """
+Merged ontology for the Mirae Asset Agent AI competition.
+This ontology uses the snapshot v7 design as the semantic and runtime backbone:
+stable product, organization, identifier, index, classification, fund share-class,
+and bond sale-lot relations are stored in the graph, while numeric and
+time-varying metrics remain RDB-backed.
 
-fp:canonicalConcept a owl:AnnotationProperty .
-fp:canonicalField a owl:AnnotationProperty .
-fp:conceptCategory a owl:AnnotationProperty .
-fp:sourceDataset a owl:AnnotationProperty .
-fp:allowAmbiguousAlias a owl:AnnotationProperty .
+The stronger parts of the modular ontology are retained as validation and
+provenance layers: source datasets, source records, source field assertions,
+same-product candidates, strict identifier validation, ISIN format checks, and
+identifier collision detection.
+"""@en ;
+    owl:versionInfo "merged-optical-1.4" .
 
-fp:FinancialProduct a owl:Class ;
-    skos:prefLabel "금융상품"@ko ;
-    skos:prefLabel "Financial Product"@en ;
-    fp:conceptCategory "entity_type" .
+fin:AMBIGUOUS a fin:AnswerStatus .
 
-fp:Bond a owl:Class ;
-    rdfs:subClassOf fp:FinancialProduct ;
-    owl:disjointWith fp:ExchangeTradedProduct, fp:Fund ;
-    skos:prefLabel "채권"@ko ;
-    skos:prefLabel "Bond"@en ;
-    fp:conceptCategory "product_type" ;
-    fp:canonicalConcept "FinancialProduct.Bond" .
+fin:ANSWERABLE a fin:AnswerStatus .
 
-fp:ExchangeTradedProduct a owl:Class ;
-    rdfs:subClassOf fp:FinancialProduct ;
-    owl:disjointWith fp:Fund ;
-    skos:prefLabel "상장지수상품"@ko ;
-    skos:prefLabel "Exchange Traded Product"@en ;
-    skos:altLabel "ETP"@en ;
-    fp:conceptCategory "entity_type" .
+fin:ASSET_ALTERNATIVE a fin:AssetClass ;
+    skos:prefLabel "Alternative"@en,
+        "대체투자"@ko ;
+    fin:alias "Alternatives",
+        "대체투자"@ko ;
+    fin:canonicalName "AssetClass.Alternative" ;
+    fin:conceptCategory "asset_class" .
 
-fp:ETF a owl:Class ;
-    rdfs:subClassOf fp:ExchangeTradedProduct ;
-    owl:disjointWith fp:ETN ;
-    skos:prefLabel "ETF"@en ;
-    skos:altLabel "상장지수펀드"@ko ;
-    fp:conceptCategory "product_type" ;
-    fp:canonicalConcept "FinancialProduct.ETF" .
+fin:ASSET_BOND a fin:AssetClass ;
+    skos:prefLabel "Bond"@en,
+        "채권"@ko ;
+    fin:alias "Bond",
+        "채권"@ko,
+        "채권형"@ko ;
+    fin:canonicalName "AssetClass.Bond" ;
+    fin:conceptCategory "asset_class" .
 
-fp:ETN a owl:Class ;
-    rdfs:subClassOf fp:ExchangeTradedProduct ;
-    skos:prefLabel "ETN"@en ;
-    skos:altLabel "상장지수증권"@ko ;
-    fp:conceptCategory "product_type" ;
-    fp:canonicalConcept "FinancialProduct.ETN" .
+fin:ASSET_COMMODITY a fin:AssetClass ;
+    skos:prefLabel "Commodity"@en,
+        "원자재"@ko ;
+    fin:alias "Commodity",
+        "원자재"@ko ;
+    fin:canonicalName "AssetClass.Commodity" ;
+    fin:conceptCategory "asset_class" .
 
-fp:Fund a owl:Class ;
-    rdfs:subClassOf fp:FinancialProduct ;
-    skos:prefLabel "펀드"@ko ;
-    skos:prefLabel "Fund"@en ;
-    fp:conceptCategory "product_type" ;
-    fp:canonicalConcept "FinancialProduct.Fund" .
+fin:ASSET_CURRENCY a fin:AssetClass ;
+    skos:prefLabel "Currency"@en,
+        "통화"@ko ;
+    fin:alias "Currency",
+        "통화"@ko ;
+    fin:canonicalName "AssetClass.Currency" ;
+    fin:conceptCategory "asset_class" .
 
-fp:PublicFund a owl:Class ;
-    rdfs:subClassOf fp:Fund ;
-    skos:prefLabel "공모펀드"@ko ;
-    skos:prefLabel "Public Fund"@en ;
-    fp:conceptCategory "product_type" ;
-    fp:canonicalConcept "FinancialProduct.PublicFund" .
+fin:ASSET_EQUITY a fin:AssetClass ;
+    skos:prefLabel "Equity"@en,
+        "주식"@ko ;
+    fin:alias "Equity",
+        "주식"@ko,
+        "주식형"@ko ;
+    fin:canonicalName "AssetClass.Equity" ;
+    fin:conceptCategory "asset_class" .
 
-fp:FundClass a owl:Class ;
-    skos:prefLabel "펀드 클래스"@ko ;
-    skos:prefLabel "Fund Class"@en ;
-    fp:conceptCategory "entity_type" .
+fin:ASSET_MIXED a fin:AssetClass ;
+    skos:prefLabel "Mixed assets"@en,
+        "혼합자산"@ko ;
+    fin:alias "Mixed Assets",
+        "주식혼합"@ko,
+        "채권혼합"@ko,
+        "혼합자산"@ko ;
+    fin:canonicalName "AssetClass.Mixed" ;
+    fin:conceptCategory "asset_class" .
 
-fp:AssetManager a owl:Class ;
-    skos:prefLabel "운용사"@ko ;
-    skos:prefLabel "Asset Manager"@en ;
-    fp:conceptCategory "entity_type" .
+fin:ASSET_MONEY_MARKET a fin:AssetClass ;
+    skos:prefLabel "Money market"@en,
+        "단기자금"@ko ;
+    fin:alias "MMF",
+        "Money Market",
+        "단기자금"@ko ;
+    fin:canonicalName "AssetClass.MoneyMarket" ;
+    fin:conceptCategory "asset_class" .
 
-fp:Issuer a owl:Class ;
-    skos:prefLabel "발행사"@ko ;
-    skos:prefLabel "Issuer"@en ;
-    fp:conceptCategory "entity_type" .
+fin:ASSET_OTHER a fin:AssetClass ;
+    skos:prefLabel "Other"@en,
+        "기타"@ko ;
+    fin:alias "Other",
+        "기타"@ko ;
+    fin:canonicalName "AssetClass.Other" ;
+    fin:conceptCategory "asset_class" .
 
-fp:Region a owl:Class ;
-    skos:prefLabel "투자지역"@ko ;
-    skos:prefLabel "Region"@en ;
-    fp:conceptCategory "entity_type" .
+fin:ASSET_REAL_ESTATE a fin:AssetClass ;
+    skos:prefLabel "Real estate"@en,
+        "부동산"@ko ;
+    fin:alias "Real Estate",
+        "부동산"@ko ;
+    fin:canonicalName "AssetClass.RealEstate" ;
+    fin:conceptCategory "asset_class" .
 
-fp:AssetType a owl:Class ;
-    skos:prefLabel "자산유형"@ko ;
-    skos:prefLabel "Asset Type"@en ;
-    fp:conceptCategory "entity_type" .
+fin:AssetManagementCompany a owl:Class ;
+    rdfs:label "Asset management company"@en,
+        "운용사"@ko ;
+    rdfs:subClassOf fin:Organization .
 
-fp:RiskGrade a owl:Class ;
-    skos:prefLabel "위험등급"@ko ;
-    skos:prefLabel "Risk Grade"@en ;
-    fp:conceptCategory "entity_type" .
+fin:CONFLICT a fin:ValidationStatus ;
+    skos:prefLabel "Conflict"@en .
 
-fp:Currency a owl:Class ;
-    skos:prefLabel "통화"@ko ;
-    skos:prefLabel "Currency"@en ;
-    fp:conceptCategory "entity_type" .
+fin:Channel a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity .
 
-fp:ProductIdentifier a owl:Class ;
-    skos:prefLabel "상품 식별자"@ko ;
-    skos:prefLabel "Product Identifier"@en ;
-    fp:conceptCategory "entity_type" .
+fin:ClassificationScheme a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity .
 
-fp:Index a owl:Class ;
-    skos:prefLabel "기초지수"@ko ;
-    skos:prefLabel "Index"@en ;
-    fp:conceptCategory "entity_type" .
+fin:CostMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "expenseRate",
+        "fee" .
 
-fp:Benchmark a owl:Class ;
-    rdfs:subClassOf fp:Index ;
-    skos:prefLabel "벤치마크"@ko ;
-    skos:prefLabel "Benchmark"@en ;
-    fp:conceptCategory "entity_type" .
+fin:Country a owl:Class ;
+    rdfs:label "Country"@en,
+        "국가"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .
 
-fp:InvestmentStrategy a owl:Class ;
-    skos:prefLabel "투자전략"@ko ;
-    skos:prefLabel "Investment Strategy"@en ;
-    fp:conceptCategory "entity_type" .
+fin:DebtSecurity a owl:Class ;
+    rdfs:label "Debt security"@en,
+        "채무증권"@ko ;
+    rdfs:subClassOf fin:FinancialProduct .
 
-fp:ReplicationMethod a owl:Class ;
-    skos:prefLabel "복제방식"@ko ;
-    skos:prefLabel "Replication Method"@en ;
-    fp:conceptCategory "entity_type" .
+fin:DistributionMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "distributionAmount",
+        "distributionYield",
+        "lastDistributionRate" .
 
-fp:Korea a fp:Region ;
-    skos:prefLabel "한국"@ko ;
-    skos:altLabel "국내"@ko, "대한민국"@ko, "Korea"@en, "KR"@en ;
-    fp:conceptCategory "region" ;
-    fp:canonicalConcept "Region.KR" .
+fin:ENTITY_AMBIGUOUS a fin:ReasonCode .
 
-fp:UnitedStates a fp:Region ;
-    skos:prefLabel "미국"@ko ;
-    skos:prefLabel "United States"@en ;
-    skos:altLabel "USA"@en, "US"@en, "United States of America"@en ;
-    fp:conceptCategory "region" ;
-    fp:canonicalConcept "Region.US" .
+fin:ENTITY_NOT_FOUND a fin:ReasonCode .
 
-fp:Japan a fp:Region ;
-    skos:prefLabel "일본"@ko ;
-    skos:prefLabel "Japan"@en ;
-    fp:conceptCategory "region" ;
-    fp:canonicalConcept "Region.JP" .
+fin:EquitySecurity a owl:Class ;
+    rdfs:label "Equity security"@en,
+        "지분증권"@ko ;
+    rdfs:subClassOf fin:Security ;
+    fin:canonicalName "EquitySecurity" ;
+    fin:conceptCategory "entity_type" .
 
-fp:China a fp:Region ;
-    skos:prefLabel "중국"@ko ;
-    skos:prefLabel "China"@en ;
-    fp:conceptCategory "region" ;
-    fp:canonicalConcept "Region.CN" .
+fin:FORMAT_ONLY a fin:ValidationStatus ;
+    skos:prefLabel "Format only"@en .
 
-fp:Global a fp:Region ;
-    skos:prefLabel "글로벌"@ko ;
-    skos:prefLabel "Global"@en ;
-    fp:conceptCategory "region" ;
-    fp:canonicalConcept "Region.Global" .
+fin:FSS_ID a fin:IdentifierScheme ;
+    skos:prefLabel "FSS ID"@en .
 
-fp:Asia a fp:Region ;
-    skos:prefLabel "아시아"@ko ;
-    skos:prefLabel "Asia"@en ;
-    fp:conceptCategory "region" ;
-    fp:canonicalConcept "Region.Asia" .
+fin:FinancialProductShape a sh:NodeShape ;
+    sh:property [ sh:class fin:SourceRecord ;
+            sh:message "FinancialProduct must be grounded by at least one SourceRecord."@en ;
+            sh:minCount 1 ;
+            sh:path fin:hasSourceRecord ],
+        [ sh:datatype xsd:string ;
+            sh:maxCount 1 ;
+            sh:message "FinancialProduct must have exactly one non-empty productName."@en ;
+            sh:minCount 1 ;
+            sh:minLength 1 ;
+            sh:path fin:productName ],
+        [ sh:datatype xsd:string ;
+            sh:maxCount 1 ;
+            sh:message "FinancialProduct must have exactly one non-empty internalProductID."@en ;
+            sh:minCount 1 ;
+            sh:minLength 1 ;
+            sh:path fin:internalProductID ],
+        [ sh:class fin:Identifier ;
+            sh:message "FinancialProduct must have at least one Identifier."@en ;
+            sh:minCount 1 ;
+            sh:path fin:hasIdentifier ] ;
+    sh:targetClass fin:FinancialProduct .
 
-fp:Equity a fp:AssetType ;
-    skos:prefLabel "주식"@ko ;
-    skos:prefLabel "Equity"@en ;
-    skos:altLabel "주식형"@ko ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Equity" .
+fin:FixedIncomePortfolioMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "averageCreditQualityScore",
+        "avgCoupon",
+        "avgMaturity",
+        "duration" .
 
-fp:BondAsset a fp:AssetType ;
-    skos:prefLabel "채권"@ko ;
-    skos:prefLabel "Bond"@en ;
-    skos:altLabel "채권형"@ko ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Bond" .
+fin:FundProduct a owl:Class ;
+    rdfs:label "Fund product"@en,
+        "펀드상품"@ko ;
+    rdfs:subClassOf fin:FinancialProduct .
 
-fp:Commodity a fp:AssetType ;
-    skos:prefLabel "원자재"@ko ;
-    skos:prefLabel "Commodity"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Commodity" .
+fin:GraphStore a fin:RuntimeStore ;
+    skos:prefLabel "Graph"@en .
 
-fp:MixedAsset a fp:AssetType ;
-    skos:prefLabel "혼합자산"@ko ;
-    skos:prefLabel "Mixed Asset"@en ;
-    skos:altLabel "Mixed Assets"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Mixed" .
+fin:HoldsRelationShape a sh:NodeShape ;
+    sh:class fin:FinancialProduct ;
+    sh:property [ sh:class fin:Security ;
+            sh:message "HOLDS must connect FinancialProduct to Security, never directly to Organization."@en ;
+            sh:path fin:holds ] ;
+    sh:targetSubjectsOf fin:holds .
 
-fp:MoneyMarket a fp:AssetType ;
-    skos:prefLabel "단기자금"@ko ;
-    skos:prefLabel "Money Market"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.MoneyMarket" .
+fin:INVALID_FORMAT a fin:ValidationStatus ;
+    skos:prefLabel "Invalid format"@en .
 
-fp:CurrencyAsset a fp:AssetType ;
-    skos:prefLabel "통화"@ko ;
-    skos:prefLabel "Currency Asset"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Currency" .
+fin:ISIN a fin:IdentifierScheme ;
+    skos:prefLabel "ISIN"@en .
 
-fp:RealEstate a fp:AssetType ;
-    skos:prefLabel "부동산"@ko ;
-    skos:prefLabel "Real Estate"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.RealEstate" .
+fin:ISINIdentifierShape a sh:NodeShape ;
+    sh:property [ sh:flags "i" ;
+            sh:message "ISIN identifierValue must match the ISIN format."@en ;
+            sh:path fin:identifierValue ;
+            sh:pattern "^[A-Z]{2}[A-Z0-9]{9}[0-9]$" ] ;
+    sh:target [ a sh:SPARQLTarget ;
+            sh:select """
+            SELECT ?this WHERE {
+                ?this fin:identifierScheme fin:ISIN .
+            }
+        """ ] .
 
-fp:AlternativeAsset a fp:AssetType ;
-    skos:prefLabel "대체자산"@ko ;
-    skos:prefLabel "Alternative Asset"@en ;
-    skos:altLabel "Alternatives"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Alternative" .
+fin:IdentifierCollisionShape a sh:NodeShape ;
+    sh:sparql [ sh:message "The same identifier scheme, namespace, and value is connected to different products."@en ;
+            sh:select """
+            SELECT $this WHERE {
+                $this fin:identifierScheme ?scheme ;
+                      fin:identifierValue ?value ;
+                      fin:identifierNamespace ?namespace .
+                ?p1 fin:hasIdentifier $this .
+                ?other fin:identifierScheme ?scheme ;
+                       fin:identifierValue ?value ;
+                       fin:identifierNamespace ?namespace .
+                ?p2 fin:hasIdentifier ?other .
+                FILTER ($this != ?other && ?p1 != ?p2)
+            }
+        """ ] ;
+    sh:targetClass fin:Identifier .
 
-fp:OtherAsset a fp:AssetType ;
-    skos:prefLabel "기타"@ko ;
-    skos:prefLabel "Other Asset"@en ;
-    fp:conceptCategory "asset_type" ;
-    fp:canonicalConcept "AssetType.Other" .
+fin:IdentifierShape a sh:NodeShape ;
+    sh:property [ sh:class fin:IdentifierScheme ;
+            sh:maxCount 1 ;
+            sh:message "Identifier must have exactly one identifierScheme."@en ;
+            sh:minCount 1 ;
+            sh:path fin:identifierScheme ],
+        [ sh:datatype xsd:string ;
+            sh:in ( "VALIDATED" "FORMAT_ONLY" "UNKNOWN_VALIDATION" "CONFLICT" "INVALID_FORMAT" ) ;
+            sh:maxCount 1 ;
+            sh:message "Identifier must have a supported validationStatus."@en ;
+            sh:minCount 1 ;
+            sh:path fin:validationStatus ],
+        [ sh:datatype xsd:string ;
+            sh:maxCount 1 ;
+            sh:message "Identifier must have exactly one non-empty identifierValue."@en ;
+            sh:minCount 1 ;
+            sh:minLength 1 ;
+            sh:path fin:identifierValue ],
+        [ sh:datatype xsd:string ;
+            sh:maxCount 1 ;
+            sh:message "Identifier must have exactly one non-empty identifierNamespace."@en ;
+            sh:minCount 1 ;
+            sh:minLength 1 ;
+            sh:path fin:identifierNamespace ],
+        [ sh:datatype xsd:boolean ;
+            sh:maxCount 1 ;
+            sh:path fin:isPrimaryInSource ] ;
+    sh:targetClass fin:Identifier .
 
-fp:managedBy a owl:ObjectProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range fp:AssetManager ;
-    skos:prefLabel "운용사"@ko ;
-    skos:prefLabel "managed by"@en ;
-    skos:altLabel "운용하는"@ko ;
-    skos:altLabel "관리하는"@ko ;
-    skos:altLabel "운용하는 회사"@ko ;
-    fp:conceptCategory "relation" ;
-    fp:canonicalField "product.asset_manager" .
+fin:Index a owl:Class ;
+    rdfs:label "Index"@en,
+        "지수"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .
 
-fp:issuedBy a owl:ObjectProperty ;
-    rdfs:domain fp:Bond ;
-    rdfs:range fp:Issuer ;
-    skos:prefLabel "발행사"@ko ;
-    skos:prefLabel "issued by"@en ;
-    skos:altLabel "발행한"@ko ;
-    skos:altLabel "발행한 기관"@ko ;
-    fp:conceptCategory "relation" ;
-    fp:canonicalField "product.issuer" .
+fin:KSD_ID a fin:IdentifierScheme ;
+    skos:prefLabel "KSD ID"@en .
 
-fp:tracks a owl:ObjectProperty ;
-    rdfs:domain fp:ExchangeTradedProduct ;
-    rdfs:range fp:Index ;
-    skos:prefLabel "기초지수"@ko ;
-    skos:prefLabel "tracks"@en ;
-    skos:altLabel "추종지수"@ko ;
-    skos:altLabel "따라가는"@ko ;
-    skos:altLabel "추종하는"@ko ;
-    fp:conceptCategory "relation" .
+fin:LIPPER_ID a fin:IdentifierScheme ;
+    skos:prefLabel "Lipper ID"@en .
 
-fp:referencesBenchmark a owl:ObjectProperty ;
-    rdfs:domain fp:Fund ;
-    rdfs:range fp:Benchmark ;
-    skos:prefLabel "벤치마크"@ko ;
-    skos:prefLabel "references benchmark"@en ;
-    fp:conceptCategory "relation" .
+fin:LiquidityMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "tradingValue",
+        "volume" .
 
-fp:hasClass a owl:ObjectProperty ;
-    rdfs:domain fp:Fund ;
-    rdfs:range fp:FundClass ;
-    skos:prefLabel "펀드 클래스"@ko ;
-    skos:prefLabel "has class"@en ;
-    fp:conceptCategory "relation" .
+fin:MARKET_DOMESTIC a fin:MarketScope ;
+    skos:prefLabel "Domestic"@en,
+        "국내"@ko ;
+    fin:alias "Domestic",
+        "국내"@ko ;
+    fin:canonicalName "MarketScope.Domestic" ;
+    fin:conceptCategory "market_scope" .
 
-fp:investsInRegion a owl:ObjectProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range fp:Region ;
-    skos:prefLabel "투자지역"@ko ;
-    skos:altLabel "지역"@ko, "region"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.region" .
+fin:MARKET_MIXED a fin:MarketScope ;
+    skos:prefLabel "Domestic and overseas"@en,
+        "국내외혼합"@ko ;
+    fin:alias "Domestic and Overseas",
+        "국내외혼합"@ko ;
+    fin:canonicalName "MarketScope.Mixed" ;
+    fin:conceptCategory "market_scope" .
 
-fp:hasAssetType a owl:ObjectProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range fp:AssetType ;
-    skos:prefLabel "자산유형"@ko ;
-    skos:altLabel "asset type"@en, "asset_type"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.asset_type" .
+fin:MARKET_OVERSEAS a fin:MarketScope ;
+    skos:prefLabel "Overseas"@en,
+        "해외"@ko ;
+    fin:alias "Overseas",
+        "해외"@ko ;
+    fin:canonicalName "MarketScope.Overseas" ;
+    fin:conceptCategory "market_scope" .
 
-fp:hasRiskGrade a owl:ObjectProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range fp:RiskGrade ;
-    skos:prefLabel "위험등급"@ko ;
-    fp:conceptCategory "relation" ;
-    fp:canonicalField "product.risk_grade" .
+fin:MA_ID a fin:IdentifierScheme ;
+    skos:prefLabel "Mirae Asset ID"@en .
 
-fp:identifiedBy a owl:ObjectProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range fp:ProductIdentifier ;
-    skos:prefLabel "식별자"@ko ;
-    fp:conceptCategory "relation" .
+fin:MISSING a fin:QualityStatus ;
+    skos:prefLabel "Missing"@en .
 
-fp:denominatedIn a owl:ObjectProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range fp:Currency ;
-    skos:prefLabel "표시통화"@ko ;
-    fp:conceptCategory "relation" ;
-    fp:canonicalField "product.currency" .
+fin:MetadataStore a fin:RuntimeStore ;
+    skos:prefLabel "Evidence Metadata"@en .
 
-fp:productName a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "상품명"@ko ;
-    skos:prefLabel "product name"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.name" .
+fin:NAVMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "nav.perShare",
+        "nav.reference",
+        "nav.yesterday" .
 
-fp:productType a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "상품유형"@ko ;
-    skos:altLabel "product type"@en, "product_type"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.product_type" .
+fin:PRIVATE a fin:OfferingType ;
+    skos:prefLabel "Private"@en,
+        "사모"@ko ;
+    fin:alias "Private"@en,
+        "사모"@ko ;
+    fin:canonicalName "OfferingType.PRIVATE" ;
+    fin:conceptCategory "offering_type" .
 
-fp:ticker a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "티커"@ko ;
-    skos:prefLabel "ticker"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.ticker" .
+fin:PUBLIC a fin:OfferingType ;
+    skos:prefLabel "Public"@en,
+        "공모"@ko ;
+    fin:alias "Public"@en,
+        "공모"@ko ;
+    fin:canonicalName "OfferingType.PUBLIC" ;
+    fin:conceptCategory "offering_type" .
 
-fp:isin a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "ISIN"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.isin" .
+fin:PerformanceMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "return.1D",
+        "return.1M",
+        "return.1W",
+        "return.1Y",
+        "return.2Y",
+        "return.3M",
+        "return.3Y",
+        "return.5Y",
+        "return.6M",
+        "return.YTD" .
 
-fp:aum a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "순자산"@ko ;
-    skos:prefLabel "AUM"@en ;
-    skos:altLabel "운용규모"@ko ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.aum" .
+fin:PortfolioCompositionMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "portfolio.assetCompositionRatio" .
 
-fp:expenseRatio a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "총보수"@ko ;
-    skos:prefLabel "expense ratio"@en ;
-    skos:altLabel "보수율"@ko, "운용보수"@ko ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.expense_ratio" .
+fin:PriceMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "price.close",
+        "price.high",
+        "price.low",
+        "price.open",
+        "price.reference" .
 
-fp:nav a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "NAV"@en ;
-    skos:altLabel "기준가격"@ko ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.nav" .
+fin:REGION_ASIA a fin:ExposureRegion ;
+    skos:prefLabel "Asia"@en,
+        "아시아"@ko ;
+    fin:alias "Asia",
+        "아시아"@ko ;
+    fin:canonicalName "ExposureRegion.Asia" ;
+    fin:conceptCategory "exposure_region" .
 
-fp:price a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:decimal ;
-    skos:prefLabel "가격"@ko ;
-    skos:prefLabel "price"@en ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.price" .
+fin:REGION_CHINA a fin:ExposureRegion ;
+    skos:prefLabel "China"@en,
+        "중국"@ko ;
+    fin:alias "China",
+        "중국"@ko ;
+    fin:canonicalName "ExposureRegion.China" ;
+    fin:conceptCategory "exposure_region" .
 
-fp:baseIndexName a owl:DatatypeProperty ;
-    rdfs:domain fp:FinancialProduct ;
-    rdfs:range xsd:string ;
-    skos:prefLabel "기초지수명"@ko ;
-    skos:prefLabel "base index"@en ;
-    skos:altLabel "기초지수"@ko, "벤치마크"@ko ;
-    fp:conceptCategory "field" ;
-    fp:canonicalField "product.base_index" .
+fin:REGION_GLOBAL a fin:ExposureRegion ;
+    skos:prefLabel "Global"@en,
+        "글로벌"@ko ;
+    fin:alias "Global",
+        "글로벌"@ko ;
+    fin:canonicalName "ExposureRegion.Global" ;
+    fin:conceptCategory "exposure_region" .
+
+fin:REGION_INDIA a fin:ExposureRegion ;
+    skos:prefLabel "India"@en,
+        "인도"@ko ;
+    fin:alias "India",
+        "인도"@ko ;
+    fin:canonicalName "ExposureRegion.India" ;
+    fin:conceptCategory "exposure_region" .
+
+fin:REGION_JAPAN a fin:ExposureRegion ;
+    skos:prefLabel "Japan"@en,
+        "일본"@ko ;
+    fin:alias "Japan",
+        "일본"@ko ;
+    fin:canonicalName "ExposureRegion.Japan" ;
+    fin:conceptCategory "exposure_region" .
+
+fin:REGION_KOREA a fin:ExposureRegion ;
+    skos:prefLabel "Korea"@en,
+        "국내"@ko ;
+    fin:alias "Korea",
+        "국내"@ko,
+        "한국"@ko ;
+    fin:canonicalName "ExposureRegion.Korea" ;
+    fin:conceptCategory "exposure_region" .
+
+fin:REGION_UNITED_STATES a fin:ExposureRegion ;
+    skos:prefLabel "United States"@en,
+        "미국"@ko ;
+    fin:alias "USA",
+        "United States",
+        "United States of America",
+        "미국"@ko ;
+    fin:canonicalName "ExposureRegion.UnitedStates" ;
+    fin:conceptCategory "exposure_region" .
+
+fin:REPRESENTATIVE_KSD_ID a fin:IdentifierScheme ;
+    skos:prefLabel "Representative KSD ID"@en .
+
+fin:RIC a fin:IdentifierScheme ;
+    skos:prefLabel "RIC"@en .
+
+fin:RISK_GRADE_1 a fin:RiskGrade ;
+    skos:prefLabel "Risk grade 1"@en,
+        "1등급"@ko ;
+    fin:alias "1",
+        "1등급"@ko,
+        "매우높은위험(1등급)"@ko ;
+    fin:canonicalName "RiskGrade.1" ;
+    fin:conceptCategory "risk_grade" .
+
+fin:RISK_GRADE_2 a fin:RiskGrade ;
+    skos:prefLabel "Risk grade 2"@en,
+        "2등급"@ko ;
+    fin:alias "2",
+        "2등급"@ko,
+        "높은위험(2등급)"@ko ;
+    fin:canonicalName "RiskGrade.2" ;
+    fin:conceptCategory "risk_grade" .
+
+fin:RISK_GRADE_3 a fin:RiskGrade ;
+    skos:prefLabel "Risk grade 3"@en,
+        "3등급"@ko ;
+    fin:alias "3",
+        "3등급"@ko,
+        "다소높은위험(3등급)"@ko ;
+    fin:canonicalName "RiskGrade.3" ;
+    fin:conceptCategory "risk_grade" .
+
+fin:RISK_GRADE_4 a fin:RiskGrade ;
+    skos:prefLabel "Risk grade 4"@en,
+        "4등급"@ko ;
+    fin:alias "4",
+        "4등급"@ko,
+        "보통위험(4등급)"@ko ;
+    fin:canonicalName "RiskGrade.4" ;
+    fin:conceptCategory "risk_grade" .
+
+fin:RISK_GRADE_5 a fin:RiskGrade ;
+    skos:prefLabel "Risk grade 5"@en,
+        "5등급"@ko ;
+    fin:alias "5",
+        "5등급"@ko,
+        "낮은위험(5등급)"@ko ;
+    fin:canonicalName "RiskGrade.5" ;
+    fin:conceptCategory "risk_grade" .
+
+fin:RISK_GRADE_6 a fin:RiskGrade ;
+    skos:prefLabel "Risk grade 6"@en,
+        "6등급"@ko ;
+    fin:alias "6",
+        "6등급"@ko,
+        "매우낮은위험(6등급)"@ko ;
+    fin:canonicalName "RiskGrade.6" ;
+    fin:conceptCategory "risk_grade" .
+
+fin:S045 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Entity Resolution / Answerability Gate" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S045" ;
+    fin:ruleText "A core query entity must resolve to exactly one canonical entity. Zero candidates means ENTITY_NOT_FOUND; multiple candidates means ENTITY_AMBIGUOUS." ;
+    fin:severity "HARD" .
+
+fin:S046 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Ontology Mapping / Answerability Gate" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S046" ;
+    fin:onFailureReason fin:METRIC_NOT_AVAILABLE ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:ruleText "If the requested metric is not defined in the Semantic Metric Catalog / Source Mapping / RDB, do not substitute a similar metric or invent a calculation." ;
+    fin:severity "HARD" .
+
+fin:S047 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "RDB / Query Validator" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S047" ;
+    fin:onFailureReason fin:DATE_NOT_COVERED ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:ruleText "If no observedAt covers the requested date or period, do not substitute datasetSnapshotDate or updatedAt." ;
+    fin:severity "HARD" .
+
+fin:S048 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "ETL / Answer Validator" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S048" ;
+    fin:onFailureReason fin:MISSING_VALUE ;
+    fin:ruleText "NULL, zero, N/A, and not-provided are distinct states. Never answer NULL as numeric zero." ;
+    fin:severity "HARD" .
+
+fin:S049 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Query Planner / Answerability Gate" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S049" ;
+    fin:onFailureReason fin:NO_MATCHING_CANDIDATE ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:ruleText "When zero candidates satisfy all user filters, do not automatically relax any user condition." ;
+    fin:severity "HARD" .
+
+fin:S050 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Evidence Validator" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S050" ;
+    fin:onFailureReason fin:EVIDENCE_CONFLICT ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:ruleText "If evidence for the same entity + metric + observedAt conflicts and the source-priority policy cannot resolve it, stop answer generation." ;
+    fin:severity "HARD" .
+
+fin:S051 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Runtime / Answerability Gate" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S051" ;
+    fin:onFailureReason fin:SYSTEM_OR_RETRIEVAL_ERROR ;
+    fin:onFailureStatus fin:RETRIEVAL_FAILED ;
+    fin:ruleText "Graph/RDB/Vector retrieval failure is not data absence and must be returned as RETRIEVAL_FAILED." ;
+    fin:severity "HARD" .
+
+fin:S052 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Evidence Validator" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S052" ;
+    fin:onFailureReason fin:INSUFFICIENT_EVIDENCE ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:ruleText "Every factual claim in the final answer must be linked to at least one evidence item." ;
+    fin:severity "HARD" .
+
+fin:S053 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "Answerability Gate" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S053" ;
+    fin:onFailureStatus fin:PARTIALLY_ANSWERABLE ;
+    fin:ruleText "For a multi-slot question with evidence for only some slots, answer only the supported slots, explicitly report missing slots, and return PARTIALLY_ANSWERABLE." ;
+    fin:severity "HARD" .
+
+fin:S054 a fin:OperationalConstraint ;
+    fin:appliesAtLayer "RDB / Answer Validator" ;
+    fin:constraintGroup "Answerability" ;
+    fin:constraintId "S054" ;
+    fin:onFailureReason fin:UNIT_OR_PERIOD_UNKNOWN ;
+    fin:onFailureStatus fin:UNANSWERABLE ;
+    fin:ruleText "If unit, period, or ratio scale is not certain, prohibit normalization, comparison, ranking, and derived calculation." ;
+    fin:severity "HARD" .
+
+fin:SOURCE_ID a fin:IdentifierScheme ;
+    skos:prefLabel "Source ID"@en .
+
+fin:SOURCE_ZERO a fin:QualityStatus ;
+    skos:prefLabel "Source zero"@en .
+
+fin:SaleMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "buyableQuantity",
+        "tradePrice" .
+
+fin:SecuritiesCompany a owl:Class ;
+    rdfs:label "Securities company"@en,
+        "증권사"@ko ;
+    rdfs:subClassOf fin:Organization .
+
+fin:SecurityIssuerRelationShape a sh:NodeShape ;
+    sh:class fin:Security ;
+    sh:property [ sh:class fin:Organization ;
+            sh:message "securityIssuedBy must connect Security to Organization."@en ;
+            sh:path fin:securityIssuedBy ] ;
+    sh:targetSubjectsOf fin:securityIssuedBy .
+
+fin:SecurityShape a sh:NodeShape ;
+    sh:property [ sh:class fin:Identifier ;
+            sh:message "A canonical Security requires authoritative identifier evidence."@en ;
+            sh:minCount 1 ;
+            sh:path fin:hasIdentifier ],
+        [ sh:class fin:Organization ;
+            sh:maxCount 1 ;
+            sh:message "Security issuer identity is optional but must be a proven Organization when asserted."@en ;
+            sh:path fin:securityIssuedBy ] ;
+    sh:targetClass fin:Security .
+
+fin:SizeMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "aum",
+        "netAssets",
+        "outstandingAmount" .
+
+fin:SourceRecordShape a sh:NodeShape ;
+    sh:property [ sh:datatype xsd:date ;
+            sh:maxCount 1 ;
+            sh:path fin:snapshotDate ],
+        [ sh:class fin:EvidenceBearingEntity ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path fin:describesEntity ],
+        [ sh:datatype xsd:string ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:minLength 1 ;
+            sh:path fin:sourcePrimaryKey ],
+        [ sh:datatype xsd:positiveInteger ;
+            sh:maxCount 1 ;
+            sh:path fin:sourceRowNumber ],
+        [ sh:class fin:SourceDataset ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path fin:inDataset ] ;
+    sh:targetClass fin:SourceRecord .
+
+fin:TICKER a fin:IdentifierScheme ;
+    skos:prefLabel "Ticker"@en .
+
+fin:TrackingMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "trackingError" .
+
+fin:UNKNOWN_QUALITY a fin:QualityStatus ;
+    skos:prefLabel "Unknown"@en .
+
+fin:UNKNOWN_VALIDATION a fin:ValidationStatus ;
+    skos:prefLabel "Unknown"@en .
+
+fin:UNMAPPED_CODE a fin:QualityStatus ;
+    skos:prefLabel "Unmapped code"@en .
+
+fin:UNSUPPORTED_RELATION a fin:ReasonCode .
+
+fin:VALID a fin:QualityStatus ;
+    skos:prefLabel "Valid"@en .
+
+fin:VALIDATED a fin:ValidationStatus ;
+    skos:prefLabel "Validated"@en .
+
+fin:ValuationMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "bondClosePrice",
+        "evaluatedPrice" .
+
+fin:VectorStore a fin:RuntimeStore ;
+    skos:prefLabel "Vector/BM25"@en .
+
+fin:VolatilityMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "volatility.1M",
+        "volatility.1Y",
+        "volatility.3M",
+        "volatility.6M" .
+
+fin:YieldMetric a fin:MetricFamily ;
+    fin:primaryStore fin:RDBStore ;
+    fin:semanticKey "afterTaxYield",
+        "buyYield",
+        "corporateYield" .
+
+fin:alias a owl:AnnotationProperty .
+
+fin:appliesAtLayer a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:candidateProduct a owl:ObjectProperty ;
+    rdfs:domain fin:SameProductCandidate ;
+    rdfs:range fin:FinancialProduct .
+
+fin:canonicalField a owl:AnnotationProperty .
+
+fin:canonicalName a owl:AnnotationProperty .
+
+fin:conceptCategory a owl:AnnotationProperty .
+
+fin:constraintGroup a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:constraintId a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:datasetCode a owl:DatatypeProperty ;
+    rdfs:domain fin:SourceDataset ;
+    rdfs:range xsd:string .
+
+fin:datasetSnapshotDate a owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+fin:denominatedIn a owl:ObjectProperty ;
+    rdfs:range fin:Currency ;
+    fin:alias "표시통화"@ko ;
+    fin:canonicalName "denominatedIn" ;
+    fin:conceptCategory "relation" .
+
+fin:describesProduct a owl:ObjectProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:FinancialProduct ;
+    rdfs:subPropertyOf fin:describesEntity .
+
+fin:englishName a owl:DatatypeProperty ;
+    rdfs:domain fin:FinancialProduct ;
+    rdfs:range xsd:string .
+
+fin:hasAssetClass a owl:ObjectProperty ;
+    rdfs:range fin:AssetClass .
+
+fin:hasDistributionFrequency a owl:ObjectProperty ;
+    rdfs:range fin:DistributionFrequency .
+
+fin:hasExposureRegion a owl:ObjectProperty ;
+    rdfs:range fin:ExposureRegion .
+
+fin:hasFieldAssertion a owl:ObjectProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:SourceFieldAssertion .
+
+fin:hasIncomeDistributionType a owl:ObjectProperty ;
+    rdfs:range fin:IncomeDistributionType .
+
+fin:hasMarketScope a owl:ObjectProperty ;
+    rdfs:range fin:MarketScope .
+
+fin:hasOfferingType a owl:ObjectProperty ;
+    rdfs:range fin:OfferingType .
+
+fin:hasRiskGrade a owl:ObjectProperty ;
+    rdfs:range fin:RiskGrade .
+
+fin:issuedBy a owl:ObjectProperty ;
+    rdfs:comment "Used for ETN and Bond issuer roles."@en ;
+    rdfs:range fin:Organization ;
+    fin:alias "발행사"@ko,
+        "발행한"@ko ;
+    fin:canonicalName "issuedBy" ;
+    fin:conceptCategory "relation" .
+
+fin:managedBy a owl:ObjectProperty ;
+    rdfs:comment "Used for ETF and Fund management roles."@en ;
+    rdfs:range fin:Organization ;
+    fin:alias "운용사"@ko,
+        "운용하는"@ko ;
+    fin:canonicalName "managedBy" ;
+    fin:conceptCategory "relation" .
+
+fin:normalizedValue a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:observedAt a owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+fin:onFailureReason a owl:ObjectProperty ;
+    rdfs:domain fin:OperationalConstraint ;
+    rdfs:range fin:ReasonCode .
+
+fin:onFailureStatus a owl:ObjectProperty ;
+    rdfs:domain fin:OperationalConstraint ;
+    rdfs:range fin:AnswerStatus .
+
+fin:primaryStore a owl:ObjectProperty ;
+    rdfs:domain fin:MetricFamily ;
+    rdfs:range fin:RuntimeStore .
+
+fin:qualityStatus a owl:DatatypeProperty ;
+    rdfs:comment "Lexical code matching the local name of a fin:QualityStatus individual."@en ;
+    rdfs:range xsd:string .
+
+fin:rawPayloadHash a owl:DatatypeProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range xsd:string .
+
+fin:rawValue a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:ruleText a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:semanticKey a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:severity a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:shortName a owl:DatatypeProperty ;
+    rdfs:domain fin:FinancialProduct ;
+    rdfs:range xsd:string .
+
+fin:sourceColumn a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:sourceRawValue a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:sourceRowLocator a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:supportedByRecord a owl:ObjectProperty ;
+    rdfs:range fin:SourceRecord .
+
+fin:supportsEntity a owl:ObjectProperty ;
+    rdfs:comment "Additional semantic entity supported by the same source row; field-level evidence remains separately asserted."@en ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:EvidenceBearingEntity .
+
+fin:uncertaintyNote a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+fin:updatedAt a owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+fin:Currency a owl:Class ;
+    rdfs:label "Currency"@en,
+        "통화"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:DATE_NOT_COVERED a fin:ReasonCode .
+
+fin:DistributionFrequency a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:EVIDENCE_CONFLICT a fin:ReasonCode .
+
+fin:INSUFFICIENT_EVIDENCE a fin:ReasonCode .
+
+fin:IncomeDistributionType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:METRIC_NOT_AVAILABLE a fin:ReasonCode .
+
+fin:MISSING_VALUE a fin:ReasonCode .
+
+fin:NO_MATCHING_CANDIDATE a fin:ReasonCode .
+
+fin:PARTIALLY_ANSWERABLE a fin:AnswerStatus .
+
+fin:RETRIEVAL_FAILED a fin:AnswerStatus .
+
+fin:SYSTEM_OR_RETRIEVAL_ERROR a fin:ReasonCode .
+
+fin:SameProductCandidate a owl:Class ;
+    rdfs:label "Same-product candidate"@en,
+        "동일상품 후보"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:SourceFieldAssertion a owl:Class ;
+    rdfs:label "Source field assertion"@en,
+        "원본 필드 주장"@ko ;
+    rdfs:comment "Stores raw source field evidence even when normalization is uncertain."@en ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:UNIT_OR_PERIOD_UNKNOWN a fin:ReasonCode .
+
+fin:hasSourceRecord a owl:ObjectProperty ;
+    rdfs:domain fin:EvidenceBearingEntity ;
+    rdfs:range fin:SourceRecord ;
+    owl:inverseOf fin:describesEntity .
+
+fin:identifierNamespace a owl:DatatypeProperty ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range xsd:string .
+
+fin:identifierScheme a owl:ObjectProperty ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range fin:IdentifierScheme .
+
+fin:inDataset a owl:ObjectProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:SourceDataset .
+
+fin:internalProductID a owl:DatatypeProperty ;
+    rdfs:domain fin:FinancialProduct ;
+    rdfs:range xsd:string .
+
+fin:isPrimaryInSource a owl:DatatypeProperty ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range xsd:boolean .
+
+fin:productName a owl:DatatypeProperty ;
+    rdfs:domain fin:FinancialProduct ;
+    rdfs:range xsd:string .
+
+fin:snapshotDate a owl:DatatypeProperty ;
+    rdfs:range xsd:date .
+
+fin:sourcePrimaryKey a owl:DatatypeProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range xsd:string .
+
+fin:sourceRowNumber a owl:DatatypeProperty ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range xsd:positiveInteger .
+
+fin:validationStatus a owl:DatatypeProperty ;
+    rdfs:comment "Lexical code matching the local name of a fin:ValidationStatus individual."@en ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range xsd:string .
+
+fin:hasIdentifier a owl:ObjectProperty ;
+    rdfs:domain fin:SemanticEntity ;
+    rdfs:range fin:Identifier .
+
+fin:holds a owl:ObjectProperty ;
+    rdfs:comment "Temporal holding fact whose effective date and evidence are stored in the canonical fact model."@en ;
+    rdfs:domain fin:FinancialProduct ;
+    rdfs:range fin:Security ;
+    fin:alias "보유"@ko,
+        "보유한"@ko ;
+    fin:canonicalName "holds" ;
+    fin:conceptCategory "relation" .
+
+fin:identifierValue a owl:DatatypeProperty ;
+    rdfs:domain fin:Identifier ;
+    rdfs:range xsd:string .
+
+fin:OfferingType a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:SourceDataset a owl:Class ;
+    rdfs:label "Source dataset"@en,
+        "원천 데이터셋"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:describesEntity a owl:ObjectProperty ;
+    rdfs:comment "Exactly one primary semantic entity represented by the physical source row."@en ;
+    rdfs:domain fin:SourceRecord ;
+    rdfs:range fin:EvidenceBearingEntity .
+
+fin:securityIssuedBy a owl:ObjectProperty ;
+    rdfs:comment "Security-specific issuer relation; it does not broaden the product issuedBy contract."@en ;
+    rdfs:domain fin:Security ;
+    rdfs:range fin:Organization ;
+    fin:alias "증권 발행사"@ko ;
+    fin:canonicalName "securityIssuedBy" ;
+    fin:conceptCategory "relation" .
+
+fin:MarketScope a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:QualityStatus a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept ;
+    owl:disjointWith fin:ValidationStatus .
+
+fin:RuntimeStore a owl:Class .
+
+fin:AnswerStatus a owl:Class .
+
+fin:Security a owl:Class ;
+    rdfs:label "Security"@en,
+        "증권"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity ;
+    fin:canonicalName "Security" ;
+    fin:conceptCategory "entity_type" .
+
+fin:UNANSWERABLE a fin:AnswerStatus .
+
+fin:ValidationStatus a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:Organization a owl:Class ;
+    rdfs:label "Organization"@en,
+        "기관"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:RiskGrade a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:ExposureRegion a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:ClassificationConcept a owl:Class ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:AssetClass a owl:Class ;
+    rdfs:subClassOf fin:ClassificationConcept .
+
+fin:Identifier a owl:Class ;
+    rdfs:label "Identifier"@en,
+        "식별자"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:SemanticEntity a owl:Class .
+
+fin:EvidenceBearingEntity a owl:Class ;
+    rdfs:label "Evidence-bearing entity"@en ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:FinancialProduct a owl:Class ;
+    rdfs:label "Financial product"@en,
+        "금융상품"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:IdentifierScheme a owl:Class ;
+    rdfs:label "Identifier scheme"@en,
+        "식별자 체계"@ko ;
+    rdfs:subClassOf fin:SemanticEntity .
+
+fin:OperationalConstraint a owl:Class .
+
+fin:ReasonCode a owl:Class .
+
+fin:SourceRecord a owl:Class ;
+    rdfs:label "Source record"@en,
+        "원본 행"@ko ;
+    rdfs:subClassOf fin:EvidenceBearingEntity .
+
+fin:RDBStore a fin:RuntimeStore ;
+    skos:prefLabel "RDB"@en .
+
+fin:MetricFamily a owl:Class .
