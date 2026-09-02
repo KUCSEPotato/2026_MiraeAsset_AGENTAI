@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -19,6 +20,15 @@ from app.data.schema import canonical_products
 from app.main import create_app
 from tests.data_helpers import postgres_engine
 from tests.test_rdb_retriever import product
+
+
+pytestmark = [
+    pytest.mark.postgresql,
+    pytest.mark.skipif(
+        not os.getenv("POSTGRES_TEST_DATABASE_URL"),
+        reason="disposable PostgreSQL is unavailable",
+    ),
+]
 
 
 def real_service(tmp_path: Path) -> tuple[PipelineAnswerService, Engine]:

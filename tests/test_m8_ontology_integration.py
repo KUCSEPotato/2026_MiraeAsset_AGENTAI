@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -17,6 +18,15 @@ from app.ontology.models import OntologyLoadError
 from app.ontology.rdf_service import RDFOntologyService
 from tests.data_helpers import postgres_engine
 from tests.test_rdb_retriever import product
+
+
+pytestmark = [
+    pytest.mark.postgresql,
+    pytest.mark.skipif(
+        not os.getenv("POSTGRES_TEST_DATABASE_URL"),
+        reason="disposable PostgreSQL is unavailable",
+    ),
+]
 
 
 @pytest.fixture

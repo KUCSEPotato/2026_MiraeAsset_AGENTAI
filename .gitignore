@@ -37,9 +37,14 @@ tests/*
 !tests/test_m10_9_c2_6_postgresql.py
 !tests/test_m10_9_c3_scoped_return.py
 !tests/test_m10_9_c3_postgresql.py
+!tests/test_m10_9_c3_2_release.py
 !tests/test_graph_retriever.py
 !tests/test_m8_ontology_integration.py
 !tests/test_ontology_modularization.py
+!tests/__init__.py
+!tests/data_helpers.py
+!tests/evidence_helpers.py
+!tests/test_rdb_retriever.py
 !tests/external_data/
 !tests/external_data/**
 tests/external_data/**/__pycache__/

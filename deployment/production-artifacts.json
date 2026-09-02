@@ -1,0 +1,27 @@
+{
+  "schema_version": "m10.9-c3.2-production-artifacts-v1",
+  "release_status": "NOT_READY",
+  "deployment_version": "m10.9-c3.2-unprovisioned",
+  "release_id": "submission-candidate-20260902-v1",
+  "git_commit": "1b65bb30b108091fd63a514c8d85c7d5173b5976",
+  "cutoff": "2026-08-24",
+  "canonical_dataset_version": "260824",
+  "ontology_version": "merged-optical-1.4",
+  "graph_version": "m10.9-c2.8-canonical-v2-graph-5",
+  "semantic_artifact_version": "m10.9-c2-canonical-v2-semantic-1",
+  "artifacts": [
+    {"role": "canonical_source", "version": "260824", "relative_path": "canonical/material", "kind": "directory", "effective_date": "2026-08-24", "compatibility_version": "m10.9-c2-kodex-holdings-1", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "ontology", "version": "merged-optical-1.4", "relative_path": "ontology", "kind": "directory", "effective_date": "2026-08-24", "compatibility_version": "team-v1-runtime-2026-08-29", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "kodex_holdings", "version": "kodex-long-only-compatible-20260824-v1", "relative_path": "external/kodex", "kind": "directory", "effective_date": "2026-08-24", "compatibility_version": "c2.5-step3-ready-scope-v1", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "tiger_holdings", "version": "tiger-long-only-compatible-20260824-v1", "relative_path": "external/tiger", "kind": "directory", "effective_date": "2026-08-24", "compatibility_version": "c2.7-tiger-ready-scope-v1", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "krx_issuers", "version": "krx-kind-security-issuers-20260824-v2", "relative_path": "external/krx-issuers", "kind": "directory", "effective_date": "2026-08-24", "compatibility_version": "c2.6-security-issuer-v1", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "ishares_holdings", "version": "ishares-production-20260824-v1", "relative_path": "external/ishares-holdings", "kind": "directory", "effective_date": "2026-07-31", "compatibility_version": "c2.8-ishares-us-ready-scope-v1", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "ishares_returns", "version": "ishares-return-production-20260824-v2", "relative_path": "external/ishares-returns", "kind": "directory", "effective_date": "2026-07-31", "compatibility_version": "c3.0-ishares-return-scope-v1", "required": true, "source_manifest_sha256": null, "sha256": null},
+    {"role": "semantic_index", "version": "m10.9-c2-canonical-v2-semantic-1", "relative_path": "semantic/canonical_v2/semantic_search.json", "kind": "file", "effective_date": "2026-08-24", "compatibility_version": "m10.9-c2-kodex-holdings-1", "required": true, "source_manifest_sha256": null, "sha256": null}
+  ],
+  "blockers": [
+    "production external snapshots are not present in this checkout",
+    "semantic artifact is not present in this checkout",
+    "checksums must be generated on the deployment bundle before release_status can become READY"
+  ]
+}
