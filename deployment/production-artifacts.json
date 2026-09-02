@@ -1,6 +1,17 @@
 {
   "artifacts": [
     {
+      "compatibility_version": "canonical-organizer-v1",
+      "effective_date": "2026-08-24",
+      "kind": "directory",
+      "relative_path": "material/ai-festival2026_금융상품Agent_DtataSet260824",
+      "required": true,
+      "role": "canonical_source",
+      "sha256": "db0544f601e8e68e5e996b020ad8294ab1495c4ec19b6cf5e6373993582bd510",
+      "source_manifest_sha256": "db0544f601e8e68e5e996b020ad8294ab1495c4ec19b6cf5e6373993582bd510",
+      "version": "260824"
+    },
+    {
       "compatibility_version": "team-v1-runtime-2026-08-29",
       "effective_date": "2026-08-24",
       "kind": "directory",
@@ -35,7 +46,7 @@
     },
     {
       "compatibility_version": "c2.7-multi-provider-issuer-v1",
-      "effective_date": "2026-09-01",
+      "effective_date": "2026-08-24",
       "kind": "directory",
       "relative_path": "external_data/c2_7_issuer/snapshots/2026-09-01/krx-kind-multi-provider-issuers-20260824-v1",
       "required": true,
@@ -81,10 +92,10 @@
   "canonical_dataset_version": "260824",
   "cutoff": "2026-08-24",
   "deployment_version": "m10.9-c3.3-production",
-  "git_commit": "edfa3fdd15f21cf6cae063a0f5d892e36b68d76b",
+  "git_commit": "68a10c6f10fc84346c5a7349483e24bf0d773d5e",
   "graph_version": "m10.9-c2.8-canonical-v2-graph-5",
   "ontology_version": "merged-optical-1.4",
-  "release_id": "submission-candidate-20260902-v2",
+  "release_id": "submission-candidate-20260902-v3-corrected",
   "release_status": "READY",
   "schema_version": "m10.9-c3.2-production-artifacts-v1",
   "semantic_artifact_version": "m10.9-c2-canonical-v2-semantic-1"
