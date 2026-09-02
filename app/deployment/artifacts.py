@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 REQUIRED_ARTIFACT_ROLES = frozenset({
-    "canonical_source",
     "ontology",
     "kodex_holdings",
     "tiger_holdings",
