@@ -16,8 +16,9 @@ accepted cutoff artifacts.
 
 ```text
 deployment_bundle/
-  production-artifacts.json
-  canonical/material/
+  release.json
+  manifests/production-artifacts.json
+  material/ai-festival2026_금융상품Agent_DtataSet260824/
   ontology/
     common.ttl
     bond_kr.ttl
@@ -30,17 +31,21 @@ deployment_bundle/
     krx-issuers/
     ishares-holdings/
     ishares-returns/
-  semantic/canonical_v2/semantic_search.json
+  data/semantic_search.json
 ```
 
-Generate the READY manifest only after every path is present. The manifest
+Generate the tracked READY artifact manifest only after every path is present. The manifest
 builder requires artifact version, kind, path, effective date, compatibility
 version, and the artifact's own source-manifest path. It records artifact and
-source-manifest SHA-256 values plus the release ID and Git SHA.
+source-manifest SHA-256 values. It deliberately does not record the release ID
+or Git SHA, which would create a tracked-file self-reference loop.
 
-Package the verified directory with
-`scripts/package_production_bundle.py`. It writes a deterministic uncompressed
-tar and adjacent top-level SHA-256 file. Transfer those two files over SSH:
+After all source changes are committed and pushed, package the verified
+directory with `scripts/package_production_bundle.py --release-id ...
+--git-commit "$FINAL_CODE_SHA"`. It generates bundle-only `release.json`, which
+wraps the artifact contract and binds it to the immutable source/image SHA. The
+script writes a deterministic uncompressed tar and adjacent top-level SHA-256
+file. Transfer those two files over SSH:
 
 ```bash
 rsync -av --chmod=F600 release.tar release.tar.sha256 \

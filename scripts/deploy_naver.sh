@@ -38,6 +38,7 @@ test "$image_tag" = "$git_sha"
 
 export AGENT_IMAGE="$image_name"
 export AGENT_IMAGE_TAG="$image_tag"
+export APP_GIT_COMMIT="$git_sha"
 export SEMANTIC_ARTIFACT_ROOT="$artifact_dir"
 
 rollback() {

@@ -603,6 +603,9 @@ def create_production_answer_service(
                     "PRODUCTION_ARTIFACT_MANIFEST and PRODUCTION_ARTIFACT_ROOT "
                     "are required in production"
                 )
+            image_commit = os.getenv("APP_GIT_COMMIT")
+            if not image_commit:
+                raise RuntimeError("APP_GIT_COMMIT is required in production")
             await asyncio.to_thread(
                 load_and_verify_production_manifest,
                 Path(manifest_value),
@@ -611,6 +614,7 @@ def create_production_answer_service(
                 ontology_version=settings.v2_ontology_version,
                 graph_version=resolved_graph_settings.v2_graph_projection_version,
                 semantic_artifact_version=semantic_settings.v2_index_version,
+                expected_git_commit=image_commit,
             )
 
         readiness_checks.append(

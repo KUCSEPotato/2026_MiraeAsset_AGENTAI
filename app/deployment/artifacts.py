@@ -46,11 +46,9 @@ class DeploymentArtifact(BaseModel):
 class ProductionArtifactManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["m10.9-c3.2-production-artifacts-v1"]
+    schema_version: Literal["m10.9-c3.3-production-artifacts-v2"]
     release_status: Literal["READY"]
     deployment_version: str
-    release_id: str
-    git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     cutoff: Literal["2026-08-24"]
     canonical_dataset_version: str
     ontology_version: str
@@ -69,6 +67,17 @@ class ProductionArtifactManifest(BaseModel):
         return self
 
 
+class ProductionReleaseManifest(BaseModel):
+    """Bundle-only release identity generated after the source commit is final."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["m10.9-c3.3-release-v1"]
+    release_id: str
+    git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    artifact_manifest: ProductionArtifactManifest
+
+
 def load_and_verify_production_manifest(
     manifest_path: Path,
     artifact_root: Path,
@@ -77,12 +86,19 @@ def load_and_verify_production_manifest(
     ontology_version: str,
     graph_version: str,
     semantic_artifact_version: str,
-) -> ProductionArtifactManifest:
+    expected_git_commit: str,
+) -> ProductionReleaseManifest:
     """Validate release versions and every immutable artifact checksum."""
 
-    manifest = ProductionArtifactManifest.model_validate_json(
+    release = ProductionReleaseManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8")
     )
+    if release.git_commit != expected_git_commit:
+        raise RuntimeError(
+            "release git commit does not match the running image: "
+            f"release={release.git_commit} image={expected_git_commit}"
+        )
+    manifest = release.artifact_manifest
     expected = {
         "canonical_dataset_version": canonical_dataset_version,
         "ontology_version": ontology_version,
@@ -109,7 +125,7 @@ def load_and_verify_production_manifest(
         actual = artifact_checksum(candidate)
         if actual != artifact.sha256:
             raise RuntimeError(f"artifact checksum mismatch: {artifact.role}")
-    return manifest
+    return release
 
 
 def artifact_checksum(path: Path) -> str:

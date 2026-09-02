@@ -23,8 +23,6 @@ def main() -> int:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--deployment-version", required=True)
-    parser.add_argument("--release-id", required=True)
-    parser.add_argument("--git-commit", required=True)
     parser.add_argument("--canonical-version", default="260824")
     parser.add_argument("--ontology-version", default="merged-optical-1.4")
     parser.add_argument(
@@ -80,11 +78,9 @@ def main() -> int:
         ))
 
     manifest = ProductionArtifactManifest(
-        schema_version="m10.9-c3.2-production-artifacts-v1",
+        schema_version="m10.9-c3.3-production-artifacts-v2",
         release_status="READY",
         deployment_version=args.deployment_version,
-        release_id=args.release_id,
-        git_commit=args.git_commit,
         cutoff="2026-08-24",
         canonical_dataset_version=args.canonical_version,
         ontology_version=args.ontology_version,

@@ -70,8 +70,9 @@ services:
       TRUSTED_HOLDINGS_RUNTIME_ENABLED: ${TRUSTED_HOLDINGS_RUNTIME_ENABLED:-0}
       PRODUCTION_ARTIFACT_ROOT: /var/lib/financial-semantic-agent
       PRODUCTION_ARTIFACT_MANIFEST: /var/lib/financial-semantic-agent/production-artifacts.json
+      APP_GIT_COMMIT: ${APP_GIT_COMMIT:?APP_GIT_COMMIT is required}
       SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/v1/semantic_search.json
-      CANONICAL_V2_SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/canonical_v2/semantic_search.json
+      CANONICAL_V2_SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/data/semantic_search.json
     depends_on:
       postgres:
         condition: service_healthy

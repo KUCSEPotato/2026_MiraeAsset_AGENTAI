@@ -23,8 +23,7 @@ external/tiger/
 external/krx-issuers/
 external/ishares-holdings/
 external/ishares-returns/
-canonical_v2/semantic_search.json
-v1/semantic_search.json
+data/semantic_search.json
 ```
 
 Each external directory contains the complete accepted snapshot, including
@@ -32,12 +31,13 @@ its raw artifacts, normalized outputs, SourceRecords, evidence links, and
 provider manifest. Existing activation commands validate those internal
 manifests and raw checksums before PostgreSQL integration.
 
-After controlled upload or server-side acquisition, generate the release
-manifest with `scripts/build_production_artifact_manifest.py`. Supply one
+After controlled upload or server-side acquisition, generate the tracked
+artifact manifest with `scripts/build_production_artifact_manifest.py`. Supply one
 `--artifact ROLE=VERSION=KIND=RELATIVE_PATH` option for each required role.
 The generator computes deterministic file/tree SHA-256 values and refuses
-missing roles. Copy its output to `production-artifacts.json` in the mounted
-bundle.
+missing roles. Once the source commit is final, package it with
+`scripts/package_production_bundle.py`; that step creates untracked
+`release.json` with the exact Git/image SHA.
 
 In production, both `PRODUCTION_ARTIFACT_ROOT` and
 `PRODUCTION_ARTIFACT_MANIFEST` are mandatory. Startup verifies the cutoff,
@@ -50,7 +50,8 @@ paths, and every checksum before `/health` can return READY.
    `.env`; replace placeholders without committing secrets.
 2. Provision the immutable artifact bundle through controlled upload or run
    the existing cutoff-pinned crawlers on the server.
-3. Generate and verify `production-artifacts.json`.
+3. Generate and verify the artifact manifest, then package bundle-only
+   `release.json` after the source commit is final.
 4. Start PostgreSQL and Neo4j with `docker compose -f
    docker-compose.prod.yml up -d postgres neo4j`.
 5. Run Alembic and the accepted `app.data.v2_rebuild` against the clean

@@ -92,11 +92,9 @@
   "canonical_dataset_version": "260824",
   "cutoff": "2026-08-24",
   "deployment_version": "m10.9-c3.3-production",
-  "git_commit": "68a10c6f10fc84346c5a7349483e24bf0d773d5e",
   "graph_version": "m10.9-c2.8-canonical-v2-graph-5",
   "ontology_version": "merged-optical-1.4",
-  "release_id": "submission-candidate-20260902-v3-corrected",
   "release_status": "READY",
-  "schema_version": "m10.9-c3.2-production-artifacts-v1",
+  "schema_version": "m10.9-c3.3-production-artifacts-v2",
   "semantic_artifact_version": "m10.9-c2-canonical-v2-semantic-1"
 }
