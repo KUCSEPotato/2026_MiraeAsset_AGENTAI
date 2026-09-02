@@ -107,7 +107,10 @@ def test_csv_date_and_schema_fail_closed() -> None:
 
 
 def test_pref02_foreign_etf_identity_audit() -> None:
-    path = next(Path("material").glob("**/pref02n001_data.xlsx"))
+    candidates = sorted(Path("material").glob("**/PREF02N001_*_datarows.xlsx"))
+    if not candidates:
+        pytest.skip("authoritative PREF02 workbook is not provisioned")
+    path = candidates[-1]
     audit = audit_pref02_foreign_etfs(path)
     assert audit.foreign_etf_products == 5_972
     assert audit.with_isin == 5_960

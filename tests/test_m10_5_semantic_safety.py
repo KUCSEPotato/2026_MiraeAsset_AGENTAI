@@ -325,6 +325,10 @@ def test_runtime_ranking_verification_blocks_false_application_claim() -> None:
     assert result.answerable is False
 
 
+@pytest.mark.skipif(
+    not os.getenv("DATABASE_URL"),
+    reason="production service requires a configured PostgreSQL URL",
+)
 def test_public_answer_contract_returns_safe_semantic_response_without_execution() -> None:
     class MustNotExecute:
         async def execute(self, plan):

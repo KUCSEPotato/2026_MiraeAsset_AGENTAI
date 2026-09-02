@@ -1,5 +1,6 @@
 import json
 import asyncio
+import os
 from datetime import date
 from time import perf_counter
 from functools import lru_cache
@@ -39,6 +40,7 @@ from app.domain.models import (
     ValidationResult,
 )
 from app.data.database import DatabaseSettings, create_database_engine
+from app.deployment.artifacts import load_and_verify_production_manifest
 from app.data.holdings_coverage import KODEX_READY_SCOPE, TIGER_READY_SCOPE
 from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 from app.data.v2_schema import (
@@ -586,6 +588,34 @@ def create_production_answer_service(
         "semantic_projection_version": semantic_settings.v2_index_version if settings.runtime_bundle.uses_canonical_v2 else semantic_settings.index_version,
         "compatibility_status": "PENDING" if settings.runtime_bundle.uses_canonical_v2 else "READY",
     }
+
+    if (
+        os.getenv("RUNTIME_ENVIRONMENT", "development") == "production"
+        and settings.runtime_bundle.uses_canonical_v2
+    ):
+        runtime_metadata["production_artifacts_readiness"] = "PENDING"
+
+        async def assert_production_artifacts_ready() -> None:
+            manifest_value = os.getenv("PRODUCTION_ARTIFACT_MANIFEST")
+            root_value = os.getenv("PRODUCTION_ARTIFACT_ROOT")
+            if not manifest_value or not root_value:
+                raise RuntimeError(
+                    "PRODUCTION_ARTIFACT_MANIFEST and PRODUCTION_ARTIFACT_ROOT "
+                    "are required in production"
+                )
+            await asyncio.to_thread(
+                load_and_verify_production_manifest,
+                Path(manifest_value),
+                Path(root_value),
+                canonical_dataset_version=settings.v2_generation,
+                ontology_version=settings.v2_ontology_version,
+                graph_version=resolved_graph_settings.v2_graph_projection_version,
+                semantic_artifact_version=semantic_settings.v2_index_version,
+            )
+
+        readiness_checks.append(
+            ("production_artifacts", assert_production_artifacts_ready)
+        )
 
     parser_settings = (
         semantic_parser_settings or HyperCLOVASemanticParserSettings.from_env()
