@@ -45,9 +45,14 @@ from app.data.v2_schema import (
     canonical_facts,
     dataset_snapshots,
     entity_relations,
+    external_metric_records,
+    external_raw_artifacts,
     external_snapshot_manifests,
+    external_source_records,
     fact_evidence_links,
+    metric_observations,
     source_datasets,
+    source_field_assertions,
 )
 from app.data.schema import metadata as database_metadata
 from app.evidence.answer import DeterministicEvidenceAnswerGenerator
@@ -513,6 +518,8 @@ def create_production_answer_service(
         trusted_holdings_scopes=settings.trusted_holdings_scopes,
         include_trusted_issuers=settings.trusted_issuer_runtime_enabled,
         trusted_issuer_scope=settings.trusted_issuer_scope,
+        include_trusted_metrics=settings.trusted_metric_runtime_enabled,
+        trusted_metric_scopes=settings.trusted_metric_scopes,
     )
 
     if ontology_service is None:
@@ -555,6 +562,12 @@ def create_production_answer_service(
             "PENDING"
             if settings.runtime_bundle.uses_canonical_v2
             and settings.trusted_issuer_runtime_enabled
+            else "DISABLED"
+        ),
+        "metric_readiness": (
+            "PENDING"
+            if settings.runtime_bundle.uses_canonical_v2
+            and settings.trusted_metric_runtime_enabled
             else "DISABLED"
         ),
         "graph_issuer_readiness": (
@@ -706,6 +719,13 @@ def create_production_answer_service(
                     _assert_v2_canonical_issuer_ready, engine, v2_snapshot_selector
                 )
 
+            async def assert_v2_metric_ready() -> None:
+                await asyncio.to_thread(
+                    _assert_v2_metric_ready,
+                    engine,
+                    settings.trusted_metric_scopes,
+                )
+
             async def assert_v2_graph_issuer_ready() -> None:
                 manifest = await backend.assert_ready(
                     expected_snapshot=settings.snapshot_date
@@ -748,6 +768,11 @@ def create_production_answer_service(
                         ("canonical_issuer", assert_v2_canonical_issuer_ready),
                     ]
                     if settings.trusted_issuer_runtime_enabled
+                    else []
+                ),
+                *(
+                    [("metric", assert_v2_metric_ready)]
+                    if settings.trusted_metric_runtime_enabled
                     else []
                 ),
                 ("graph", assert_v2_graph_ready),
@@ -994,6 +1019,93 @@ def _assert_v2_issuer_source_ready(
         ) or 0)
     if count != 1:
         raise RuntimeError("authoritative issuer source is not READY")
+
+
+def _assert_v2_metric_ready(
+    engine: Engine,
+    expected_scopes: tuple[str, ...] = (
+        "ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN",
+    ),
+) -> None:
+    """Fail closed unless every trusted metric fact has authoritative evidence."""
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                dataset_snapshots.c.snapshot_id,
+                dataset_snapshots.c.metadata_json["scope"].as_string().label("scope"),
+            )
+            .join(
+                source_datasets,
+                source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+            )
+            .join(
+                external_snapshot_manifests,
+                external_snapshot_manifests.c.canonical_snapshot_id
+                == dataset_snapshots.c.snapshot_id,
+            )
+            .where(
+                source_datasets.c.dataset_code == "ISHARES_US_PERFORMANCE",
+                dataset_snapshots.c.status == "READY",
+                dataset_snapshots.c.reconciliation_status == "PASSED",
+                external_snapshot_manifests.c.status == "READY",
+                external_snapshot_manifests.c.data_cutoff_date
+                == date.fromisoformat("2026-08-24"),
+                dataset_snapshots.c.metadata_json["scope"].as_string()
+                .in_(expected_scopes),
+            )
+        ).mappings().all()
+        by_scope: dict[str, list[str]] = {}
+        for row in rows:
+            by_scope.setdefault(str(row["scope"]), []).append(str(row["snapshot_id"]))
+        if any(len(by_scope.get(scope, [])) != 1 for scope in expected_scopes):
+            raise RuntimeError("trusted metric snapshot scope is not READY")
+        snapshot_ids = [by_scope[scope][0] for scope in expected_scopes]
+        facts = int(connection.scalar(
+            select(func.count()).select_from(metric_observations).join(
+                canonical_facts,
+                canonical_facts.c.fact_id == metric_observations.c.fact_id,
+            ).where(
+                metric_observations.c.metric_code == "ONE_YEAR_RETURN",
+                canonical_facts.c.snapshot_id.in_(snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        ) or 0)
+        evidenced = int(connection.scalar(
+            select(func.count(distinct(metric_observations.c.fact_id)))
+            .select_from(
+                metric_observations.join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                ).join(
+                    fact_evidence_links,
+                    fact_evidence_links.c.fact_id == metric_observations.c.fact_id,
+                ).join(
+                    source_field_assertions,
+                    source_field_assertions.c.assertion_id
+                    == fact_evidence_links.c.assertion_id,
+                ).join(
+                    external_metric_records,
+                    external_metric_records.c.canonical_source_record_id
+                    == source_field_assertions.c.source_record_id,
+                ).join(
+                    external_source_records,
+                    external_source_records.c.external_source_record_id
+                    == external_metric_records.c.external_source_record_id,
+                ).join(
+                    external_raw_artifacts,
+                    external_raw_artifacts.c.artifact_id
+                    == external_source_records.c.artifact_id,
+                )
+            )
+            .where(
+                metric_observations.c.metric_code == "ONE_YEAR_RETURN",
+                canonical_facts.c.snapshot_id.in_(snapshot_ids),
+                func.length(external_raw_artifacts.c.sha256) == 64,
+            )
+        ) or 0)
+    if facts <= 0 or evidenced != facts:
+        raise RuntimeError("trusted metric facts are not evidence READY")
 
 
 def _assert_v2_canonical_issuer_ready(

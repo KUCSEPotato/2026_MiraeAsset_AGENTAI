@@ -251,10 +251,13 @@ def _ranking_execution_is_guaranteed(plan: QueryPlan) -> bool:
             return False
         upstream_limit = upstream.inputs.get("limit")
         output_limit = rank.inputs.get("limit")
-        if (
-            not isinstance(upstream_limit, int)
-            or not isinstance(output_limit, int)
-            or output_limit > upstream_limit
+        if not isinstance(upstream_limit, int):
+            return False
+        # A ranking request without Top-N intentionally keeps the complete
+        # ordered candidate set.  Runtime's rankable-total guard still rejects
+        # a truncated upstream result, so None does not weaken global ranking.
+        if output_limit is not None and (
+            not isinstance(output_limit, int) or output_limit > upstream_limit
         ):
             return False
     return True

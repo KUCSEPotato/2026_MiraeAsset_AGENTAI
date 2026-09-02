@@ -233,6 +233,34 @@ external_security_issuer_records = Table(
     CheckConstraint("length(payload_sha256) = 64", name="payload_sha256_length"),
 )
 
+external_metric_records = Table(
+    "external_metric_records",
+    metadata,
+    Column("metric_observation_id", Text, primary_key=True),
+    Column(
+        "external_source_record_id", Text,
+        ForeignKey(
+            f"{CANONICAL_V2_SCHEMA}.external_source_records.external_source_record_id"
+        ), nullable=False,
+    ),
+    Column(
+        "canonical_source_record_id", Text,
+        ForeignKey(f"{CANONICAL_V2_SCHEMA}.source_records.source_record_id"),
+        nullable=False, unique=True,
+    ),
+    Column("product_source_id", Text, nullable=False),
+    Column("metric_code", String(64), nullable=False),
+    Column("observation_end_date", Date, nullable=False),
+    Column("product_resolution_status", String(24), nullable=False),
+    Column("normalized_payload", JSONB, nullable=False),
+    Column("payload_sha256", String(64), nullable=False),
+    CheckConstraint(
+        "product_resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED')",
+        name="product_resolution_status_allowed",
+    ),
+    CheckConstraint("length(payload_sha256) = 64", name="payload_sha256_length"),
+)
+
 quarantine_records = Table(
     "quarantine_records",
     metadata,

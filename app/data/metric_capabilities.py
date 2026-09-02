@@ -90,6 +90,16 @@ PREF02_ONE_YEAR_RETURN = ComparisonContract(
     exact_period="1Y", percentage_representation="unavailable",
     value_basis="unavailable", adjustment_semantics="unavailable",
 )
+ISHARES_SCOPED_ONE_YEAR_RETURN = ComparisonContract(
+    "ONE_YEAR_RETURN", "product.one_year_return", "ISHARES_US_PERFORMANCE",
+    "ExchangeTradedProduct", "PERCENT", "ISHARES_NAV_TOTAL_RETURN_PCT_V1",
+    None, "official iShares month-end asOfDate at or before evaluation cutoff",
+    False, True, False, source_field="oneYearAnnualized.navSourced",
+    exact_period="1Y",
+    percentage_representation="percentage points as published; no rescaling",
+    value_basis="issuer-published NAV total return",
+    adjustment_semantics="accounts for distributions from the fund",
+)
 PRFD_SHARE_CLASS_ONE_YEAR_RETURN = ComparisonContract(
     "ONE_YEAR_RETURN", "product.one_year_return", "PRFD01N001",
     "FundShareClass", "PERCENT", "SOURCE_PERCENT", None,
@@ -126,6 +136,18 @@ CROSS_PRODUCT_RETURN_CONTRACTS = (
         "DomesticETF is ready; PREF02 has no 1Y return and PRFD return is "
         "FundShareClass-grain only",
     ),
+    CrossProductComparisonContract(
+        "ONE_YEAR_RETURN",
+        (
+            "KODEX_LONG_ONLY_COMPATIBLE",
+            "TIGER_LONG_ONLY_COMPATIBLE",
+            "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
+        ),
+        "NO",
+        "PREF01 defines only source 1Y return; NAV/market-price basis and "
+        "distribution treatment are not documented sufficiently to compare it "
+        "with iShares NAV total return",
+    ),
 )
 
 
@@ -135,7 +157,8 @@ class MetricCapabilityRegistry:
     contracts = (
         PREF01_AUM, PREF02_AUM, PREF01_EXPENSE, PREF02_EXPENSE,
         PREF01_ONE_YEAR_RETURN, PREF02_ONE_YEAR_RETURN,
-        PRFD_SHARE_CLASS_ONE_YEAR_RETURN, PRBD_CREDIT_RATING,
+        ISHARES_SCOPED_ONE_YEAR_RETURN, PRFD_SHARE_CLASS_ONE_YEAR_RETURN,
+        PRBD_CREDIT_RATING,
         PRBD_PURCHASABLE_BOND,
     )
 
@@ -166,6 +189,14 @@ class MetricCapabilityRegistry:
         if canonical_field == "product.one_year_return":
             if universe == ("DomesticETF",) or provider_union:
                 return PREF01_ONE_YEAR_RETURN, None
+            if universe == ("ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",):
+                return ISHARES_SCOPED_ONE_YEAR_RETURN, None
+            if set(universe) == {
+                "KODEX_LONG_ONLY_COMPATIBLE",
+                "TIGER_LONG_ONLY_COMPATIBLE",
+                "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
+            }:
+                return None, "domestic_vs_ishares_return_basis_not_comparable"
             if "PublicFund" in universe or "Fund" in universe:
                 return None, "public_fund_one_year_return_is_share_class_grain_only"
             if "ForeignETF" in universe or "ETF" in universe:

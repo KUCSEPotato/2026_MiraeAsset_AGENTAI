@@ -28,6 +28,10 @@ class DatabaseSettings:
     trusted_holdings_scopes: tuple[str, ...] = ("KODEX_LONG_ONLY_COMPATIBLE",)
     trusted_issuer_runtime_enabled: bool = False
     trusted_issuer_scope: str = "KODEX_LONG_ONLY_COMPATIBLE"
+    trusted_metric_runtime_enabled: bool = False
+    trusted_metric_scopes: tuple[str, ...] = (
+        "ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN",
+    )
     pool_size: int = 5
     max_overflow: int = 5
     pool_timeout_seconds: float = 30.0
@@ -99,6 +103,15 @@ class DatabaseSettings:
             ),
             trusted_issuer_scope=os.getenv(
                 "TRUSTED_ISSUER_SCOPE", "KODEX_LONG_ONLY_COMPATIBLE"
+            ),
+            trusted_metric_runtime_enabled=(
+                os.getenv("TRUSTED_METRIC_RUNTIME_ENABLED", "0") == "1"
+            ),
+            trusted_metric_scopes=tuple(
+                item.strip() for item in os.getenv(
+                    "TRUSTED_METRIC_SCOPES",
+                    "ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN",
+                ).split(",") if item.strip()
             ),
             pool_size=int(os.getenv("DATABASE_POOL_SIZE", "5")),
             max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "5")),

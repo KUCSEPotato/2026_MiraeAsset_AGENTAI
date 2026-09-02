@@ -784,6 +784,14 @@ and PRFD return is FundShareClass-grain, so cross-product ETF/Public Fund
 ranking fails closed. Validated product-universe unions are planned as one
 global candidate set; arbitrary grouped boolean predicates remain unsupported.
 
+The reviewed `ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN` scope adds official
+2026-07-31 iShares NAV total returns for EWY, IYW, and SOXX. The issuer defines
+the published metric as NAV change including distributions. It is sortable
+only inside the corresponding three-product iShares READY scope; generic
+`ForeignETF` remains partial. PREF01 does not document enough NAV/market-price
+or distribution methodology to compare its `du_er_1y` with the iShares metric,
+so domestic+iShares return ranking deliberately remains fail-closed.
+
 ## Trusted Holdings Canonical Integration (M10.9-C2)
 
 The holdings boundary consumes normalized, manifest-backed provider snapshots;

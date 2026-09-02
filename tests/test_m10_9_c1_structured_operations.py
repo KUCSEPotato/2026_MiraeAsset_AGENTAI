@@ -18,6 +18,7 @@ from app.data.metric_capabilities import (
     PRBD_PURCHASABLE_BOND,
     PREF01_ONE_YEAR_RETURN,
     PREF02_ONE_YEAR_RETURN,
+    ISHARES_SCOPED_ONE_YEAR_RETURN,
     PRFD_SHARE_CLASS_ONE_YEAR_RETURN,
     CROSS_PRODUCT_RETURN_CONTRACTS,
 )
@@ -94,10 +95,14 @@ def test_source_metric_contracts_are_source_scoped() -> None:
     assert not PREF02_ONE_YEAR_RETURN.sort_capability
     assert PRFD_SHARE_CLASS_ONE_YEAR_RETURN.entity_grain == "FundShareClass"
     assert EVALUATION_DATA_CUTOFF == date(2026, 8, 24)
-    assert all(
-        item.comparability == "PARTIAL" and not item.runtime_enabled
-        for item in CROSS_PRODUCT_RETURN_CONTRACTS
+    assert ISHARES_SCOPED_ONE_YEAR_RETURN.sort_capability
+    assert ISHARES_SCOPED_ONE_YEAR_RETURN.value_basis == (
+        "issuer-published NAV total return"
     )
+    assert all(not item.runtime_enabled for item in CROSS_PRODUCT_RETURN_CONTRACTS)
+    assert {item.comparability for item in CROSS_PRODUCT_RETURN_CONTRACTS} == {
+        "PARTIAL", "NO",
+    }
 
 
 def test_credit_rating_is_an_explicit_non_lexical_order() -> None:

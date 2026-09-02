@@ -398,6 +398,40 @@ This scope does not activate all iShares or all `ForeignETF` products.
 relations are not inferred from a holding name. KRX constituents may reuse the
 separate authoritative KRX KIND issuer relation when that snapshot is READY.
 
+### iShares scoped one-year return
+
+C3.0 uses the official BlackRock/iShares product-data performance response,
+selecting the published `oneYearAnnualized` value aligned to `navSourced` at
+the explicit `asOfDate=20260731`. The provider describes this value as total
+NAV return including distributions. No return is reconstructed and
+`retrieved_at` is not used as an observation date.
+
+```bash
+uv run python scripts/crawl_external.py \
+  --output-dir external_data/c3_0 \
+  ishares-returns \
+  --snapshot-date 2026-09-02 \
+  --snapshot-id ishares-return-production-20260824-v2 \
+  --cutoff 2026-08-24 \
+  --observation-date 2026-07-31
+```
+
+The immutable snapshot must be `READY`, contain exactly EWY/IYW/SOXX, and
+produce the same semantic checksum on its acquisition rerun. Activation is a
+separate PostgreSQL-only step:
+
+```bash
+uv run python scripts/activate_ishares_returns.py \
+  --snapshot-root external_data/c3_0/snapshots/2026-09-02/ishares-return-production-20260824-v2 \
+  --database-url "$DATABASE_URL"
+```
+
+Canonical metric evidence is linked through a provider-neutral
+`external_metric_records` bridge to the external SourceRecord and raw artifact.
+Runtime activation requires `TRUSTED_METRIC_RUNTIME_ENABLED=1` and the reviewed
+`ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN` scope. This does not authorize all
+PREF02/iShares products or domestic+iShares cross-source return ranking.
+
 ### KRX Security issuer evidence
 
 Company-name holdings queries use a separate authoritative relation snapshot.

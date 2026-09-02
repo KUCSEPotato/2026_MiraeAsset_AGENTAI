@@ -41,6 +41,12 @@ from app.external_data.holdings.tiger_scope import (  # noqa: E402
 from app.external_data.issuers.krx_kind import (  # noqa: E402
     build_krx_kind_issuer_snapshot,
 )
+from app.external_data.metrics.ishares_returns import (  # noqa: E402
+    ISHARES_RETURN_OBSERVATION_DATE,
+    ISHARES_RETURN_PROVIDER,
+    ISHARES_RETURN_SCOPE,
+    run_ishares_return_crawl,
+)
 from app.external_data.manifest import (  # noqa: E402
     SnapshotStatus,
     SnapshotWorkspace,
@@ -117,6 +123,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     ishares.add_argument("--product-ticker", action="append", default=[])
     ishares.add_argument("--no-rerun-check", action="store_true")
+
+    ishares_return = subparsers.add_parser(
+        "ishares-returns",
+        help="crawl the reviewed official iShares published one-year return scope",
+    )
+    _snapshot_arguments(ishares_return)
+    ishares_return.add_argument("--pref02-data", type=Path)
+    ishares_return.add_argument(
+        "--cutoff", type=date.fromisoformat, default=DATA_CUTOFF_DATE,
+    )
+    ishares_return.add_argument(
+        "--observation-date", type=date.fromisoformat,
+        default=ISHARES_RETURN_OBSERVATION_DATE,
+    )
+    ishares_return.add_argument("--product-ticker", action="append", default=[])
+    ishares_return.add_argument("--no-rerun-check", action="store_true")
 
     issuers = subparsers.add_parser(
         "krx-security-issuers",
@@ -607,6 +629,102 @@ async def _ishares_holdings(
     return 0 if result.idempotent and scope.ready_product_count > 0 else 1
 
 
+async def _ishares_returns(
+    args: argparse.Namespace, settings: ExternalCrawlerSettings,
+) -> int:
+    if args.cutoff != DATA_CUTOFF_DATE:
+        raise ValueError("iShares return evaluation cutoff must be 2026-08-24")
+    if args.observation_date > args.cutoff:
+        raise ValueError("iShares return observation date cannot be post-cutoff")
+    snapshot_id = _snapshot_id(args)
+    existing = load_snapshot_manifest(
+        settings.output_directory,
+        snapshot_date=args.snapshot_date,
+        snapshot_id=snapshot_id,
+    )
+    if existing is not None:
+        raise FileExistsError("iShares return snapshots are immutable; use a new ID")
+    workspace = SnapshotWorkspace(
+        settings.output_directory,
+        snapshot_id=snapshot_id,
+        snapshot_date=args.snapshot_date,
+        crawler_version=settings.crawler_version,
+        data_cutoff_date=DATA_CUTOFF_DATE,
+    )
+    selected = frozenset(args.product_ticker) if args.product_ticker else None
+    async with TrustedHttpClient(settings) as client:
+        result = await run_ishares_return_crawl(
+            client,
+            workspace,
+            pref02_data=args.pref02_data or _authoritative_pref02(),
+            requested_date=args.observation_date,
+            **({"selected_tickers": selected} if selected is not None else {}),
+            verify_rerun=not args.no_rerun_check,
+        )
+    success = result.status_counts.get("SUCCESS", 0)
+    ready = (
+        result.rerun_performed
+        and result.idempotent
+        and success == 3
+        and len(result.observations) == 3
+    )
+    workspace.finalize(
+        SnapshotStatus.READY if ready else SnapshotStatus.PARTIAL,
+        validation={
+            "scope": ISHARES_RETURN_SCOPE,
+            "metric_code": "ONE_YEAR_RETURN",
+            "observation_date": args.observation_date.isoformat(),
+            "cutoff_valid": args.observation_date <= DATA_CUTOFF_DATE,
+            "products": len(result.second_results),
+            "successful": success,
+            "metric_observations": len(result.observations),
+            "first_semantic_checksum": result.first_semantic_checksum,
+            "second_semantic_checksum": result.second_semantic_checksum,
+            "idempotent_rerun": result.idempotent,
+            "rerun_performed": result.rerun_performed,
+            "return_basis": "NAV_TOTAL_RETURN",
+            "distribution_treatment": "INCLUDED",
+            "canonical_v2_writes": 0,
+        },
+        quality_reports=[SourceQualityReport(
+            provider=ISHARES_RETURN_PROVIDER,
+            trust_tier=SourceTrustTier.AUTHORITATIVE,
+            access_method="official date-qualified product-data performance JSON API",
+            data_types=[ContentType.JSON],
+            refresh_behavior="immutable raw response retained for selected historical asOfDate",
+            identity_fields_available=[
+                "PREF02 product ISIN", "PREF02 ticker+exchange", "iShares portfolioId",
+            ],
+            timestamps_available=["official performance asOfDate", "retrieved_at"],
+            known_limitations=[
+                "scope contains only the three accepted iShares Holdings products",
+                "generic ForeignETF ONE_YEAR_RETURN remains PARTIAL",
+                "domestic PREF01 return basis is insufficiently documented for cross-source ranking",
+            ],
+            terms_and_access_constraints=[
+                "official public source with bounded rate limiting and preserved raw evidence",
+            ],
+            attempted_sources=len(result.second_results),
+            successful_sources=success,
+            failed_sources=len(result.second_results) - success,
+        )],
+    )
+    print(json.dumps({
+        "snapshot_id": snapshot_id,
+        "status": "READY" if ready else "PARTIAL",
+        "scope": ISHARES_RETURN_SCOPE,
+        "cutoff": args.cutoff.isoformat(),
+        "observation_date": args.observation_date.isoformat(),
+        "status_counts": dict(result.status_counts),
+        "metric_observations": len(result.observations),
+        "idempotent_rerun": result.idempotent,
+        "rerun_performed": result.rerun_performed,
+        "semantic_checksum": result.second_semantic_checksum,
+        "artifact_root": str(workspace.path),
+    }, ensure_ascii=False, indent=2))
+    return 0 if ready else 1
+
+
 def main() -> int:
     args = _parser().parse_args()
     settings = _settings(args)
@@ -627,6 +745,8 @@ def main() -> int:
         return asyncio.run(_tiger_holdings(args, settings))
     if args.command == "ishares-holdings":
         return asyncio.run(_ishares_holdings(args, settings))
+    if args.command == "ishares-returns":
+        return asyncio.run(_ishares_returns(args, settings))
     if args.command == "krx-security-issuers":
         return asyncio.run(_krx_security_issuers(args, settings))
     return asyncio.run(_fetch(args, settings))

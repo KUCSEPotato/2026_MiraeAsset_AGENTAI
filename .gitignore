@@ -35,6 +35,8 @@ tests/*
 !tests/test_m10_9_c2_holdings.py
 !tests/test_m10_9_c2_postgresql.py
 !tests/test_m10_9_c2_6_postgresql.py
+!tests/test_m10_9_c3_scoped_return.py
+!tests/test_m10_9_c3_postgresql.py
 !tests/test_graph_retriever.py
 !tests/test_m8_ontology_integration.py
 !tests/test_ontology_modularization.py

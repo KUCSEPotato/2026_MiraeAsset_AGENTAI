@@ -115,6 +115,8 @@ class CanonicalV2SnapshotSelector:
         trusted_holdings_scopes: Iterable[str] | None = None,
         include_trusted_issuers: bool = False,
         trusted_issuer_scope: str = "KODEX_LONG_ONLY_COMPATIBLE",
+        include_trusted_metrics: bool = False,
+        trusted_metric_scopes: Iterable[str] | None = None,
     ) -> None:
         try:
             self._snapshot_date = date.fromisoformat(snapshot_date)
@@ -131,6 +133,10 @@ class CanonicalV2SnapshotSelector:
         )
         self._include_trusted_issuers = include_trusted_issuers
         self._trusted_issuer_scope = trusted_issuer_scope
+        self._include_trusted_metrics = include_trusted_metrics
+        self._trusted_metric_scopes = tuple(
+            trusted_metric_scopes or ("ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN",)
+        )
 
     def select(self, connection) -> V2SnapshotSelection:
         rows = connection.execute(
@@ -252,6 +258,52 @@ class CanonicalV2SnapshotSelector:
                     "exactly one READY KRX_SECURITY_ISSUER snapshot is required"
                 )
             selected.append(dict(issuer_rows[0]))
+        if self._include_trusted_metrics:
+            metric_rows = connection.execute(
+                select(
+                    dataset_snapshots.c.snapshot_id,
+                    dataset_snapshots.c.dataset_id,
+                    source_datasets.c.dataset_code,
+                    dataset_snapshots.c.metadata_json["scope"].as_string().label("scope"),
+                )
+                .join(
+                    source_datasets,
+                    source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id,
+                )
+                .join(
+                    external_snapshot_manifests,
+                    external_snapshot_manifests.c.canonical_snapshot_id
+                    == dataset_snapshots.c.snapshot_id,
+                )
+                .where(
+                    dataset_snapshots.c.snapshot_date == self._snapshot_date,
+                    dataset_snapshots.c.status == "READY",
+                    dataset_snapshots.c.reconciliation_status == "PASSED",
+                    dataset_snapshots.c.row_count_reconciled.is_(True),
+                    source_datasets.c.dataset_code == "ISHARES_US_PERFORMANCE",
+                    dataset_snapshots.c.ontology_version == self._ontology_version,
+                    dataset_snapshots.c.database_schema_version == self._schema_version,
+                    external_snapshot_manifests.c.status == "READY",
+                    external_snapshot_manifests.c.data_cutoff_date == self._snapshot_date,
+                    dataset_snapshots.c.metadata_json["scope"].as_string()
+                    .in_(self._trusted_metric_scopes),
+                )
+            ).mappings().all()
+            by_metric_scope: dict[str, list[dict[str, Any]]] = {}
+            for row in metric_rows:
+                by_metric_scope.setdefault(str(row["scope"]), []).append(dict(row))
+            invalid_metrics = {
+                scope for scope in self._trusted_metric_scopes
+                if len(by_metric_scope.get(scope, [])) != 1
+            }
+            if invalid_metrics:
+                raise V2SnapshotUnavailableError(
+                    "exactly one READY snapshot is required for each trusted metric scope: "
+                    + ",".join(sorted(invalid_metrics))
+                )
+            selected.extend(
+                by_metric_scope[scope][0] for scope in self._trusted_metric_scopes
+            )
         return V2SnapshotSelection(
             snapshot_date=self._snapshot_date,
             generation=self._generation,
