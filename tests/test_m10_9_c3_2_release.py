@@ -194,6 +194,8 @@ def test_packager_generates_bundle_only_release_for_final_commit(tmp_path: Path)
 
 def test_deployment_workflow_is_test_gated_immutable_and_kill_switched() -> None:
     workflow = Path(".github/workflows/deploy-production.yml").read_text()
+    assert "uv run python -m pytest -p no:capture -p no:debugging" in workflow
+    assert "uv run pytest -p no:capture -p no:debugging" not in workflow
     assert "needs: test" in workflow
     assert "needs: image" in workflow
     assert "vars.DEPLOY_ENABLED == 'true'" in workflow

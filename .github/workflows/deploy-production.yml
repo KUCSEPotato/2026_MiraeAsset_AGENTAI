@@ -24,7 +24,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      - run: uv run pytest -p no:capture -p no:debugging
+      - run: uv run python -m pytest -p no:capture -p no:debugging
 
   image:
     needs: test
