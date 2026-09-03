@@ -58,7 +58,7 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - path: .env
+      - path: /opt/mirae-agent/.env
         required: true
     environment:
       # These values must use Docker service names in the server-local .env.
@@ -69,8 +69,9 @@ services:
       RUNTIME_DATA_VERSION: ${RUNTIME_DATA_VERSION:?RUNTIME_DATA_VERSION is required}
       TRUSTED_HOLDINGS_RUNTIME_ENABLED: ${TRUSTED_HOLDINGS_RUNTIME_ENABLED:-0}
       PRODUCTION_ARTIFACT_ROOT: /var/lib/financial-semantic-agent
-      PRODUCTION_ARTIFACT_MANIFEST: /var/lib/financial-semantic-agent/production-artifacts.json
+      PRODUCTION_ARTIFACT_MANIFEST: /var/lib/financial-semantic-agent/release.json
       APP_GIT_COMMIT: ${APP_GIT_COMMIT:?APP_GIT_COMMIT is required}
+      ARTIFACT_RELEASE_ID: ${ARTIFACT_RELEASE_ID:?ARTIFACT_RELEASE_ID is required}
       SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/v1/semantic_search.json
       CANONICAL_V2_SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/data/semantic_search.json
     depends_on:

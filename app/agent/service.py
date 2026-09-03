@@ -40,7 +40,10 @@ from app.domain.models import (
     ValidationResult,
 )
 from app.data.database import DatabaseSettings, create_database_engine
-from app.deployment.artifacts import load_and_verify_production_manifest
+from app.deployment.artifacts import (
+    load_and_verify_production_manifest,
+    validate_code_commit,
+)
 from app.data.holdings_coverage import KODEX_READY_SCOPE, TIGER_READY_SCOPE
 from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 from app.data.v2_schema import (
@@ -606,6 +609,10 @@ def create_production_answer_service(
             image_commit = os.getenv("APP_GIT_COMMIT")
             if not image_commit:
                 raise RuntimeError("APP_GIT_COMMIT is required in production")
+            validate_code_commit(image_commit)
+            artifact_release_id = os.getenv("ARTIFACT_RELEASE_ID")
+            if not artifact_release_id:
+                raise RuntimeError("ARTIFACT_RELEASE_ID is required in production")
             await asyncio.to_thread(
                 load_and_verify_production_manifest,
                 Path(manifest_value),
@@ -614,7 +621,7 @@ def create_production_answer_service(
                 ontology_version=settings.v2_ontology_version,
                 graph_version=resolved_graph_settings.v2_graph_projection_version,
                 semantic_artifact_version=semantic_settings.v2_index_version,
-                expected_git_commit=image_commit,
+                expected_release_id=artifact_release_id,
             )
 
         readiness_checks.append(

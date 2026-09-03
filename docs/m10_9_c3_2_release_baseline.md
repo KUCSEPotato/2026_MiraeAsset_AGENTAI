@@ -37,7 +37,9 @@ artifact manifest with `scripts/build_production_artifact_manifest.py`. Supply o
 The generator computes deterministic file/tree SHA-256 values and refuses
 missing roles. Once the source commit is final, package it with
 `scripts/package_production_bundle.py`; that step creates untracked
-`release.json` with the exact Git/image SHA.
+`release.json` with the packaging commit as provenance. Later compatible code
+releases may use the same immutable artifact release; their independent image
+identity is the exact Docker tag and `APP_GIT_COMMIT`.
 
 In production, both `PRODUCTION_ARTIFACT_ROOT` and
 `PRODUCTION_ARTIFACT_MANIFEST` are mandatory. Startup verifies the cutoff,

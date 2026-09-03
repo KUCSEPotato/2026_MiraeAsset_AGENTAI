@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -20,6 +21,7 @@ REQUIRED_ARTIFACT_ROLES = frozenset({
     "ishares_returns",
     "semantic_index",
 })
+GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class DeploymentArtifact(BaseModel):
@@ -68,7 +70,7 @@ class ProductionArtifactManifest(BaseModel):
 
 
 class ProductionReleaseManifest(BaseModel):
-    """Bundle-only release identity generated after the source commit is final."""
+    """Bundle identity with the packaging commit retained as provenance."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,17 +88,17 @@ def load_and_verify_production_manifest(
     ontology_version: str,
     graph_version: str,
     semantic_artifact_version: str,
-    expected_git_commit: str,
+    expected_release_id: str,
 ) -> ProductionReleaseManifest:
-    """Validate release versions and every immutable artifact checksum."""
+    """Validate the independent artifact release and all compatibility gates."""
 
     release = ProductionReleaseManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8")
     )
-    if release.git_commit != expected_git_commit:
+    if release.release_id != expected_release_id:
         raise RuntimeError(
-            "release git commit does not match the running image: "
-            f"release={release.git_commit} image={expected_git_commit}"
+            "artifact release id does not match the configured release: "
+            f"manifest={release.release_id} configured={expected_release_id}"
         )
     manifest = release.artifact_manifest
     expected = {
@@ -126,6 +128,14 @@ def load_and_verify_production_manifest(
         if actual != artifact.sha256:
             raise RuntimeError(f"artifact checksum mismatch: {artifact.role}")
     return release
+
+
+def validate_code_commit(value: str) -> str:
+    """Validate the immutable code-image identity independently of artifacts."""
+
+    if not GIT_COMMIT_PATTERN.fullmatch(value):
+        raise RuntimeError("APP_GIT_COMMIT must be a lowercase 40-character Git SHA")
+    return value
 
 
 def artifact_checksum(path: Path) -> str:

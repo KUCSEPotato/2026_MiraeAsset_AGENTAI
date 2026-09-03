@@ -24,6 +24,9 @@ def test_compose_only_publishes_api_and_persists_state() -> None:
     assert "neo4j-data:/data" in neo4j
     assert "read_only: true" in api
     assert "SEMANTIC_ARTIFACT_ROOT" in api
+    assert "/opt/mirae-agent/.env" in api
+    assert "ARTIFACT_RELEASE_ID" in api
+    assert "release.json" in api
 
 
 def test_compose_keeps_runtime_readiness_and_config_driven_rollback() -> None:

@@ -28,3 +28,8 @@ data/semantic_search.json
 # Runtime/test output is not part of the production image.
 tests
 evaluation/artifacts
+
+# Production data releases are mounted independently and never enter images.
+mirae-production-artifacts-*.zip
+submission-candidate-*.tar
+submission-candidate-*.tar.sha256

@@ -12,6 +12,7 @@ from app.deployment.artifacts import (
     REQUIRED_ARTIFACT_ROLES,
     artifact_checksum,
     load_and_verify_production_manifest,
+    validate_code_commit,
 )
 
 
@@ -67,7 +68,7 @@ def test_production_manifest_requires_all_versions_and_checksums(tmp_path: Path)
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded = load_and_verify_production_manifest(
-        path, tmp_path, expected_git_commit=FINAL_SHA, **VERSIONS
+        path, tmp_path, expected_release_id="c3.3-test", **VERSIONS
     )
 
     assert loaded.git_commit == FINAL_SHA
@@ -85,7 +86,7 @@ def test_production_manifest_rejects_checksum_drift(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="checksum mismatch: kodex_holdings"):
         load_and_verify_production_manifest(
-            path, tmp_path, expected_git_commit=FINAL_SHA, **VERSIONS
+            path, tmp_path, expected_release_id="c3.3-test", **VERSIONS
         )
 
 
@@ -97,11 +98,11 @@ def test_production_manifest_rejects_version_drift(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="versions are incompatible"):
         load_and_verify_production_manifest(
-            path, tmp_path, expected_git_commit=FINAL_SHA, **VERSIONS
+            path, tmp_path, expected_release_id="c3.3-test", **VERSIONS
         )
 
 
-def test_release_git_sha_is_bundle_only_and_must_match_image(tmp_path: Path) -> None:
+def test_artifact_release_is_independent_from_the_running_code_sha(tmp_path: Path) -> None:
     artifact_manifest = _artifact_manifest(tmp_path)
     assert "git_commit" not in artifact_manifest
     assert "release_id" not in artifact_manifest
@@ -114,13 +115,34 @@ def test_release_git_sha_is_bundle_only_and_must_match_image(tmp_path: Path) -> 
     path = tmp_path / "release.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="does not match the running image"):
+    loaded = load_and_verify_production_manifest(
+        path,
+        tmp_path,
+        expected_release_id="post-commit-release",
+        **VERSIONS,
+    )
+    assert loaded.git_commit == FINAL_SHA
+    assert validate_code_commit("2" * 40) == "2" * 40
+
+
+def test_artifact_release_rejects_a_different_configured_identity(tmp_path: Path) -> None:
+    path = tmp_path / "release.json"
+    path.write_text(json.dumps(_release(tmp_path)), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="artifact release id does not match"):
         load_and_verify_production_manifest(
             path,
             tmp_path,
-            expected_git_commit="2" * 40,
+            expected_release_id="another-release",
             **VERSIONS,
         )
+
+
+def test_code_commit_identity_requires_an_exact_lowercase_sha() -> None:
+    assert validate_code_commit(FINAL_SHA) == FINAL_SHA
+    for invalid in ("1" * 39, "1" * 41, "G" * 40, "ABCDEF" * 6 + "ABCD"):
+        with pytest.raises(RuntimeError, match="APP_GIT_COMMIT"):
+            validate_code_commit(invalid)
 
 
 def test_tracked_manifest_never_embeds_a_code_commit() -> None:
@@ -175,9 +197,13 @@ def test_deployment_workflow_is_test_gated_immutable_and_kill_switched() -> None
     assert "needs: test" in workflow
     assert "needs: image" in workflow
     assert "vars.DEPLOY_ENABLED == 'true'" in workflow
+    assert "vars.ARTIFACT_RELEASE_ID" in workflow
     assert "financial-semantic-agent:${GITHUB_SHA}" in workflow
-    assert "secrets.DEPLOY_SSH_KEY" in workflow
-    assert "secrets.DEPLOY_HOST_KEY" in workflow
+    assert "secrets.NAVER_DEPLOY_HOST" in workflow
+    assert "secrets.NAVER_DEPLOY_USER" in workflow
+    assert "secrets.NAVER_DEPLOY_SSH_KEY" in workflow
+    assert "secrets.NAVER_DEPLOY_HOST_KEY" in workflow
+    assert "'$CODE_SHA' '$IMAGE' '$ARTIFACT_RELEASE_ID'" in workflow
     assert ":latest" not in workflow
 
 
@@ -187,6 +213,61 @@ def test_naver_deploy_requires_bundle_checksum_and_health_before_promotion() -> 
     live = script.index("/live")
     ready = script.index("/health")
     smoke = script.index("/answer")
-    promote = script.index('ln -sfn "$release_dir" "$base/current"')
+    promote = script.index('ln -sfn "$code_release_dir" "$base/current"')
     assert checksum < live < ready < smoke < promote
     assert "trap rollback ERR" in script
+    assert 'environment_file="$base/.env"' in script
+    assert 'incoming="$base/incoming/$artifact_release_id.tar"' in script
+    assert 'artifact_dir="$artifact_release_dir"' in script
+    assert 'test -f "$artifact_dir/release.json"' in script
+    assert 'export SEMANTIC_ARTIFACT_ROOT="$artifact_dir"' in script
+    assert (
+        'export SEMANTIC_ARTIFACT_ROOT="$base/releases/'
+        '$previous_artifact_release_id"'
+    ) in script
+    assert '$artifact_release_id/artifacts' not in script
+    assert '$previous_artifact_release_id/artifacts' not in script
+    assert "tar -xf" not in script
+    assert "up -d --no-deps agent-api" in script
+    assert "question=" in script
+    assert "expected=" in script
+    assert 'echo "rollback restored $previous_code_sha"' in script
+    assert 'echo "rollback health verification failed"' in script
+
+
+def test_naver_deploy_supports_bundle_extracted_directly_at_release_root(
+    tmp_path: Path,
+) -> None:
+    release_root = tmp_path / "submission-candidate-20260902-v4"
+    release_root.mkdir()
+    (release_root / "release.json").write_text("{}\n", encoding="utf-8")
+    for directory in ("data", "external_data", "manifests", "material", "ontology"):
+        (release_root / directory).mkdir()
+
+    assert {item.name for item in release_root.iterdir()} == {
+        "release.json",
+        "data",
+        "external_data",
+        "manifests",
+        "material",
+        "ontology",
+    }
+    assert (release_root / "release.json").is_file()
+    assert not (release_root / "artifacts").exists()
+
+    script = Path("scripts/deploy_naver.sh").read_text()
+    assert 'artifact_release_dir="$base/releases/$artifact_release_id"' in script
+    assert 'artifact_dir="$artifact_release_dir"' in script
+    assert 'test -f "$artifact_dir/release.json"' in script
+
+
+def test_release_binaries_are_excluded_from_git_and_docker_context() -> None:
+    gitignore = Path(".gitignore").read_text()
+    dockerignore = Path(".dockerignore").read_text()
+    for pattern in (
+        "mirae-production-artifacts-*.zip",
+        "submission-candidate-*.tar",
+        "submission-candidate-*.tar.sha256",
+    ):
+        assert pattern in gitignore
+        assert pattern in dockerignore

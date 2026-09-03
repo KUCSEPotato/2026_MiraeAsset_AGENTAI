@@ -15,6 +15,11 @@ data/canonical_v2/
 .env.example
 !.env.example
 ory-finance-agent-key.pem
+
+# Immutable production data releases live outside Git after initial transfer.
+/mirae-production-artifacts-*.zip
+/submission-candidate-*.tar
+/submission-candidate-*.tar.sha256
 tests/
 !tests/
 tests/*
