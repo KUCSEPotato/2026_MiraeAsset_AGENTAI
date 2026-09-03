@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.data.catalog import DatasetFiles
-from app.data.cleaning import json_value
+from app.data.cleaning import canonical_subscription_status, json_value
 from app.data.mapping import MappedProduct
 from app.data.ontology_mapping_registry import ColumnMapping
 
@@ -203,6 +203,11 @@ def _observation_row(files, mapping, value, row, product_id, record_id):
 
 def _relation_row(files, mapping, value, mapped, product_id, record_id):
     relation = mapping.target_property
+    if mapping.source_column == "sale_yn":
+        status = canonical_subscription_status(value)
+        if status is None:
+            return None
+        value = status
     if relation == "managedBy/issuedBy":
         # The new source labels this column as management company.  It is valid
         # managedBy evidence for ETF, but not proof of an ETN issuer role.

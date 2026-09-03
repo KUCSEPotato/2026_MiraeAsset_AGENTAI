@@ -22,7 +22,12 @@ from sqlalchemy import Engine, String, func, inspect, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.data.catalog import DatasetFiles, discover_dataset_files
-from app.data.cleaning import clean_source_row, json_value, normalize_lookup_value
+from app.data.cleaning import (
+    canonical_mirae_sale_flag,
+    clean_source_row,
+    json_value,
+    normalize_lookup_value,
+)
 from app.data.database import DatabaseSettings, create_database_engine
 from app.data.loader import iter_source_rows, load_source_schema
 from app.data.mapping import MappedProduct, map_product
@@ -65,6 +70,7 @@ from app.data.v2_schema import (
     source_record_entities,
     source_records,
 )
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
 from app.graph.identity import explicit_source_id, source_scoped_name_id
 from app.ontology.runtime_mapping import (
     ONTOLOGY_VERSION,
@@ -76,7 +82,7 @@ from app.ontology.runtime_mapping import (
 
 GENERATION = "260824"
 SNAPSHOT = "2026-08-24"
-TRANSFORMER_VERSION = "m10.9-c2-kodex-holdings-1"
+TRANSFORMER_VERSION = CANONICAL_V2_TRANSFORMER_VERSION
 
 # The authoritative 260824 ETP sources do not expose a reviewed ETN issuer
 # field.  Keeping this explicit prevents a management-company field from being
@@ -141,7 +147,8 @@ TARGET_FIELDS = {
             "ovrs_fd_desc", "zrin_fd_ivst_risk_gcd", "zrin_fd_ivst_risk_grd_nm",
             "prvo_pbff_desc", "curr_cd", "fd_nast_suma", "bns_bpr", "fd_sbpr",
             "fd_price_bas_dt", "fd_yr1_ern_r", "han_clas_nm", "han_clas_fee_type",
-            "han_clas_sales_channel", "han_clas_policies",
+            "han_clas_sales_channel", "han_clas_policies", "sale_yn",
+            "thco_sale_yn", "fd_daily_bas_dt",
         }
     ),
 }
@@ -355,6 +362,10 @@ _RELATION_DOMAIN_CONTRACTS: dict[str, RelationDomainContract] = {
             }
         ),
         frozenset({("ONTOLOGY_CONCEPT", "offering_type")}),
+    ),
+    "HAS_SUBSCRIPTION_STATUS": RelationDomainContract(
+        frozenset({("FUND_SHARE_CLASS", None)}),
+        frozenset({("ONTOLOGY_CONCEPT", "subscription_status")}),
     ),
     "HOLDS": RelationDomainContract(
         _FINANCIAL_PRODUCT_GRAINS,
@@ -1168,6 +1179,12 @@ class CanonicalV2Rebuilder:
                 if not audit.conflicting(subject, field_name):
                     value = _date(cleaned.get(field_name)) if value_type == "DATE" else _decimal(cleaned.get(field_name))
                     self._scalar(rows, subject, snapshot_id, key, value_type, value, assertions.get(field_name))
+        elif prefix == "PRFD01N001":
+            self._scalar(
+                rows, subject, snapshot_id, "is_sold_by_mirae_asset", "BOOLEAN",
+                canonical_mirae_sale_flag(cleaned.get("thco_sale_yn")),
+                assertions.get("thco_sale_yn"),
+            )
 
     def _scalar(
         self, rows: _Rows, subject: str, snapshot_id: str, key: str,
@@ -1823,6 +1840,7 @@ def _classification_inputs(
         ("ovrs_fd_desc", "market_scope", str(cleaned.get("ovrs_fd_desc") or "")),
         ("zrin_fd_ivst_risk_grd_nm", "risk_grade", str(cleaned.get("zrin_fd_ivst_risk_grd_nm") or cleaned.get("zrin_fd_ivst_risk_gcd") or "")),
         ("prvo_pbff_desc", "offering_type", str(cleaned.get("prvo_pbff_desc") or "")),
+        ("sale_yn", "subscription_status", str(cleaned.get("sale_yn") or "")),
     ]
 
 

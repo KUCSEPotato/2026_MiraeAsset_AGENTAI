@@ -513,6 +513,28 @@ class RuleBasedQueryAnalyzer:
                     value=True,
                 )
             )
+        fund_subscription = re.search(
+            r"(?:(?:현재|지금)\s*)?(?:미래에셋(?:에서)?\s*)?(?:가입|신규\s*가입|추가매수)(?:할\s*수\s*있는|\s*가능(?:한)?)|미래에셋(?:에서)?\s*판매\s*중(?:인)?",
+            question,
+        )
+        if fund_subscription:
+            filters.append(FilterSpec(
+                field="current_fund_subscription_eligible",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        if re.search(r"판매완료\s*펀드(?:는|를)?\s*제외", question):
+            filters.append(FilterSpec(
+                field="subscription_status",
+                operator=FilterOperator.NE,
+                value="SubscriptionStatus.CLOSED_FOR_SUBSCRIPTION",
+            ))
+        if re.search(r"최신\s*기준가(?:가)?\s*(?:있는|보유)", question):
+            filters.append(FilterSpec(
+                field="latest_fund_price_available",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
         filters.extend(self._extract_numeric_filters(question))
         return filters
 
@@ -974,6 +996,9 @@ class RuleBasedQueryAnalyzer:
             "currency": r"원화\s*채권",
             "credit_rating": r"(?:신용등급\s*)?[A-Z]{1,4}(?:[+\-0])?\s*(?:이상|이하|초과|미만)",
             "current_sale_available": r"현재\s*판매\s*가능(?:한)?",
+            "current_fund_subscription_eligible": r"(?:(?:(?:현재|지금)\s*)?(?:미래에셋(?:에서)?\s*)?(?:가입|신규\s*가입|추가매수)(?:할\s*수\s*있는|\s*가능(?:한)?)|미래에셋(?:에서)?\s*판매\s*중(?:인)?)",
+            "subscription_status": r"판매완료\s*펀드(?:는|를)?\s*제외",
+            "latest_fund_price_available": r"최신\s*기준가(?:가)?\s*(?:있는|보유)",
         }
         if item.field in special_patterns:
             match = re.search(special_patterns[item.field], question, re.IGNORECASE)

@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
+
 
 @dataclass(frozen=True)
 class SearchSettings:
@@ -16,7 +18,7 @@ class SearchSettings:
     v2_index_version: str = "m10.9-c2-canonical-v2-semantic-1"
     v2_generation: str = "260824"
     v2_ontology_version: str = "merged-optical-1.4"
-    v2_transformer_version: str = "m10.9-c2-kodex-holdings-1"
+    v2_transformer_version: str = CANONICAL_V2_TRANSFORMER_VERSION
 
     @classmethod
     def from_env(cls) -> "SearchSettings":
@@ -38,7 +40,10 @@ class SearchSettings:
             v2_index_version=os.getenv("CANONICAL_V2_SEMANTIC_INDEX_VERSION", "m10.9-c2-canonical-v2-semantic-1"),
             v2_generation=os.getenv("CANONICAL_V2_GENERATION", "260824"),
             v2_ontology_version=os.getenv("CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.4"),
-            v2_transformer_version=os.getenv("CANONICAL_V2_TRANSFORMER_VERSION", "m10.9-c2-kodex-holdings-1"),
+            v2_transformer_version=os.getenv(
+                "CANONICAL_V2_TRANSFORMER_VERSION",
+                CANONICAL_V2_TRANSFORMER_VERSION,
+            ),
         )
         for name, value in (
             ("EMBEDDING_DIMENSION", settings.embedding_dimension),

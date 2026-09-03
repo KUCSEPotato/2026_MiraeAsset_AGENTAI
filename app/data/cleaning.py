@@ -79,6 +79,21 @@ def normalized_base_index(value: Any) -> tuple[str | None, str | None]:
     return raw, None
 
 
+def canonical_subscription_status(value: Any) -> str | None:
+    """Map only the organizer-confirmed FundShareClass subscription states."""
+    normalized = str(value).strip() if value is not None else ""
+    return {
+        "판매중": "OPEN_FOR_SUBSCRIPTION",
+        "판매완료": "CLOSED_FOR_SUBSCRIPTION",
+    }.get(normalized)
+
+
+def canonical_mirae_sale_flag(value: Any) -> bool | None:
+    """Preserve the distinction between an explicit N and missing evidence."""
+    normalized = str(value).strip().upper() if value is not None else ""
+    return {"Y": True, "N": False}.get(normalized)
+
+
 def canonical_asset_type(value: Any) -> str | None:
     if value is None:
         return None

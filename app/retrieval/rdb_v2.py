@@ -52,6 +52,7 @@ from app.data.v2_schema import (
     source_field_assertions,
     source_records,
 )
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
 from app.data.holdings_coverage import (
     ISHARES_READY_SCOPE,
     KODEX_READY_SCOPE,
@@ -108,7 +109,7 @@ class CanonicalV2SnapshotSelector:
         snapshot_date: str,
         generation: str = "260824",
         ontology_version: str = "merged-optical-1.4",
-        transformer_version: str = "m10.9-c2-kodex-holdings-1",
+        transformer_version: str = CANONICAL_V2_TRANSFORMER_VERSION,
         schema_version: str = CANONICAL_V2_SCHEMA_VERSION,
         required_datasets: Iterable[str] | None = None,
         include_trusted_holdings: bool = False,
@@ -358,6 +359,10 @@ class CanonicalV2FieldRegistry:
             V2FieldMapping("product.one_year_return", "metric", "ONE_YEAR_RETURN", False, True, False),
             V2FieldMapping("product.credit_rating", "metric", "CREDIT_RATING_ORDER", True, True, False),
             V2FieldMapping("product.current_sale_available", "bond_purchasable", "ORGANIZER_PURCHASABLE_BOND", True, False, False),
+            V2FieldMapping("product.subscription_status", "classification", "SUBSCRIPTION_STATUS", True, False, False),
+            V2FieldMapping("product.is_sold_by_mirae_asset", "scalar_boolean", "is_sold_by_mirae_asset", True, False, False),
+            V2FieldMapping("product.current_fund_subscription_eligible", "fund_subscription_eligible", "FUND_SUBSCRIPTION_RULE_V1", True, False, False),
+            V2FieldMapping("product.latest_fund_price_available", "latest_fund_price", "FUND_PRICE_FRESHNESS_V1", True, False, False),
         )
         self._fields = {item.canonical_field: item for item in mappings}
         runtime = TeamOntologyRuntimeMapping()
@@ -514,9 +519,21 @@ class CanonicalV2QueryCompiler:
         elif codes:
             conditions.append(base.c.product_type.in_(sorted(codes)))
         if public_fund:
-            if grain is not V2ResultGrain.FINANCIAL_PRODUCT:
-                raise RDBQueryCompilationError("public-fund search returns Fund grain")
-            conditions.append(self._public_fund_exists(entity_id, snapshot))
+            if grain is V2ResultGrain.FINANCIAL_PRODUCT:
+                conditions.append(self._public_fund_exists(entity_id, snapshot))
+            elif grain is V2ResultGrain.FUND_SHARE_CLASS:
+                public_iri = self._fields.concept_iri(
+                    "OFFERING_TYPE", "OfferingType.PUBLIC"
+                )
+                conditions.append(
+                    self._classification_exists(
+                        entity_id, "OFFERING_TYPE", [public_iri], snapshot
+                    )
+                )
+            else:
+                raise RDBQueryCompilationError(
+                    "public-fund search does not support sale-lot grain"
+                )
 
         ids = step.inputs.get("entity_ids", [])
         if ids:
@@ -746,6 +763,14 @@ class CanonicalV2QueryCompiler:
             if operator is not FilterOperator.EQ or value is not True:
                 raise RDBQueryCompilationError("bond purchasability supports only eq true")
             return self._organizer_purchasable_bond(entity_id, snapshot)
+        if mapping.kind == "fund_subscription_eligible":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError("fund subscription eligibility supports only eq true")
+            return self._fund_subscription_eligible(entity_id, snapshot)
+        if mapping.kind == "latest_fund_price":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError("latest fund price supports only eq true")
+            return self._latest_fund_price_available(entity_id, snapshot)
         if operator in ordered:
             raise RDBQueryCompilationError(
                 f"operator {operator.value} is unsupported for canonical field {mapping.canonical_field}"
@@ -766,6 +791,10 @@ class CanonicalV2QueryCompiler:
         elif mapping.kind == "classification":
             iris = [self._fields.concept_iri(mapping.semantic_key, item) for item in values]
             predicate = self._classification_exists(entity_id, mapping.semantic_key, iris, snapshot)
+        elif mapping.kind == "scalar_boolean":
+            if operator not in {FilterOperator.EQ, FilterOperator.NE} or not isinstance(value, bool):
+                raise RDBQueryCompilationError("boolean scalar supports only eq/ne boolean")
+            predicate = self._scalar_boolean_exists(entity_id, mapping.semantic_key, value, snapshot)
         elif mapping.kind.endswith("relation"):
             values = [
                 _canonical_relation_target(mapping.semantic_key, item)
@@ -872,6 +901,74 @@ class CanonicalV2QueryCompiler:
             )
         )
         return not_(lifecycle_end)
+
+    def _fund_subscription_eligible(self, share_class_id, snapshot):
+        public = self._fields.concept_iri("OFFERING_TYPE", "OfferingType.PUBLIC")
+        opened = self._fields.concept_iri(
+            "SUBSCRIPTION_STATUS", "SubscriptionStatus.OPEN_FOR_SUBSCRIPTION"
+        )
+        return and_(
+            self._classification_exists(
+                share_class_id, "OFFERING_TYPE", [public], snapshot
+            ),
+            self._classification_exists(
+                share_class_id, "SUBSCRIPTION_STATUS", [opened], snapshot
+            ),
+            self._scalar_boolean_exists(
+                share_class_id, "is_sold_by_mirae_asset", True, snapshot
+            ),
+        )
+
+    @staticmethod
+    def _scalar_boolean_exists(entity_id, key, value, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.subject_entity_id == entity_id,
+                canonical_facts.c.semantic_key == key,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                canonical_scalar_facts.c.value_type == "BOOLEAN",
+                canonical_scalar_facts.c.boolean_value.is_(value),
+            )
+        )
+
+    @staticmethod
+    def _latest_fund_price_available(entity_id, snapshot):
+        latest_source_date = (
+            select(func.max(metric_observations.c.observed_on))
+            .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+            .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+            .join(source_datasets, source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id)
+            .where(
+                metric_observations.c.metric_code == "PRICE",
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                source_datasets.c.dataset_code == "PRFD01N001",
+            )
+            .scalar_subquery()
+        )
+        return exists(
+            select(1)
+            .select_from(
+                metric_observations.join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                )
+            )
+            .where(
+                metric_observations.c.subject_entity_id == entity_id,
+                metric_observations.c.metric_code == "PRICE",
+                metric_observations.c.observed_on == latest_source_date,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        )
 
     @staticmethod
     def _dataset_entity_exists(entity_id, dataset_code, snapshot):

@@ -15,7 +15,7 @@ from app.ontology.index import normalize_ontology_text
 ONTOLOGY_URI = "https://miraeasset.com/ontology/financial-product"
 ONTOLOGY_NAMESPACE = f"{ONTOLOGY_URI}#"
 ONTOLOGY_VERSION = "merged-optical-1.4"
-SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-08-29.1"
+SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-09-03.1"
 DATASET_SNAPSHOT = "2026-08-24"
 
 BOND_TYPE_RESOURCES = {
@@ -253,6 +253,8 @@ def _concept_mappings() -> tuple[ConceptMapping, ...]:
         ),
         ConceptMapping("OfferingType.PUBLIC", "offering_type", "OfferingType.PUBLIC", ("공모", "Public"), "PUBLIC", active, ("FinancialProduct.PublicFund", "공모펀드")),
         ConceptMapping("OfferingType.PRIVATE", "offering_type", "OfferingType.PRIVATE", ("사모", "Private"), "PRIVATE"),
+        ConceptMapping("SubscriptionStatus.OPEN_FOR_SUBSCRIPTION", "subscription_status", "SubscriptionStatus.OPEN_FOR_SUBSCRIPTION", ("판매중", "가입 가능", "추가매수 가능"), "OPEN_FOR_SUBSCRIPTION"),
+        ConceptMapping("SubscriptionStatus.CLOSED_FOR_SUBSCRIPTION", "subscription_status", "SubscriptionStatus.CLOSED_FOR_SUBSCRIPTION", ("판매완료", "가입 종료", "추가매수 종료"), "CLOSED_FOR_SUBSCRIPTION"),
         ConceptMapping("AssetClass.Equity", "asset_class", "AssetType.Equity", ("Equity", "주식", "주식형"), "ASSET_EQUITY", active, ("AssetType.Equity",)),
         ConceptMapping("AssetClass.Bond", "asset_class", "AssetType.Bond", ("Bond", "채권", "채권형"), "ASSET_BOND", active, ("AssetType.Bond",)),
         ConceptMapping("AssetClass.Commodity", "asset_class", "AssetType.Commodity", ("Commodity", "원자재"), "ASSET_COMMODITY", active, ("AssetType.Commodity",)),
@@ -328,6 +330,10 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         FieldMapping("product.strategy_description", "investmentStrategyDescription", ("전략", "투자전략"), "vector_bm25", "etf_attributes.strategy", project),
         FieldMapping("product.credit_rating", "hasCreditRating", ("신용등급", "credit_rating"), "rdb", "canonical_v2.metric_observations", frozenset({"filter", "project", "ordered_comparison"}), active, "ordinal", "ordinal", "CREDIT_RATING_V1"),
         FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available", "구매 가능"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),
+        FieldMapping("product.subscription_status", "subscriptionStatus", ("가입 상태", "추가매수 상태", "subscription_status"), "rdb", "canonical_v2.entity_classifications", exact_ops),
+        FieldMapping("product.is_sold_by_mirae_asset", "isSoldByMiraeAsset", ("미래에셋 판매 대상", "당사판매여부"), "rdb", "canonical_v2.canonical_scalar_facts", frozenset({"filter"})),
+        FieldMapping("product.current_fund_subscription_eligible", "OperationalConstraint", ("현재 미래에셋 가입 가능", "추가매수 가능", "미래에셋 판매 중"), "rdb", "derived public+open subscription+Mirae sale rule", frozenset({"filter"}), active, "derived organizer rule", "boolean", "FUND_SUBSCRIPTION_RULE_V1"),
+        FieldMapping("product.latest_fund_price_available", "OperationalConstraint", ("최신 기준가 있음",), "rdb", "derived latest PRFD PRICE observation rule", frozenset({"filter"}), active, "derived freshness rule", "boolean", "FUND_PRICE_FRESHNESS_V1"),
         FieldMapping("product.listing_country", "listedInCountry", ("상장국가", "listing_country"), "rdb+graph", "LISTED_IN_COUNTRY", exact_ops),
         FieldMapping("product.maturity", "maturityOrFirstCallDate", ("만기", "만기일"), "rdb", "bond_attributes.maturity_date", project, prospective, "date", "date"),
         FieldMapping("product.return", "PerformanceMetric", ("수익률",), "rdb", "metric_observations.return", project, prospective, "percent", None),

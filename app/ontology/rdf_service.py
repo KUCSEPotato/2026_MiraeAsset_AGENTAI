@@ -92,6 +92,10 @@ class RDFOntologyService:
             "expense_ratio": "product.expense_ratio",
             "credit_rating": "product.credit_rating",
             "current_sale_available": "product.current_sale_available",
+            "subscription_status": "product.subscription_status",
+            "is_sold_by_mirae_asset": "product.is_sold_by_mirae_asset",
+            "current_fund_subscription_eligible": "product.current_fund_subscription_eligible",
+            "latest_fund_price_available": "product.latest_fund_price_available",
             "listing_country": "product.listing_country",
             "currency": "product.currency",
         }.get(raw, raw)

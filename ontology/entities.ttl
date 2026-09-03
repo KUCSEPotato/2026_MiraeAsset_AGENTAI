@@ -32,6 +32,7 @@ fin:hasCreditRating a owl:ObjectProperty ; rdfs:domain fin:DebtSecurity ; rdfs:r
 fin:denominatedIn a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:Currency ; fin:canonicalName "denominatedIn" ; fin:conceptCategory "relation" ; fin:alias "표시통화" .
 fin:tradesInCurrency a owl:ObjectProperty ; rdfs:domain fin:Listing ; rdfs:range fin:Currency .
 fin:hasRawCode a owl:ObjectProperty ; rdfs:domain fin:EvidenceBearingEntity ; rdfs:range fin:RawCodeValue .
+fin:subscriptionStatus a owl:ObjectProperty ; rdfs:domain fin:FundShareClass ; rdfs:range fin:SubscriptionStatus ; rdfs:label "subscription status"@en, "신규 가입·추가매수 상태"@ko ; rdfs:comment "신규 가입 및 추가매수 접수 상태이며 청산, 운용 종료 또는 환매 가능 여부를 뜻하지 않는다."@ko .
 
 fin:organizationName a owl:DatatypeProperty ; rdfs:domain fin:Organization ; rdfs:range xsd:string .
 fin:organizationCode a owl:DatatypeProperty ; rdfs:domain fin:Organization ; rdfs:range xsd:string .
@@ -40,6 +41,11 @@ fin:listingStartDate a owl:DatatypeProperty ; rdfs:domain fin:Listing ; rdfs:ran
 fin:listingEndDate a owl:DatatypeProperty ; rdfs:domain fin:Listing ; rdfs:range xsd:date .
 fin:codeValue a owl:DatatypeProperty ; rdfs:domain fin:RawCodeValue ; rdfs:range xsd:string .
 fin:codeScheme a owl:DatatypeProperty ; rdfs:domain fin:RawCodeValue ; rdfs:range xsd:string .
+fin:isSoldByMiraeAsset a owl:DatatypeProperty ; rdfs:domain fin:FundShareClass ; rdfs:range xsd:boolean ; rdfs:label "sold by Mirae Asset"@en, "미래에셋 판매 대상 여부"@ko ; rdfs:comment "명시적 Y/N만 true/false로 변환하며 원본 결측은 false로 변환하지 않는다."@ko .
+
+fin:SubscriptionStatus a owl:Class ; rdfs:label "Subscription status"@en, "가입·추가매수 상태"@ko .
+fin:OPEN_FOR_SUBSCRIPTION a fin:SubscriptionStatus ; rdfs:label "Open for subscription"@en, "판매중"@ko .
+fin:CLOSED_FOR_SUBSCRIPTION a fin:SubscriptionStatus ; rdfs:label "Closed for subscription"@en, "판매완료"@ko ; rdfs:comment "신규 가입·추가매수 접수 종료만 의미하며 청산 또는 환매 제한을 의미하지 않는다."@ko .
 
 fin:RegionKR a fin:Region ; fin:canonicalName "Region.KR" ; fin:conceptCategory "region" ; fin:alias "국내", "한국", "KR" .
 fin:RegionUS a fin:Region ; fin:canonicalName "Region.US" ; fin:conceptCategory "region" ; fin:alias "미국", "US" .

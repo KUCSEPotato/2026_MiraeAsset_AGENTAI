@@ -7,6 +7,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.data.cleaning import (
+    canonical_mirae_sale_flag,
+    canonical_subscription_status,
+)
+from app.data.database import DatabaseSettings
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
+
 from app.data.metric_capabilities import (
     EVALUATION_DATA_CUTOFF,
     MetricCapabilityRegistry,
@@ -34,6 +41,7 @@ from app.domain.models import (
     StepExecutionStatus,
 )
 from app.execution.transforms import InternalTransformExecutor
+from app.graph.config import GraphSettings
 from app.ontology.loader import OntologyLoader
 from app.ontology.rdf_service import RDFOntologyService
 from app.planning.coordinator import QueryPlanner
@@ -47,8 +55,33 @@ from app.query.analyzer import RuleBasedQueryAnalyzer
 from app.retrieval.rdb_v2 import (
     CanonicalV2FieldRegistry,
     CanonicalV2QueryCompiler,
+    CanonicalV2SnapshotSelector,
     V2SnapshotSelection,
 )
+from app.search.config import SearchSettings
+
+
+def test_canonical_v2_transformer_version_defaults_and_overrides(
+    monkeypatch,
+) -> None:
+    test_url = "postgresql+psycopg://user@localhost/version_test"
+    assert DatabaseSettings(test_url).v2_transformer_version == (
+        CANONICAL_V2_TRANSFORMER_VERSION
+    )
+    assert SearchSettings().v2_transformer_version == CANONICAL_V2_TRANSFORMER_VERSION
+    assert GraphSettings().v2_transformer_version == CANONICAL_V2_TRANSFORMER_VERSION
+    assert CanonicalV2SnapshotSelector(
+        snapshot_date="2026-08-24"
+    )._transformer_version == CANONICAL_V2_TRANSFORMER_VERSION
+
+    monkeypatch.setenv("DATABASE_URL", test_url)
+    monkeypatch.setenv("CANONICAL_V2_TRANSFORMER_VERSION", "historical-version")
+    assert DatabaseSettings.from_env().v2_transformer_version == "historical-version"
+    assert SearchSettings.from_env().v2_transformer_version == "historical-version"
+    assert GraphSettings.from_env().v2_transformer_version == "historical-version"
+    assert CanonicalV2SnapshotSelector(
+        snapshot_date="2026-08-24", transformer_version="historical-version"
+    )._transformer_version == "historical-version"
 
 
 def _ontology() -> RDFOntologyService:
@@ -110,6 +143,81 @@ def test_credit_rating_is_an_explicit_non_lexical_order() -> None:
     assert order["AAA"] > order["AA+"] > order["AA0"] > order["AA-"]
     assert order["AA-"] > order["A+"]
     assert "AAAA" not in order
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("판매중", "OPEN_FOR_SUBSCRIPTION"),
+        ("판매완료", "CLOSED_FOR_SUBSCRIPTION"),
+        (None, None),
+        ("", None),
+        ("그밖의값", None),
+    ],
+)
+def test_subscription_status_normalization(raw, expected) -> None:
+    assert canonical_subscription_status(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("Y", True), ("N", False), (None, None), ("", None), ("?", None)],
+)
+def test_mirae_sale_flag_preserves_unknown(raw, expected) -> None:
+    assert canonical_mirae_sale_flag(raw) is expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "현재 미래에셋에서 가입할 수 있는 공모펀드",
+        "지금 추가매수 가능한 펀드",
+        "미래에셋에서 판매 중인 공모펀드",
+    ],
+)
+def test_fund_subscription_queries_compile_to_three_fact_rule(question) -> None:
+    _, _, plan = asyncio.run(_plan(question))
+    inputs = plan.steps[0].inputs
+    assert inputs["result_grain"] == "fund_share_class"
+    assert any(
+        item["canonical_field"] == "product.current_fund_subscription_eligible"
+        for item in inputs["filters"]
+    )
+    snapshot = V2SnapshotSelection(
+        snapshot_date=date(2026, 8, 24), generation="260824",
+        ontology_version="merged-optical-1.4",
+        snapshot_ids=("PRFD01N001:test",), dataset_ids=("PRFD01N001",),
+    )
+    compiled = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=100
+    ).compile(plan.steps[0], snapshot)
+    sql = str(compiled.statement.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+    assert "OFFERING_TYPE" in sql
+    assert "OPEN_FOR_SUBSCRIPTION" in sql
+    assert "is_sold_by_mirae_asset" in sql
+    assert "liquidation" not in sql.casefold()
+    assert "redemption" not in sql.casefold()
+
+
+def test_fund_freshness_is_separate_from_subscription_status() -> None:
+    _, _, plan = asyncio.run(
+        _plan("추가매수 가능한 펀드 중 최신 기준가가 있는 상품")
+    )
+    fields = {item["canonical_field"] for item in plan.steps[0].inputs["filters"]}
+    assert fields == {
+        "product.current_fund_subscription_eligible",
+        "product.latest_fund_price_available",
+    }
+
+
+def test_completed_fund_exclusion_is_subscription_only() -> None:
+    _, _, plan = asyncio.run(_plan("판매완료 펀드는 제외해줘"))
+    item = plan.steps[0].inputs["filters"][0]
+    assert item["canonical_field"] == "product.subscription_status"
+    assert item["canonical_value"] == "SubscriptionStatus.CLOSED_FOR_SUBSCRIPTION"
+    assert item["raw"]["operator"] == "ne"
 
 
 def test_official_bond_semantics_are_structured() -> None:

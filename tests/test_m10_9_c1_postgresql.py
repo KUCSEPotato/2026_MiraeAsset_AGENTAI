@@ -139,6 +139,21 @@ def test_full_data_bond_rating_and_current_availability(runtime) -> None:
     assert all(record.metadata["field_evidence_assertion_ids"] for record in ratings)
 
 
+def test_public_fund_subscription_and_freshness_cardinality(runtime) -> None:
+    _, eligible = asyncio.run(
+        _execute(runtime, "현재 미래에셋에서 가입할 수 있는 공모펀드")
+    )
+    _, fresh = asyncio.run(
+        _execute(runtime, "추가매수 가능한 펀드 중 최신 기준가가 있는 상품")
+    )
+    # Snapshot-specific regression values for PRFD01N001_20260824 only.
+    assert eligible.total_matches == eligible.filtered_total == 8_550
+    assert fresh.total_matches == fresh.filtered_total == 7_315
+    assert all(record.metadata["entity_kind"] == "FUND_SHARE_CLASS" for record in eligible.records)
+    assert all(record.metadata["entity_kind"] == "FUND_SHARE_CLASS" for record in fresh.records)
+    assert fresh.total_matches < eligible.total_matches
+
+
 def test_buyable_quantity_is_ignored(engine, runtime) -> None:
     _, _, selector, compiler, _ = runtime
     plan, _ = asyncio.run(

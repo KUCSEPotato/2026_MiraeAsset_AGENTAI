@@ -21,7 +21,9 @@ fin:ETNShape a sh:NodeShape ;
 
 fin:FundShareClassShape a sh:NodeShape ;
   sh:targetClass fin:FundShareClass ;
-  sh:property [ sh:path fin:hasOfferingType ; sh:maxCount 1 ; sh:class fin:OfferingType ] .
+  sh:property [ sh:path fin:hasOfferingType ; sh:maxCount 1 ; sh:class fin:OfferingType ] ;
+  sh:property [ sh:path fin:subscriptionStatus ; sh:maxCount 1 ; sh:class fin:SubscriptionStatus ] ;
+  sh:property [ sh:path fin:isSoldByMiraeAsset ; sh:maxCount 1 ; sh:datatype xsd:boolean ] .
 
 fin:ProductIdentifierShape a sh:NodeShape ;
   sh:targetClass fin:ProductIdentifier ;

@@ -13,7 +13,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
-    CANONICAL_V2_SCHEMA_VERSION,
     canonical_entities,
     canonical_facts,
     dataset_snapshots,
@@ -37,6 +36,7 @@ from app.data.v2_schema import (
 pytestmark = pytest.mark.postgresql
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_TABLE = "alembic_version_m10_8"
+LATEST_MIGRATION_SCHEMA_VERSION = "m10.9-c3-canonical-v2"
 
 
 def _url() -> str:
@@ -119,10 +119,15 @@ def test_sqlite_migration_url_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
 def test_fresh_upgrade_reports_schema_version_and_preserves_v1(v2_engine: Engine) -> None:
     inspector = inspect(v2_engine)
     assert CANONICAL_V2_SCHEMA in inspector.get_schema_names()
-    assert len(inspector.get_table_names(schema=CANONICAL_V2_SCHEMA)) == 42
+    expected_tables = {
+        table.name
+        for table in metadata.tables.values()
+        if table.schema == CANONICAL_V2_SCHEMA
+    }
+    assert set(inspector.get_table_names(schema=CANONICAL_V2_SCHEMA)) == expected_tables
     assert inspector.has_table("m10_8_a_v1_sentinel")
     with v2_engine.connect() as connection:
-        assert get_schema_version(connection) == CANONICAL_V2_SCHEMA_VERSION
+        assert get_schema_version(connection) == LATEST_MIGRATION_SCHEMA_VERSION
 
 
 def test_downgrade_is_safe_and_upgrade_is_repeatable(v2_engine: Engine) -> None:

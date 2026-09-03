@@ -6,6 +6,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import make_url
 
 from app.runtime_bundle import RuntimeBundle, select_runtime_bundle_from_env
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
 
 
 DATABASE_SCHEMA_VERSION = "m10.7-canonical-v1"
@@ -21,7 +22,7 @@ class DatabaseSettings:
     rdb_repository_version: Literal["v1", "v2"] = "v1"
     v2_generation: str = "260824"
     v2_ontology_version: str = "merged-optical-1.4"
-    v2_transformer_version: str = "m10.9-c2-kodex-holdings-1"
+    v2_transformer_version: str = CANONICAL_V2_TRANSFORMER_VERSION
     v2_multi_store_enabled: bool = False
     runtime_data_version: Literal["v1", "v2"] = "v1"
     trusted_holdings_runtime_enabled: bool = False
@@ -86,7 +87,8 @@ class DatabaseSettings:
                 "CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.4"
             ),
             v2_transformer_version=os.getenv(
-                "CANONICAL_V2_TRANSFORMER_VERSION", "m10.9-c2-kodex-holdings-1"
+                "CANONICAL_V2_TRANSFORMER_VERSION",
+                CANONICAL_V2_TRANSFORMER_VERSION,
             ),
             v2_multi_store_enabled=bundle.uses_canonical_v2,
             runtime_data_version=bundle.version,

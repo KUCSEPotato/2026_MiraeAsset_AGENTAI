@@ -14,7 +14,11 @@ from sqlalchemy.engine import Engine, make_url
 
 from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
-from app.data.v2_rebuild import CanonicalV2Rebuilder, relation_domain_violations
+from app.data.v2_rebuild import (
+    CanonicalV2Rebuilder,
+    _RELATION_DOMAIN_CONTRACTS,
+    relation_domain_violations,
+)
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
     bonds,
@@ -35,6 +39,7 @@ from app.data.v2_schema import (
     identity_resolution_cases,
     index_relations,
     metric_observations,
+    ontology_concepts,
     organization_relations,
     organizations,
     quarantine_records,
@@ -49,6 +54,16 @@ from app.data.v2_schema import (
 pytestmark = pytest.mark.postgresql
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_TABLE = "alembic_version_m10_8"
+
+
+def test_subscription_status_relation_domain_contract_is_narrow() -> None:
+    contract = _RELATION_DOMAIN_CONTRACTS["HAS_SUBSCRIPTION_STATUS"]
+    assert contract.subject_grains == frozenset({("FUND_SHARE_CLASS", None)})
+    assert contract.target_grains == frozenset(
+        {("ONTOLOGY_CONCEPT", "subscription_status")}
+    )
+    assert ("FINANCIAL_PRODUCT", "BOND") not in contract.subject_grains
+    assert ("ONTOLOGY_CONCEPT", "offering_type") not in contract.target_grains
 
 
 def _url() -> str:
@@ -209,6 +224,7 @@ def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
     for category in (
         "asset_class", "exposure_region", "market_scope", "risk_grade",
         "offering_type",
+        "subscription_status",
     ):
         accounting = first.classification_accounting["PRFD01N001"][category]
         assert accounting.get("source", 0) + accounting.get("missing", 0) == 23_676
@@ -469,6 +485,37 @@ def test_relation_domain_ready_gate_and_relation_deduplication(rebuilt) -> None:
     engine = rebuilt[0]
     with engine.connect() as connection:
         assert relation_domain_violations(connection) == []
+        subscription_grains = connection.execute(
+            select(
+                canonical_entities.c.entity_kind,
+                ontology_concepts.c.concept_category,
+                func.count(),
+            )
+            .select_from(
+                entity_classifications
+                .join(
+                    canonical_entities,
+                    canonical_entities.c.entity_id
+                    == entity_classifications.c.entity_id,
+                )
+                .join(
+                    ontology_concepts,
+                    ontology_concepts.c.concept_iri
+                    == entity_classifications.c.concept_iri,
+                )
+            )
+            .where(
+                entity_classifications.c.classification_type
+                == "SUBSCRIPTION_STATUS"
+            )
+            .group_by(
+                canonical_entities.c.entity_kind,
+                ontology_concepts.c.concept_category,
+            )
+        ).all()
+        assert subscription_grains == [
+            ("FUND_SHARE_CLASS", "subscription_status", 16_574)
+        ]
         duplicate_groups = connection.scalar(text(
             "WITH rel AS ("
             "SELECT cf.snapshot_id, er.subject_entity_id subject_id, er.relation_type, er.object_entity_id target_id "
