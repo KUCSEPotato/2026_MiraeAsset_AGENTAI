@@ -356,6 +356,9 @@ class CanonicalV2FieldRegistry:
             # Storage is numeric, but the approved comparison contracts are disabled.
             V2FieldMapping("product.aum", "metric", "AUM", False, True, False),
             V2FieldMapping("product.expense_ratio", "metric", "EXPENSE_RATIO", False, True, False),
+            V2FieldMapping("product.price", "metric", "PRICE", False, True, False),
+            V2FieldMapping("product.market_price", "metric", "MARKET_PRICE", False, True, False),
+            V2FieldMapping("product.market_volume", "metric", "VOLUME", False, True, False),
             V2FieldMapping("product.one_year_return", "metric", "ONE_YEAR_RETURN", False, True, False),
             V2FieldMapping("product.credit_rating", "metric", "CREDIT_RATING_ORDER", True, True, False),
             V2FieldMapping("product.current_sale_available", "bond_purchasable", "ORGANIZER_PURCHASABLE_BOND", True, False, False),
@@ -363,6 +366,16 @@ class CanonicalV2FieldRegistry:
             V2FieldMapping("product.is_sold_by_mirae_asset", "scalar_boolean", "is_sold_by_mirae_asset", True, False, False),
             V2FieldMapping("product.current_fund_subscription_eligible", "fund_subscription_eligible", "FUND_SUBSCRIPTION_RULE_V1", True, False, False),
             V2FieldMapping("product.latest_fund_price_available", "latest_fund_price", "FUND_PRICE_FRESHNESS_V1", True, False, False),
+            V2FieldMapping("product.etp_distribution_status", "scalar_text", "etp_distribution_status", True, True, False),
+            V2FieldMapping("product.etp_trading_status", "scalar_text", "etp_trading_status", True, True, False),
+            V2FieldMapping("product.listing_start_date", "scalar", "listing_start_date", False, True, False),
+            V2FieldMapping("product.listing_end_date", "scalar", "listing_end_date", False, True, False),
+            V2FieldMapping("product.etp_listing_ended", "scalar_boolean", "etp_listing_ended", True, False, False),
+            V2FieldMapping("product.current_etp_sale_eligible", "scalar_boolean", "current_etp_sale_eligible", True, False, False),
+            V2FieldMapping("product.latest_etp_price_available", "scalar_boolean", "latest_etp_price_available", True, False, False),
+            V2FieldMapping("product.etp_price_freshness_status", "scalar_text", "etp_price_freshness_status", True, True, False),
+            V2FieldMapping("product.stale_etp_price_warning", "scalar_boolean", "stale_etp_price_warning", True, False, False),
+            V2FieldMapping("product.etp_insufficient_info", "scalar_boolean", "etp_insufficient_info", True, False, False),
         )
         self._fields = {item.canonical_field: item for item in mappings}
         runtime = TeamOntologyRuntimeMapping()
@@ -795,6 +808,8 @@ class CanonicalV2QueryCompiler:
             if operator not in {FilterOperator.EQ, FilterOperator.NE} or not isinstance(value, bool):
                 raise RDBQueryCompilationError("boolean scalar supports only eq/ne boolean")
             predicate = self._scalar_boolean_exists(entity_id, mapping.semantic_key, value, snapshot)
+        elif mapping.kind == "scalar_text":
+            predicate = self._scalar_text_exists(entity_id, mapping.semantic_key, values, snapshot)
         elif mapping.kind.endswith("relation"):
             values = [
                 _canonical_relation_target(mapping.semantic_key, item)
@@ -940,6 +955,26 @@ class CanonicalV2QueryCompiler:
         )
 
     @staticmethod
+    def _scalar_text_exists(entity_id, key, values, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.subject_entity_id == entity_id,
+                canonical_facts.c.semantic_key == key,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                canonical_scalar_facts.c.value_type == "TEXT",
+                canonical_scalar_facts.c.text_value.in_([str(item) for item in values]),
+            )
+        )
+
+    @staticmethod
     def _latest_fund_price_available(entity_id, snapshot):
         latest_source_date = (
             select(func.max(metric_observations.c.observed_on))
@@ -997,7 +1032,8 @@ class CanonicalV2QueryCompiler:
         if not operands or len(operands) != len(set(operands)):
             raise RDBQueryCompilationError("product universe operands must be unique")
         allowed = {
-            "DomesticETF", "ForeignETF", "ETF", "PublicFund", "Fund",
+            "DomesticETF", "ForeignETF", "DomesticETN", "ForeignETN",
+            "DomesticETP", "ForeignETP", "ETF", "PublicFund", "Fund",
             KODEX_READY_SCOPE, TIGER_READY_SCOPE, ISHARES_READY_SCOPE,
         }
         if set(operands) - allowed:
@@ -1022,6 +1058,34 @@ class CanonicalV2QueryCompiler:
                 branches.append(
                     and_(
                         base.c.product_type == "ETF",
+                        self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
+                    )
+                )
+            elif operand == "DomesticETN":
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETN",
+                        self._dataset_entity_exists(entity_id, "PREF01N001", snapshot),
+                    )
+                )
+            elif operand == "ForeignETN":
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETN",
+                        self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
+                    )
+                )
+            elif operand == "DomesticETP":
+                branches.append(
+                    and_(
+                        base.c.product_type.in_(("ETF", "ETN")),
+                        self._dataset_entity_exists(entity_id, "PREF01N001", snapshot),
+                    )
+                )
+            elif operand == "ForeignETP":
+                branches.append(
+                    and_(
+                        base.c.product_type.in_(("ETF", "ETN")),
                         self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
                     )
                 )
@@ -1575,6 +1639,23 @@ class CanonicalV2RDBRetriever:
             elif mapping.kind == "scalar":
                 rows = connection.execute(
                     select(canonical_facts.c.subject_entity_id, canonical_scalar_facts.c.date_value)
+                    .join(canonical_scalar_facts, canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id)
+                    .where(
+                        canonical_facts.c.subject_entity_id.in_(entity_ids),
+                        canonical_facts.c.semantic_key == mapping.semantic_key,
+                        canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                        canonical_facts.c.resolution_status == "RESOLVED",
+                    ).order_by(canonical_facts.c.subject_entity_id)
+                ).all()
+                CanonicalV2RDBRetriever._collect_projection(result, field, rows)
+            elif mapping.kind in {"scalar_text", "scalar_boolean"}:
+                value_column = (
+                    canonical_scalar_facts.c.text_value
+                    if mapping.kind == "scalar_text"
+                    else canonical_scalar_facts.c.boolean_value
+                )
+                rows = connection.execute(
+                    select(canonical_facts.c.subject_entity_id, value_column)
                     .join(canonical_scalar_facts, canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id)
                     .where(
                         canonical_facts.c.subject_entity_id.in_(entity_ids),

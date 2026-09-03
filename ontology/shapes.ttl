@@ -12,12 +12,22 @@ fin:FinancialProductShape a sh:NodeShape ;
 fin:ETFShape a sh:NodeShape ;
   sh:targetClass fin:ETF ;
   sh:not [ sh:class fin:ETN ] ;
-  sh:property [ sh:path fin:hasListing ; sh:maxCount 1 ; sh:class fin:Listing ] .
+  sh:property [ sh:path fin:hasListing ; sh:maxCount 1 ; sh:class fin:Listing ] ;
+  sh:property [ sh:path fin:etpDistributionStatus ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path fin:etpTradingStatus ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path fin:currentEtpSaleEligible ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path fin:latestEtpPriceAvailable ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path fin:etpListingEnded ; sh:maxCount 1 ; sh:datatype xsd:boolean ] .
 
 fin:ETNShape a sh:NodeShape ;
   sh:targetClass fin:ETN ;
   sh:not [ sh:class fin:ETF ] ;
-  sh:property [ sh:path fin:hasListing ; sh:maxCount 1 ; sh:class fin:Listing ] .
+  sh:property [ sh:path fin:hasListing ; sh:maxCount 1 ; sh:class fin:Listing ] ;
+  sh:property [ sh:path fin:etpDistributionStatus ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path fin:etpTradingStatus ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path fin:currentEtpSaleEligible ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path fin:latestEtpPriceAvailable ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path fin:etpListingEnded ; sh:maxCount 1 ; sh:datatype xsd:boolean ] .
 
 fin:FundShareClassShape a sh:NodeShape ;
   sh:targetClass fin:FundShareClass ;

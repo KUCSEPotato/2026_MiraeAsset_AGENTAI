@@ -9,7 +9,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import create_engine, func, insert, inspect, select, text
+from sqlalchemy import create_engine, distinct, func, insert, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 
 from app.data.ingest import FinancialDataIngestor
@@ -24,6 +24,7 @@ from app.data.v2_schema import (
     bonds,
     canonical_entities,
     canonical_facts,
+    canonical_scalar_facts,
     dataset_snapshots,
     entity_classifications,
     entity_id_crosswalk,
@@ -246,8 +247,10 @@ def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     # returns). Organizer purchasability is a lifecycle rule, not a metric.
     assert first.metric_status == {
         "COMPARABLE": 33_397,
-        "NOT_COMPARABLE": 74_264,
+        "NOT_COMPARABLE": 89_876,
     }
+    assert first.metric_counts["MARKET_PRICE"] == 7_799
+    assert first.metric_counts["VOLUME"] == 7_813
     assert first.metric_counts["ONE_YEAR_RETURN"] == 8_417
     assert "CURRENT_SALE_AVAILABILITY" not in first.metric_counts
     assert "BUYABLE_QUANTITY" not in first.metric_counts
@@ -256,6 +259,110 @@ def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
         value = connection.scalar(select(metric_observations.c.numeric_value).where(metric_observations.c.numeric_value.is_not(None)).limit(1))
         assert isinstance(value, Decimal)
         assert connection.scalar(select(func.count()).select_from(bonds).where(bonds.c.maturity_date == date(9999, 12, 31))) == 0
+
+
+def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:
+    engine = rebuilt[0]
+
+    def scalar_boolean_count(connection, key: str, dataset: str, product_type: str | None = None) -> int:
+        statement = (
+            select(func.count(distinct(canonical_facts.c.subject_entity_id)))
+            .select_from(
+                canonical_facts
+                .join(canonical_scalar_facts, canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+                .join(financial_products, financial_products.c.product_id == canonical_facts.c.subject_entity_id)
+            )
+            .where(
+                dataset_snapshots.c.dataset_id == dataset,
+                canonical_facts.c.semantic_key == key,
+                canonical_scalar_facts.c.value_type == "BOOLEAN",
+                canonical_scalar_facts.c.boolean_value.is_(True),
+            )
+        )
+        if product_type is not None:
+            statement = statement.where(financial_products.c.product_type_code == product_type)
+        return int(connection.scalar(statement) or 0)
+
+    def strict_count(connection, dataset: str, product_type: str | None = None) -> int:
+        current = canonical_facts.alias("current_fact")
+        current_scalar = canonical_scalar_facts.alias("current_scalar")
+        latest = canonical_facts.alias("latest_fact")
+        latest_scalar = canonical_scalar_facts.alias("latest_scalar")
+        statement = (
+            select(func.count(distinct(current.c.subject_entity_id)))
+            .select_from(
+                current
+                .join(current_scalar, current_scalar.c.fact_id == current.c.fact_id)
+                .join(latest, latest.c.subject_entity_id == current.c.subject_entity_id)
+                .join(latest_scalar, latest_scalar.c.fact_id == latest.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == current.c.snapshot_id)
+                .join(financial_products, financial_products.c.product_id == current.c.subject_entity_id)
+            )
+            .where(
+                dataset_snapshots.c.dataset_id == dataset,
+                current.c.snapshot_id == latest.c.snapshot_id,
+                current.c.semantic_key == "current_etp_sale_eligible",
+                latest.c.semantic_key == "latest_etp_price_available",
+                current_scalar.c.boolean_value.is_(True),
+                latest_scalar.c.boolean_value.is_(True),
+            )
+        )
+        if product_type is not None:
+            statement = statement.where(financial_products.c.product_type_code == product_type)
+        return int(connection.scalar(statement) or 0)
+
+    with engine.connect() as connection:
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF01N001", "ETF") == 1_160
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF01N001", "ETN") == 373
+        assert strict_count(connection, "PREF01N001") == 1_533
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF02N001", "ETF") == 5_958
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF02N001", "ETN") == 65
+        assert strict_count(connection, "PREF02N001", "ETF") == 5_629
+        assert strict_count(connection, "PREF02N001", "ETN") == 58
+        assert scalar_boolean_count(connection, "etp_insufficient_info", "PREF02N001") == 14
+        assert scalar_boolean_count(connection, "stale_etp_price_warning", "PREF02N001") == 336
+        assert connection.scalar(
+            select(func.count())
+            .select_from(exchange_traded_products)
+            .where(
+                exchange_traded_products.c.listing_date == date(1000, 12, 31)
+            )
+        ) == 0
+        assert connection.scalar(
+            select(func.count())
+            .select_from(exchange_traded_products)
+            .where(
+                exchange_traded_products.c.delisting_date == date(9999, 12, 31)
+            )
+        ) == 0
+        assert connection.scalar(
+            select(func.count())
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.semantic_key == "listing_end_date_status",
+                canonical_scalar_facts.c.text_value == "NO_KNOWN_END_DATE",
+            )
+        ) == 1_535
+        assert connection.scalar(
+            select(func.count())
+            .select_from(
+                metric_observations
+                .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+            )
+            .where(
+                dataset_snapshots.c.dataset_id == "PREF02N001",
+                metric_observations.c.metric_code == "VOLUME",
+                metric_observations.c.numeric_value == 0,
+                metric_observations.c.quality_status == "VALID",
+            )
+        ) == 91
 
 
 def test_crosswalk_and_idempotent_second_run(rebuilt) -> None:

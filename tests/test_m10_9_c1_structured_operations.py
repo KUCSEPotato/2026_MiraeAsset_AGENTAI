@@ -12,6 +12,12 @@ from app.data.cleaning import (
     canonical_subscription_status,
 )
 from app.data.database import DatabaseSettings
+from app.data.v2_rebuild import (
+    _atomic_index,
+    _date,
+    _etp_sale_status,
+    _etp_trading_status,
+)
 from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
 
 from app.data.metric_capabilities import (
@@ -210,6 +216,124 @@ def test_fund_freshness_is_separate_from_subscription_status() -> None:
         "product.current_fund_subscription_eligible",
         "product.latest_fund_price_available",
     }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1", "AVAILABLE_FOR_SALE"),
+        ("0", "NOT_AVAILABLE_FOR_SALE"),
+        (None, "UNKNOWN"),
+        ("", "UNKNOWN"),
+    ],
+)
+def test_etp_sale_status_normalization_preserves_unknown(raw, expected) -> None:
+    assert _etp_sale_status(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0", "TRADING_ACTIVE"),
+        ("1", "TRADING_HALTED"),
+        (None, "UNKNOWN"),
+        ("", "UNKNOWN"),
+    ],
+)
+def test_etp_trading_status_normalization_preserves_unknown(raw, expected) -> None:
+    assert _etp_trading_status(raw) == expected
+
+
+def test_etp_sentinel_dates_are_not_real_lifecycle_dates() -> None:
+    assert _date("00000000") is None
+    assert _date("10001231") is None
+    assert _date("99991231") is None
+    assert _date("20260821") == date(2026, 8, 21)
+
+
+def test_foreign_index_sentence_sentinels_are_not_atomic_indices() -> None:
+    assert not _atomic_index("Index is not provided by Management Company")
+    assert not _atomic_index("Index is not available on Lipper Database")
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_fields", "expected_universe"),
+    [
+        (
+            "\ud604\uc7ac \uad6c\ub9e4 \uac00\ub2a5\ud55c \uad6d\ub0b4 ETF",
+            {"product.current_etp_sale_eligible"},
+            ["DomesticETF"],
+        ),
+        (
+            "\ud604\uc7ac \ud310\ub9e4 \uc911\uc778 \uad6d\ub0b4 ETN",
+            {"product.current_etp_sale_eligible"},
+            ["DomesticETN"],
+        ),
+        (
+            "\uac70\ub798\uc815\uc9c0\uac00 \uc544\ub2cc ETF",
+            {"product.etp_trading_status"},
+            None,
+        ),
+        (
+            "\uc0c1\uc7a5 \uc885\ub8cc\ub41c ETP\ub294 \uc81c\uc678\ud574\uc918",
+            {"product.etp_listing_ended"},
+            ["DomesticETP", "ForeignETP"],
+        ),
+        (
+            "\ucd5c\uc2e0 \uac00\uaca9\uc774 \uc788\ub294 \ud574\uc678 ETF",
+            {"product.latest_etp_price_available"},
+            ["ForeignETF"],
+        ),
+        (
+            "\uad6c\ub9e4 \uac00\ub2a5\ud558\uc9c0\ub9cc \uac00\uaca9\uc774 \uc624\ub798\ub41c \ud574\uc678 ETF",
+            {"product.current_etp_sale_eligible", "product.stale_etp_price_warning"},
+            ["ForeignETF"],
+        ),
+        (
+            "\uc815\ubcf4\uac00 \ubd80\uc871\ud574 \ucd94\ucc9c\ud558\uae30 \uc5b4\ub824\uc6b4 ETP",
+            {"product.etp_insufficient_info"},
+            ["DomesticETP", "ForeignETP"],
+        ),
+        (
+            "\ud604\uc7ac \uad6c\ub9e4 \uac00\ub2a5\ud55c ETP \uc911 \ucd5c\uc2e0 \uac00\uaca9\uc774 \uc788\ub294 \uc0c1\ud488",
+            {"product.current_etp_sale_eligible", "product.latest_etp_price_available"},
+            ["DomesticETP", "ForeignETP"],
+        ),
+    ],
+)
+def test_etp_availability_queries_compile_to_distinct_filters(
+    question, expected_fields, expected_universe
+) -> None:
+    _, _, plan = asyncio.run(_plan(question))
+    inputs = plan.steps[0].inputs
+    fields = {item["canonical_field"] for item in inputs["filters"]}
+    assert expected_fields <= fields
+    if expected_universe is not None:
+        assert inputs["product_universe"] == {
+            "operation": "UNION",
+            "operands": expected_universe,
+        }
+
+
+def test_etp_strict_candidate_compiles_as_sale_and_latest_price_conjunction() -> None:
+    _, _, plan = asyncio.run(
+        _plan("\ud604\uc7ac \uad6c\ub9e4 \uac00\ub2a5\ud55c ETP \uc911 \ucd5c\uc2e0 \uac00\uaca9\uc774 \uc788\ub294 \uc0c1\ud488")
+    )
+    snapshot = V2SnapshotSelection(
+        snapshot_date=date(2026, 8, 24), generation="260824",
+        ontology_version="merged-optical-1.4",
+        snapshot_ids=("PREF01N001:test", "PREF02N001:test"),
+        dataset_ids=("PREF01N001", "PREF02N001"),
+    )
+    compiled = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=100
+    ).compile(plan.steps[0], snapshot)
+    sql = str(compiled.statement.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+    assert "current_etp_sale_eligible" in sql
+    assert "latest_etp_price_available" in sql
+    assert "etp_listing_ended = false" not in sql
 
 
 def test_completed_fund_exclusion_is_subscription_only() -> None:

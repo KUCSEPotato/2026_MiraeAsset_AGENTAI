@@ -96,6 +96,13 @@ class RDFOntologyService:
             "is_sold_by_mirae_asset": "product.is_sold_by_mirae_asset",
             "current_fund_subscription_eligible": "product.current_fund_subscription_eligible",
             "latest_fund_price_available": "product.latest_fund_price_available",
+            "etp_distribution_status": "product.etp_distribution_status",
+            "etp_trading_status": "product.etp_trading_status",
+            "current_etp_sale_eligible": "product.current_etp_sale_eligible",
+            "latest_etp_price_available": "product.latest_etp_price_available",
+            "etp_listing_ended": "product.etp_listing_ended",
+            "stale_etp_price_warning": "product.stale_etp_price_warning",
+            "etp_insufficient_info": "product.etp_insufficient_info",
             "listing_country": "product.listing_country",
             "currency": "product.currency",
         }.get(raw, raw)

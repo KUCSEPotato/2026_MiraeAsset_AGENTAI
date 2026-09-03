@@ -92,6 +92,24 @@ APPROVED_ETN_ISSUER_FIELDS: frozenset[str] = frozenset()
 ORGANIZATION_SOURCE_FIELDS = frozenset(
     {"pd_pbcm", "cu_fund_mgmt_co", "or_co_xtn_itt_cd", "trusc_xtn_itt_cd"}
 )
+ETP_PREFIXES = frozenset({"PREF01N001", "PREF02N001"})
+ETP_MISSING_ASSERTION_FIELDS = frozenset(
+    {
+        "pd_sale_yn",
+        "pd_tr_yn",
+        "pd_lstg_dt",
+        "pd_lste_dt",
+        "du_clpr",
+        "du_clpr_base_dt",
+        "du_upt_dt",
+        "ru_mkt_price",
+        "ru_mkt_volume",
+    }
+)
+ETP_PRICE_DATE_FIELDS = {
+    "PREF01N001": "du_upt_dt",
+    "PREF02N001": "du_clpr_base_dt",
+}
 _PRODUCT_DESIGNATOR_SUFFIX = re.compile(r"\(\s*(?:ETF|ETN)\s*\)\s*$", re.IGNORECASE)
 EXPECTED_SOURCE_COUNTS = {
     "PRBD01N001": (21_882, 21_882, 0),
@@ -126,7 +144,8 @@ TARGET_FIELDS = {
             "cu_base_index", "ref_base_index", "wu_inv_ast_type", "wu_inv_rgn",
             "pd_risk_nm", "pd_curr_cd", "pd_mkt_id", "pd_exg_mkt_cd",
             "du_last_aum", "cu_charge_rt", "du_last_nav", "du_clpr", "du_upt_dt",
-            "du_er_1y",
+            "du_er_1y", "pd_sale_yn", "pd_tr_yn", "pd_lstg_dt", "pd_lste_dt",
+            "ru_mkt_price", "ru_mkt_volume",
             "cu_strtegy",
         }
     ),
@@ -136,7 +155,9 @@ TARGET_FIELDS = {
             "pd_abrv_nm", "cu_fund_mgmt_co", "cu_base_index",
             "cu_index_tracking_yn", "wu_inv_ast_type", "wu_inv_rgn", "pd_curr_cd",
             "pd_trd_ccy", "pd_mkt_id", "pd_exg_mkt_cd", "du_last_aum",
-            "cu_charge_rt", "du_last_nav", "du_clpr", "du_upt_dt", "cu_strtegy",
+            "cu_charge_rt", "du_last_nav", "du_clpr", "du_clpr_base_dt",
+            "du_upt_dt", "pd_sale_yn", "pd_tr_yn", "pd_lstg_dt",
+            "ru_mkt_price", "ru_mkt_volume", "cu_strtegy",
         }
     ),
     "PRFD01N001": frozenset(
@@ -186,13 +207,17 @@ METRIC_FIELDS = {
         "cu_charge_rt": ("EXPENSE_RATIO", "PERCENT", "SOURCE_SCALE_UNVERIFIED", "du_upt_dt"),
         "du_last_nav": ("NAV", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
+        "ru_mkt_price": ("MARKET_PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
+        "ru_mkt_volume": ("VOLUME", "COUNT", "SOURCE_RAW", "du_upt_dt"),
         "du_er_1y": ("ONE_YEAR_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
     },
     "PREF02N001": {
         "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "CURRENCY_UNIT", "du_upt_dt"),
         "cu_charge_rt": ("EXPENSE_RATIO", "RATIO", "SOURCE_SCALE_UNVERIFIED", "du_upt_dt"),
         "du_last_nav": ("NAV", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
-        "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
+        "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_clpr_base_dt"),
+        "ru_mkt_price": ("MARKET_PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_clpr_base_dt"),
+        "ru_mkt_volume": ("VOLUME", "COUNT", "SOURCE_RAW", "du_clpr_base_dt"),
     },
     "PRFD01N001": {
         "fd_nast_suma": ("AUM", "CURRENCY_AMOUNT", "SOURCE_RAW_UNVERIFIED", "fd_price_bas_dt"),
@@ -246,6 +271,7 @@ class Audit:
     conflict_assertions: dict[tuple[str, str, str], set[str]] = field(
         default_factory=lambda: defaultdict(set)
     )
+    latest_etp_price_dates: dict[str, date] = field(default_factory=dict)
 
     def conflicting(self, entity_id: str, field_name: str, *, fund: bool = False) -> bool:
         values = self.fund_values if fund else self.bond_values
@@ -758,6 +784,13 @@ class CanonicalV2Rebuilder:
                 if mapped is None:
                     raise ValueError(f"validated row failed mapping: {error}")
                 self._audit_identity(audit, item, cleaned, mapped)
+                if item.spec.prefix in ETP_PREFIXES:
+                    date_field = ETP_PRICE_DATE_FIELDS[item.spec.prefix]
+                    observed = _date(cleaned.get(date_field))
+                    if observed is not None:
+                        current = audit.latest_etp_price_dates.get(item.spec.prefix)
+                        if current is None or observed > current:
+                            audit.latest_etp_price_dates[item.spec.prefix] = observed
             results.append(result)
         return audit
 
@@ -1002,7 +1035,11 @@ class CanonicalV2Rebuilder:
         result: dict[str, str] = {}
         for field_name in TARGET_FIELDS[prefix]:
             value = cleaned.get(field_name)
-            if value is None or value == "":
+            missing = value is None or value == ""
+            preserve_missing = (
+                prefix in ETP_PREFIXES and field_name in ETP_MISSING_ASSERTION_FIELDS
+            )
+            if missing and not preserve_missing:
                 continue
             assertion_id = _stable_id("assertion", record_id, field_name)
             result[field_name] = assertion_id
@@ -1018,7 +1055,10 @@ class CanonicalV2Rebuilder:
             target_semantic_key = _target_key(prefix, field_name, value)
             transformation_rule = "M10.8-B.2 reviewed deterministic mapping"
             quality_status = "VALID"
-            if organization_rejection:
+            if missing:
+                quality_status = "MISSING"
+                transformation_rule = "source field is structurally present but blank/null; preserve as unknown"
+            elif organization_rejection:
                 quality_status = "INVALID"
                 target_semantic_key = "organization:INVALID_TARGET"
                 transformation_rule = organization_rejection
@@ -1062,7 +1102,12 @@ class CanonicalV2Rebuilder:
         if prefix in {"PREF01N001", "PREF02N001"}:
             code = "ETF" if str(mapped.canonical["product_type"]).endswith("ETF") else "ETN"
             self._product(rows, product_id, code, _value(cleaned.get("pd_nm")), "AUTHORITATIVE")
-            rows.add(exchange_traded_products, {"etp_id": product_id, "product_type_code": code})
+            listing_start = _date(cleaned.get("pd_lstg_dt"))
+            listing_end = _date(cleaned.get("pd_lste_dt")) if prefix == "PREF01N001" else None
+            rows.add(exchange_traded_products, {
+                "etp_id": product_id, "product_type_code": code,
+                "listing_date": listing_start, "delisting_date": listing_end,
+            })
             return product_id, None
         fund_id = str(mapped.fund_class["fund_id"])
         self._product(rows, fund_id, "FUND", None, "NO_AUTHORITATIVE_FAMILY_NAME")
@@ -1185,6 +1230,10 @@ class CanonicalV2Rebuilder:
                 canonical_mirae_sale_flag(cleaned.get("thco_sale_yn")),
                 assertions.get("thco_sale_yn"),
             )
+        elif prefix in ETP_PREFIXES:
+            self._etp_scalar_facts(
+                rows, audit, prefix, subject, snapshot_id, cleaned, assertions
+            )
 
     def _scalar(
         self, rows: _Rows, subject: str, snapshot_id: str, key: str,
@@ -1199,6 +1248,120 @@ class CanonicalV2Rebuilder:
         rows.add(canonical_scalar_facts, {"fact_id": fact_id, "value_type": value_type, **typed})
         self._evidence(rows, fact_id, assertion_id)
         return fact_id
+
+    def _derived_scalar(
+        self, rows: _Rows, subject: str, snapshot_id: str, key: str,
+        value_type: str, value: Any, assertion_ids: Iterable[str | None],
+    ) -> str | None:
+        evidence = [item for item in assertion_ids if item is not None]
+        if value is None or not evidence:
+            return None
+        fact_id = self._fact(rows, subject, snapshot_id, "SCALAR", key)
+        typed = {"text_value": None, "numeric_value": None, "date_value": None, "boolean_value": None}
+        typed[{"TEXT": "text_value", "NUMERIC": "numeric_value", "DATE": "date_value", "BOOLEAN": "boolean_value"}[value_type]] = value
+        rows.add(canonical_scalar_facts, {"fact_id": fact_id, "value_type": value_type, **typed})
+        for assertion_id in evidence:
+            self._evidence(rows, fact_id, assertion_id, role="DERIVES")
+        return fact_id
+
+    def _etp_scalar_facts(
+        self, rows: _Rows, audit: Audit, prefix: str, subject: str,
+        snapshot_id: str, cleaned: dict[str, Any], assertions: dict[str, str],
+    ) -> None:
+        sale_status = _etp_sale_status(cleaned.get("pd_sale_yn"))
+        trading_status = _etp_trading_status(cleaned.get("pd_tr_yn"))
+        listing_start = _date(cleaned.get("pd_lstg_dt"))
+        listing_end = _date(cleaned.get("pd_lste_dt")) if prefix == "PREF01N001" else None
+        snapshot_date = date.fromisoformat(SNAPSHOT)
+        price_value = _decimal(cleaned.get("du_clpr"))
+        price_observed = _date(cleaned.get(ETP_PRICE_DATE_FIELDS[prefix]))
+        latest_price_date = audit.latest_etp_price_dates.get(prefix)
+        valid_price = price_value is not None and price_value > 0 and price_observed is not None
+        price_freshness = (
+            "LATEST"
+            if valid_price and latest_price_date is not None and price_observed == latest_price_date
+            else "STALE"
+            if valid_price and latest_price_date is not None and price_observed < latest_price_date
+            else "UNKNOWN"
+        )
+        listing_has_ended = (
+            listing_end is not None and listing_end <= snapshot_date
+            if prefix == "PREF01N001"
+            else None
+        )
+        current_sale_eligible = (
+            sale_status == "AVAILABLE_FOR_SALE"
+            and trading_status == "TRADING_ACTIVE"
+            and listing_start is not None
+            and listing_start <= snapshot_date
+            and listing_has_ended is not True
+        )
+        insufficient_info = (
+            sale_status == "UNKNOWN"
+            or trading_status == "UNKNOWN"
+            or listing_start is None
+            or not _etp_core_market_info_available(prefix, cleaned)
+        )
+        status_assertions = [
+            assertions.get("pd_sale_yn"), assertions.get("pd_tr_yn"),
+            assertions.get("pd_lstg_dt"), assertions.get("pd_lste_dt"),
+            assertions.get("pd_itm_no"),
+        ]
+        price_assertions = [
+            assertions.get("du_clpr"),
+            assertions.get(ETP_PRICE_DATE_FIELDS[prefix]),
+            assertions.get("ru_mkt_price"),
+            assertions.get("ru_mkt_volume"),
+            assertions.get("pd_itm_no"),
+        ]
+
+        self._scalar(
+            rows, subject, snapshot_id, "etp_distribution_status", "TEXT",
+            sale_status, assertions.get("pd_sale_yn"),
+        )
+        self._scalar(
+            rows, subject, snapshot_id, "etp_trading_status", "TEXT",
+            trading_status, assertions.get("pd_tr_yn"),
+        )
+        self._scalar(
+            rows, subject, snapshot_id, "listing_start_date", "DATE",
+            listing_start, assertions.get("pd_lstg_dt"),
+        )
+        self._scalar(
+            rows, subject, snapshot_id, "listing_end_date", "DATE",
+            listing_end, assertions.get("pd_lste_dt"),
+        )
+        if prefix == "PREF01N001" and _is_no_known_end_date(cleaned.get("pd_lste_dt")):
+            self._scalar(
+                rows, subject, snapshot_id, "listing_end_date_status", "TEXT",
+                "NO_KNOWN_END_DATE", assertions.get("pd_lste_dt"),
+            )
+        if listing_has_ended is not None:
+            self._derived_scalar(
+                rows, subject, snapshot_id, "etp_listing_ended", "BOOLEAN",
+                listing_has_ended, [assertions.get("pd_lste_dt")],
+            )
+        self._derived_scalar(
+            rows, subject, snapshot_id, "current_etp_sale_eligible", "BOOLEAN",
+            True if current_sale_eligible else None, status_assertions,
+        )
+        self._derived_scalar(
+            rows, subject, snapshot_id, "etp_price_freshness_status", "TEXT",
+            price_freshness, price_assertions,
+        )
+        self._derived_scalar(
+            rows, subject, snapshot_id, "latest_etp_price_available", "BOOLEAN",
+            True if price_freshness == "LATEST" else None, price_assertions,
+        )
+        self._derived_scalar(
+            rows, subject, snapshot_id, "stale_etp_price_warning", "BOOLEAN",
+            True if current_sale_eligible and price_freshness == "STALE" else None,
+            [*status_assertions, *price_assertions],
+        )
+        self._derived_scalar(
+            rows, subject, snapshot_id, "etp_insufficient_info", "BOOLEAN",
+            True if insufficient_info else None, [*status_assertions, *price_assertions],
+        )
 
     def _classifications(
         self, rows: _Rows, audit: Audit, prefix: str, primary_id: str,
@@ -1542,7 +1705,9 @@ class CanonicalV2Rebuilder:
                 "subject_entity_id": subject, "raw_value": str(cleaned[field_name]),
                 "numeric_value": value, "unit": unit, "scale_basis": scale,
                 "currency": currency, "observed_on": observed,
-                "quality_status": "SOURCE_ZERO" if value == 0 else "VALID",
+                "quality_status": (
+                    "VALID" if metric_code == "VOLUME" or value != 0 else "SOURCE_ZERO"
+                ),
                 "comparability_status": (
                     "COMPARABLE"
                     if (
@@ -1593,8 +1758,14 @@ class CanonicalV2Rebuilder:
         })
         return fact_id
 
-    def _evidence(self, rows: _Rows, fact_id: str, assertion_id: str) -> None:
-        rows.add(fact_evidence_links, {"fact_id": fact_id, "assertion_id": assertion_id, "evidence_role": "SUPPORTS"})
+    def _evidence(
+        self, rows: _Rows, fact_id: str, assertion_id: str,
+        *, role: str = "SUPPORTS",
+    ) -> None:
+        rows.add(fact_evidence_links, {
+            "fact_id": fact_id, "assertion_id": assertion_id,
+            "evidence_role": role,
+        })
 
     def _add_collision_cases(self, rows: _Rows, audit: Audit) -> None:
         for (scheme, namespace, value), owners in audit.identifier_owners.items():
@@ -1673,6 +1844,8 @@ class CanonicalV2Rebuilder:
         definitions = (
             ("NAV", "product.nav", "Net asset value"),
             ("PRICE", "product.price", "Observed source price"),
+            ("MARKET_PRICE", "product.market_price", "Observed market price"),
+            ("VOLUME", "product.market_volume", "Observed market volume"),
             ("BOND_BUY_YIELD", "bond.buy_yield", "Bond buy yield"),
             ("ONE_YEAR_RETURN", "product.one_year_return", "Exact one-year source return"),
             ("CREDIT_RATING_ORDER", "product.credit_rating", "Ordered credit rating"),
@@ -1900,7 +2073,7 @@ def _decimal(value: Any) -> Decimal | None:
 
 def _date(value: Any) -> date | None:
     raw = _value(value)
-    if raw is None or raw.replace("-", "") in {"0", "00000000", "99991231"}:
+    if raw is None or raw.replace("-", "") in {"0", "00000000", "99991231", "10001231"}:
         return None
     compact = raw.replace(".", "-").replace("/", "-")
     if re.fullmatch(r"\d{8}", compact):
@@ -1924,6 +2097,37 @@ def _atomic_index(value: str) -> bool:
     if any(item in normalized for item in ("not provided", "not available", "해당없음", "없음")):
         return False
     return "+" not in value and not any(weight in normalized for weight in (" 25%", " 50%", " 75%", " 90%"))
+
+
+def _etp_sale_status(value: Any) -> str:
+    raw = _value(value)
+    if raw == "1":
+        return "AVAILABLE_FOR_SALE"
+    if raw == "0":
+        return "NOT_AVAILABLE_FOR_SALE"
+    return "UNKNOWN"
+
+
+def _etp_trading_status(value: Any) -> str:
+    raw = _value(value)
+    if raw == "0":
+        return "TRADING_ACTIVE"
+    if raw == "1":
+        return "TRADING_HALTED"
+    return "UNKNOWN"
+
+
+def _is_no_known_end_date(value: Any) -> bool:
+    raw = _value(value)
+    return raw is not None and raw.replace("-", "") == "99991231"
+
+
+def _etp_core_market_info_available(prefix: str, cleaned: dict[str, Any]) -> bool:
+    if prefix == "PREF01N001":
+        fields = ("pd_isin_cd", "pd_ric", "pd_exg_mkt_cd", "pd_curr_cd")
+    else:
+        fields = ("pd_itm_no", "pd_isin_cd", "pd_exg_mkt_cd", "pd_trd_ccy")
+    return all(_value(cleaned.get(field_name)) is not None for field_name in fields)
 
 
 def _organization_target_rejection_reason(value: str | None) -> str | None:
@@ -1980,6 +2184,14 @@ def _target_key(prefix: str, field_name: str, value: Any) -> str:
         "pd_mkt_id": "listedInCountry",
         "pd_ctry_cd": "hasInstrumentCountry",
         "pd_grp_no": "product.type",
+        "pd_sale_yn": "etp_distribution_status",
+        "pd_tr_yn": "etp_trading_status",
+        "pd_lstg_dt": "listing_start_date",
+        "pd_lste_dt": "listing_end_date",
+        "du_clpr_base_dt": "price_observation_date",
+        "du_upt_dt": "source_update_date",
+        "ru_mkt_price": "market_price",
+        "ru_mkt_volume": "market_volume",
     }
     if field_name in relation_keys:
         return relation_keys[field_name]

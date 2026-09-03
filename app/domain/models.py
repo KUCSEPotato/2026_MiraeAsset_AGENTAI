@@ -386,6 +386,10 @@ class ProductUniverseUnion(BaseModel):
         Literal[
             "DomesticETF",
             "ForeignETF",
+            "DomesticETN",
+            "ForeignETN",
+            "DomesticETP",
+            "ForeignETP",
             "ETF",
             "PublicFund",
             "Fund",

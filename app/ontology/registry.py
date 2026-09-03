@@ -69,6 +69,20 @@ class StaticSemanticRegistry:
         "표시통화": "product.currency",
         "통화": "product.currency",
         "위험등급": "product.risk_grade",
+        "etp_distribution_status": "product.etp_distribution_status",
+        "etp_trading_status": "product.etp_trading_status",
+        "current_etp_sale_eligible": "product.current_etp_sale_eligible",
+        "latest_etp_price_available": "product.latest_etp_price_available",
+        "etp_listing_ended": "product.etp_listing_ended",
+        "stale_etp_price_warning": "product.stale_etp_price_warning",
+        "etp_insufficient_info": "product.etp_insufficient_info",
+        "etp판매상태": "product.etp_distribution_status",
+        "etp거래상태": "product.etp_trading_status",
+        "현재etp구매가능": "product.current_etp_sale_eligible",
+        "최신etp가격있음": "product.latest_etp_price_available",
+        "etp상장종료": "product.etp_listing_ended",
+        "etp가격오래됨": "product.stale_etp_price_warning",
+        "etp정보부족": "product.etp_insufficient_info",
     }
 
     def resolve_concept(

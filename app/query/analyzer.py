@@ -374,6 +374,15 @@ class RuleBasedQueryAnalyzer:
         )
 
     def _classify_intent(self, question: str, entities: list[EntityMention]) -> QueryIntent:
+        etp_status_query = bool(
+            re.search(r"(?:ETF|ETN|ETP|\uc0c1\uc7a5\uc9c0\uc218)", question, re.IGNORECASE)
+            and re.search(
+                r"\uad6c\ub9e4|\ub9e4\uc218|\ud310\ub9e4|\uac70\ub798\s*\uc815\uc9c0|\uac70\ub798\uc815\uc9c0|\uc0c1\uc7a5\s*(?:\uc885\ub8cc|\ud3d0\uc9c0)|\ucd5c\uc2e0\s*(?:\uac00\uaca9|\uc885\uac00)|\uc624\ub798\ub41c\s*(?:\uac00\uaca9|\uc885\uac00)|(?:\uac00\uaca9|\uc885\uac00)(?:\uc774|\uac00)?\s*\uc624\ub798\ub41c|\uc815\ubcf4(?:\uac00)?\s*\ubd80\uc871(?:\ud574)?|\ucd94\ucc9c\ud558\uae30\s*\uc5b4\ub824\uc6b4",
+                question,
+            )
+        )
+        if etp_status_query:
+            return QueryIntent.SEARCH_PRODUCT
         if "비교" in question:
             return QueryIntent.COMPARE_PRODUCTS
         if "추천" in question:
@@ -505,7 +514,55 @@ class RuleBasedQueryAnalyzer:
                     value=rating.group(1).upper(),
                 )
             )
-        if re.search(r"현재\s*판매\s*가능", question):
+        etp_requested = bool(
+            re.search(r"(?:ETF|ETN|ETP|\uc0c1\uc7a5\uc9c0\uc218)", question, re.IGNORECASE)
+        )
+        if etp_requested and re.search(
+            r"(?:\ud604\uc7ac|\uc9c0\uae08)?\s*(?:\uad6c\ub9e4|\ub9e4\uc218|\ud310\ub9e4)\s*(?:\uac00\ub2a5|\uc911)(?:\ud558\uc9c0\ub9cc)?",
+            question,
+            re.IGNORECASE,
+        ):
+            filters.append(
+                FilterSpec(
+                    field="current_etp_sale_eligible",
+                    operator=FilterOperator.EQ,
+                    value=True,
+                )
+            )
+        if etp_requested and re.search(
+            r"\uac70\ub798\s*\uc815\uc9c0(?:\uac00|\ub294)?\s*\uc544\ub2cc|\uac70\ub798\uc815\uc9c0\uac00\s*\uc544\ub2cc|\uac70\ub798\uc815\uc9c0\s*\uc81c\uc678",
+            question,
+        ):
+            filters.append(FilterSpec(
+                field="etp_trading_status",
+                operator=FilterOperator.EQ,
+                value="TRADING_ACTIVE",
+            ))
+        if etp_requested and re.search(r"\uc0c1\uc7a5\s*(?:\uc885\ub8cc|\ud3d0\uc9c0).*\uc81c\uc678", question):
+            filters.append(FilterSpec(
+                field="etp_listing_ended",
+                operator=FilterOperator.NE,
+                value=True,
+            ))
+        if etp_requested and re.search(r"\ucd5c\uc2e0\s*(?:\uac00\uaca9|\uc885\uac00)(?:\uc774|\uac00)?\s*(?:\uc788\ub294|\ubcf4\uc720)", question):
+            filters.append(FilterSpec(
+                field="latest_etp_price_available",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        if etp_requested and re.search(r"(?:\uac00\uaca9|\uc885\uac00)(?:\uc774|\uac00)?\s*\uc624\ub798\ub41c|\uc624\ub798\ub41c\s*(?:\uac00\uaca9|\uc885\uac00)", question):
+            filters.append(FilterSpec(
+                field="stale_etp_price_warning",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        if etp_requested and re.search(r"\uc815\ubcf4(?:\uac00)?\s*\ubd80\uc871(?:\ud574)?(?:\s*\ucd94\ucc9c\ud558\uae30\s*\uc5b4\ub824\uc6b4)?|\ucd94\ucc9c\ud558\uae30\s*\uc5b4\ub824\uc6b4", question):
+            filters.append(FilterSpec(
+                field="etp_insufficient_info",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        if not etp_requested and re.search(r"현재\s*판매\s*가능", question):
             filters.append(
                 FilterSpec(
                     field="current_sale_available",
@@ -912,19 +969,26 @@ class RuleBasedQueryAnalyzer:
             matches.append((ishares_full.start(), ishares_full.end(), "ISHARES_US_FULL"))
             occupied.append(range(ishares_full.start(), ishares_full.end()))
 
-        combined = re.search(r"국내\s*/\s*해외\s*ETF", question, re.IGNORECASE)
+        combined = re.search(r"\uad6d\ub0b4\s*/\s*\ud574\uc678\s*(ETF|ETN|ETP)", question, re.IGNORECASE)
         if combined:
+            suffix = combined.group(1).upper()
+            domestic = f"Domestic{suffix}"
+            foreign = f"Foreign{suffix}"
             matches.extend(
                 [
-                    (combined.start(), combined.end(), "DomesticETF"),
-                    (combined.start(), combined.end(), "ForeignETF"),
+                    (combined.start(), combined.end(), domestic),
+                    (combined.start(), combined.end(), foreign),
                 ]
             )
             occupied.append(range(combined.start(), combined.end()))
 
         for pattern, operand in (
-            (r"국내\s*ETF", "DomesticETF"),
-            (r"해외\s*ETF", "ForeignETF"),
+            (r"\uad6d\ub0b4\s*ETF", "DomesticETF"),
+            (r"\ud574\uc678\s*ETF", "ForeignETF"),
+            (r"\uad6d\ub0b4\s*ETN", "DomesticETN"),
+            (r"\ud574\uc678\s*ETN", "ForeignETN"),
+            (r"\uad6d\ub0b4\s*ETP", "DomesticETP"),
+            (r"\ud574\uc678\s*ETP", "ForeignETP"),
             (r"공모\s*펀드", "PublicFund"),
         ):
             for match in re.finditer(pattern, question, re.IGNORECASE):
@@ -932,6 +996,17 @@ class RuleBasedQueryAnalyzer:
                     continue
                 matches.append((match.start(), match.end(), operand))
                 occupied.append(range(match.start(), match.end()))
+
+        for match in re.finditer(r"ETP", question, re.IGNORECASE):
+            if any(match.start() in span for span in occupied):
+                continue
+            matches.extend(
+                [
+                    (match.start(), match.end(), "DomesticETP"),
+                    (match.start(), match.end(), "ForeignETP"),
+                ]
+            )
+            occupied.append(range(match.start(), match.end()))
 
         for pattern, operand in ((r"ETF", "ETF"), (r"펀드", "Fund")):
             for match in re.finditer(pattern, question, re.IGNORECASE):
@@ -950,6 +1025,7 @@ class RuleBasedQueryAnalyzer:
         has_source_scope = any(
             item in {
                 "DomesticETF", "ForeignETF", "KODEX_LONG_ONLY_COMPATIBLE",
+                "DomesticETN", "ForeignETN", "DomesticETP", "ForeignETP",
                 "KODEX_FULL", "TIGER_LONG_ONLY_COMPATIBLE", "TIGER_FULL",
                 "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS", "ISHARES_US_FULL",
             }
@@ -996,6 +1072,12 @@ class RuleBasedQueryAnalyzer:
             "currency": r"원화\s*채권",
             "credit_rating": r"(?:신용등급\s*)?[A-Z]{1,4}(?:[+\-0])?\s*(?:이상|이하|초과|미만)",
             "current_sale_available": r"현재\s*판매\s*가능(?:한)?",
+            "current_etp_sale_eligible": r"(?:\ud604\uc7ac|\uc9c0\uae08)?\s*(?:\uad6c\ub9e4|\ub9e4\uc218|\ud310\ub9e4)\s*(?:\uac00\ub2a5|\uc911)(?:\ud558\uc9c0\ub9cc|\ud55c|\uc778)?\s*(?:\uad6d\ub0b4|\ud574\uc678)?\s*(?:ETF|ETN|ETP|\uc0c1\uc7a5\uc9c0\uc218\w*)?",
+            "etp_trading_status": r"\uac70\ub798\s*\uc815\uc9c0(?:\uac00|\ub294)?\s*\uc544\ub2cc|\uac70\ub798\uc815\uc9c0\uac00\s*\uc544\ub2cc|\uac70\ub798\uc815\uc9c0\s*\uc81c\uc678",
+            "etp_listing_ended": r"\uc0c1\uc7a5\s*(?:\uc885\ub8cc|\ud3d0\uc9c0).*?\uc81c\uc678",
+            "latest_etp_price_available": r"\ucd5c\uc2e0\s*(?:\uac00\uaca9|\uc885\uac00)(?:\uc774|\uac00)?\s*(?:\uc788\ub294|\ubcf4\uc720)",
+            "stale_etp_price_warning": r"(?:\uac00\uaca9|\uc885\uac00)(?:\uc774|\uac00)?\s*\uc624\ub798\ub41c|\uc624\ub798\ub41c\s*(?:\uac00\uaca9|\uc885\uac00)",
+            "etp_insufficient_info": r"\uc815\ubcf4(?:\uac00)?\s*\ubd80\uc871(?:\ud574)?(?:\s*\ucd94\ucc9c\ud558\uae30\s*\uc5b4\ub824\uc6b4)?|\ucd94\ucc9c\ud558\uae30\s*\uc5b4\ub824\uc6b4",
             "current_fund_subscription_eligible": r"(?:(?:(?:현재|지금)\s*)?(?:미래에셋(?:에서)?\s*)?(?:가입|신규\s*가입|추가매수)(?:할\s*수\s*있는|\s*가능(?:한)?)|미래에셋(?:에서)?\s*판매\s*중(?:인)?)",
             "subscription_status": r"판매완료\s*펀드(?:는|를)?\s*제외",
             "latest_fund_price_available": r"최신\s*기준가(?:가)?\s*(?:있는|보유)",
