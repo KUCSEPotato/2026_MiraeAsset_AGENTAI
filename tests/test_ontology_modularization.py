@@ -104,7 +104,7 @@ def test_module_union_is_graph_isomorphic_to_merged_baseline() -> None:
     before = _baseline()
     after = _modules()
 
-    assert len(before) == len(after) == 1_274
+    assert len(before) == len(after) == 1_276
     assert isomorphic(before, after)
 
 

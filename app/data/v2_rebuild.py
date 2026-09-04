@@ -25,6 +25,7 @@ from app.data.catalog import DatasetFiles, discover_dataset_files
 from app.data.cleaning import (
     canonical_mirae_sale_flag,
     clean_source_row,
+    has_prbd_sale_lot_evidence,
     json_value,
     normalize_lookup_value,
 )
@@ -124,7 +125,7 @@ EXPECTED_CANONICAL_COUNTS = {
     "etn": 610,
     "funds": 6_867,
     "fund_share_classes": 16_574,
-    "sale_lots": 21_882,
+    "sale_lots": 634,
     "unresolved_fund_rows": 7_102,
 }
 
@@ -802,7 +803,10 @@ class CanonicalV2Rebuilder:
         if prefix == "PRBD01N001":
             audit.product_ids.add(product_id)
             source_key = str(mapped.canonical["source_record_key"])
-            audit.sale_lot_ids.add(explicit_source_id("sale_lot", "domestic_bond", source_key))
+            if has_prbd_sale_lot_evidence(row):
+                audit.sale_lot_ids.add(
+                    explicit_source_id("sale_lot", "domestic_bond", source_key)
+                )
             for field_name in ("pd_nm", "pd_pbcm", "isu_dt", "mat_dt", "isu_bal_amt", "pd_risk_gcd", "pd_risk_nm", "bd_knd", "bd_ofr_tcd"):
                 value = _value(row.get(field_name))
                 if value is not None:
@@ -968,10 +972,12 @@ class CanonicalV2Rebuilder:
         self._remember_conflict_assertions(
             audit, prefix, primary_id, support_id, cleaned, assertions
         )
-        rows.add(source_record_entities, {
-            "source_record_id": record_id, "entity_id": primary_id,
-            "entity_kind": _entity_kind(prefix, primary=True), "provenance_role": "DESCRIBES",
-        })
+        if primary_id:
+            rows.add(source_record_entities, {
+                "source_record_id": record_id, "entity_id": primary_id,
+                "entity_kind": _entity_kind(prefix, primary=True),
+                "provenance_role": "DESCRIBES",
+            })
         if support_id:
             rows.add(source_record_entities, {
                 "source_record_id": record_id, "entity_id": support_id,
@@ -998,7 +1004,7 @@ class CanonicalV2Rebuilder:
         self,
         audit: Audit,
         prefix: str,
-        primary_id: str,
+        primary_id: str | None,
         support_id: str | None,
         cleaned: dict[str, Any],
         assertions: dict[str, str],
@@ -1081,7 +1087,7 @@ class CanonicalV2Rebuilder:
     def _entities(
         self, rows: _Rows, audit: Audit, item: DatasetFiles,
         mapped: MappedProduct, cleaned: dict[str, Any],
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str | None, str | None]:
         prefix = item.spec.prefix
         product_id = str(mapped.canonical["canonical_product_id"])
         if prefix == "PRBD01N001":
@@ -1090,6 +1096,8 @@ class CanonicalV2Rebuilder:
             issue = None if audit.conflicting(product_id, "isu_dt") else _date(cleaned.get("isu_dt"))
             maturity = None if audit.conflicting(product_id, "mat_dt") else _date(cleaned.get("mat_dt"))
             rows.add(bonds, {"bond_id": product_id, "product_type_code": "BOND", "issue_date": issue, "maturity_date": maturity})
+            if not has_prbd_sale_lot_evidence(cleaned):
+                return None, product_id
             lot_id = explicit_source_id("sale_lot", "domestic_bond", str(mapped.canonical["source_record_key"]))
             self._entity(rows, lot_id, "SALE_LOT", str(mapped.canonical["source_record_key"]), "SOURCE_ONLY", True)
             rows.add(sale_lots, {
@@ -1135,18 +1143,21 @@ class CanonicalV2Rebuilder:
         rows.add(financial_products, {"product_id": entity_id, "product_type_code": code})
 
     def _aliases(
-        self, rows: _Rows, prefix: str, primary_id: str, support_id: str | None,
+        self, rows: _Rows, prefix: str, primary_id: str | None, support_id: str | None,
         mapped: MappedProduct, cleaned: dict[str, Any], record_id: str,
     ) -> None:
+        alias_subject = support_id if prefix == "PRBD01N001" and primary_id is None else primary_id
+        if alias_subject is None:
+            return
         name_field = "itm_nm" if prefix == "PRFD01N001" else "pd_nm"
         name = _value(cleaned.get(name_field))
         if name:
-            self._alias(rows, primary_id, name, "SOURCE_NAME", record_id)
+            self._alias(rows, alias_subject, name, "SOURCE_NAME", record_id)
             if prefix == "PRFD01N001" and support_id:
                 self._alias(rows, support_id, name, "MEMBER_CLASS_NAME", record_id)
         short = _value(mapped.canonical.get("short_name"))
         if short:
-            self._alias(rows, primary_id, short, "SHORT_NAME", record_id)
+            self._alias(rows, alias_subject, short, "SHORT_NAME", record_id)
 
     def _alias(self, rows: _Rows, entity_id: str, value: str, alias_type: str, record_id: str) -> None:
         rows.add(entity_aliases, {
@@ -1156,10 +1167,12 @@ class CanonicalV2Rebuilder:
         })
 
     def _identifiers(
-        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str,
+        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str | None,
         support_id: str | None, cleaned: dict[str, Any], record_id: str,
     ) -> None:
         target = support_id if prefix == "PRBD01N001" else primary_id
+        if target is None:
+            return
         for field_name, scheme, namespace, priority in IDENTIFIER_FIELDS[prefix]:
             value = _identifier_value(cleaned.get(field_name))
             if not value:
@@ -1188,11 +1201,13 @@ class CanonicalV2Rebuilder:
                 })
 
     def _scalar_facts(
-        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str,
+        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str | None,
         support_id: str | None, snapshot_id: str, cleaned: dict[str, Any],
         assertions: dict[str, str],
     ) -> None:
         subject = support_id if prefix == "PRBD01N001" else primary_id
+        if subject is None:
+            return
         product_type_field = {
             "PRBD01N001": "pd_no",
             "PREF01N001": "pd_grp_no",
@@ -1359,11 +1374,13 @@ class CanonicalV2Rebuilder:
         )
 
     def _classifications(
-        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str,
+        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str | None,
         support_id: str | None, snapshot_id: str, cleaned: dict[str, Any],
         assertions: dict[str, str],
     ) -> None:
         subject = support_id if prefix == "PRBD01N001" else primary_id
+        if subject is None:
+            return
         for field_name, category, raw_value in _classification_inputs(prefix, cleaned):
             counter = self.classification_counts[prefix][category]
             if not raw_value.strip():
@@ -1451,12 +1468,20 @@ class CanonicalV2Rebuilder:
         })
 
     def _relations(
-        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str,
+        self, rows: _Rows, audit: Audit, prefix: str, primary_id: str | None,
         support_id: str | None, snapshot_id: str, cleaned: dict[str, Any],
         assertions: dict[str, str], record_id: str,
     ) -> None:
         if prefix == "PRBD01N001":
-            self._entity_relation(rows, support_id, "HAS_SALE_LOT", primary_id, snapshot_id, assertions.get("pd_no"))
+            if primary_id is not None:
+                self._entity_relation(
+                    rows,
+                    support_id,
+                    "HAS_SALE_LOT",
+                    primary_id,
+                    snapshot_id,
+                    assertions.get("pd_no"),
+                )
             issuer = _value(cleaned.get("pd_pbcm"))
             if issuer and not audit.conflicting(support_id, "pd_pbcm"):
                 org = self._validated_organization(
@@ -1684,8 +1709,10 @@ class CanonicalV2Rebuilder:
         rows.add(index_relations, {"fact_id": fact, "subject_product_id": subject, "relation_type": relation, "index_id": target})
         self._evidence(rows, fact, assertion)
 
-    def _metrics(self, rows: _Rows, prefix: str, primary_id: str, support_id: str | None, snapshot_id: str, cleaned: dict[str, Any], assertions: dict[str, str]) -> None:
-        subject = primary_id
+    def _metrics(self, rows: _Rows, prefix: str, primary_id: str | None, support_id: str | None, snapshot_id: str, cleaned: dict[str, Any], assertions: dict[str, str]) -> None:
+        subject = support_id if prefix == "PRBD01N001" and primary_id is None else primary_id
+        if subject is None:
+            return
         currency = _currency_code(cleaned.get("pd_curr_cd") or cleaned.get("pd_trd_ccy") or cleaned.get("curr_cd"))
         for field_name, (metric_code, unit, scale, date_field) in METRIC_FIELDS[prefix].items():
             value = _decimal(cleaned.get(field_name))
@@ -1869,7 +1896,7 @@ class CanonicalV2Rebuilder:
         quarantine_count = connection.scalar(select(func.count()).select_from(quarantine_records))
         described = connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "DESCRIBES"))
         supports = connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "SUPPORTS"))
-        if (source_count, quarantine_count, described, supports) != (53_374, 1, 46_272, 38_456):
+        if (source_count, quarantine_count, described, supports) != (53_374, 1, 25_024, 38_456):
             raise ValueError("source/provenance reconciliation mismatch")
         orphan_classes = connection.scalar(select(func.count()).select_from(fund_share_classes).outerjoin(funds, fund_share_classes.c.parent_fund_id == funds.c.fund_id).where(funds.c.fund_id.is_(None)))
         orphan_lots = connection.scalar(select(func.count()).select_from(sale_lots).outerjoin(bonds, sale_lots.c.bond_id == bonds.c.bond_id).where(bonds.c.bond_id.is_(None)))

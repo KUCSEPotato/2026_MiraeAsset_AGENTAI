@@ -2,6 +2,7 @@ import re
 import unicodedata
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import math
 from typing import Any
 
 DATE_SENTINELS = {"0", "99991231"}
@@ -9,6 +10,22 @@ INDEX_SENTINELS = {
     "Index is not provided by Management Company",
     "Index is not available on Lipper Database",
 }
+PRBD_SALE_LOT_EVIDENCE_FIELDS = frozenset(
+    {
+        "after_tax_yield",
+        "avg_annual_tax_yield",
+        "bdbns_abl_chnl_nm",
+        "bdbns_abl_chnl_tcd",
+        "buy_yield",
+        "corp_after_tax_yield",
+        "corp_pretax_yield",
+        "depo_equiv_yield_154",
+        "depo_equiv_yield_495",
+        "pref_tax_yield",
+        "sale_yield_base_dt",
+        "trade_price",
+    }
+)
 
 
 def clean_source_row(
@@ -38,6 +55,27 @@ def json_value(value: Any) -> Any:
     if isinstance(value, Decimal):
         return str(value)
     return value
+
+
+def has_prbd_sale_lot_evidence(row: dict[str, Any]) -> bool:
+    """True when a PRBD row has concrete sale-condition evidence."""
+    return any(
+        _has_source_value(row.get(field_name))
+        for field_name in PRBD_SALE_LOT_EVIDENCE_FIELDS
+    )
+
+
+def _has_source_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    if isinstance(value, Decimal) and value.is_nan():
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(stripped) and stripped.casefold() != "nan"
+    return True
 
 
 def as_float(value: Any) -> float | None:

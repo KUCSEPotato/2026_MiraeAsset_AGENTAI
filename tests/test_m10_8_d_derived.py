@@ -137,7 +137,7 @@ def test_v2_graph_extractor_reconciles_and_preserves_grain(engine, selection) ->
         for edge in data.edges
     )
     assert data.stats.edges_by_relation["HAS_SHARE_CLASS"] == 16_574
-    assert data.stats.edges_by_relation["HAS_SALE_LOT"] == 21_882
+    assert data.stats.edges_by_relation["HAS_SALE_LOT"] == 634
     assert data.stats.edges_by_relation["MANAGED_BY"] >= 6_863
 
 

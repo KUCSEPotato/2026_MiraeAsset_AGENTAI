@@ -20,6 +20,8 @@ from app.data.v2_rebuild import (
     _etp_insufficient_reasons,
     relation_domain_violations,
 )
+from app.data.cleaning import PRBD_SALE_LOT_EVIDENCE_FIELDS
+from app.data.cleaning import has_prbd_sale_lot_evidence
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
     bonds,
@@ -66,6 +68,14 @@ def test_subscription_status_relation_domain_contract_is_narrow() -> None:
     )
     assert ("FINANCIAL_PRODUCT", "BOND") not in contract.subject_grains
     assert ("ONTOLOGY_CONCEPT", "offering_type") not in contract.target_grains
+
+
+def test_prbd_sale_lot_evidence_predicate_ignores_buyable_quantity() -> None:
+    assert "buyable_quantity" not in PRBD_SALE_LOT_EVIDENCE_FIELDS
+    assert not has_prbd_sale_lot_evidence({"buyable_quantity": 100})
+    assert not has_prbd_sale_lot_evidence({"trade_price": "", "buy_yield": None})
+    assert has_prbd_sale_lot_evidence({"trade_price": 0})
+    assert has_prbd_sale_lot_evidence({"bdbns_abl_chnl_nm": "온오프 겸용"})
 
 
 def _url() -> str:
@@ -173,7 +183,7 @@ def test_clean_rebuild_counts_and_ready_gate(rebuilt) -> None:
         "ETN": 610,
         "Fund": 6_867,
         "FundShareClass": 16_574,
-        "SaleLot": 21_882,
+        "SaleLot": 634,
     }
     assert {key: first.canonical_counts[key] for key in expected} == expected
     assert first.unresolved_rows == 7_102
@@ -183,6 +193,7 @@ def test_clean_rebuild_counts_and_ready_gate(rebuilt) -> None:
     with engine.connect() as connection:
         assert connection.scalar(select(func.count()).select_from(dataset_snapshots).where(dataset_snapshots.c.status == "READY")) == 4
         assert connection.scalar(select(func.count()).select_from(quarantine_records)) == 1
+        assert "buyable_quantity" not in PRBD_SALE_LOT_EVIDENCE_FIELDS
 
 
 def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
@@ -190,6 +201,16 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
     with engine.connect() as connection:
         assert connection.scalar(select(func.count()).select_from(fund_share_classes).outerjoin(funds, fund_share_classes.c.parent_fund_id == funds.c.fund_id).where(funds.c.fund_id.is_(None))) == 0
         assert connection.scalar(select(func.count()).select_from(sale_lots).outerjoin(bonds, sale_lots.c.bond_id == bonds.c.bond_id).where(bonds.c.bond_id.is_(None))) == 0
+        sale_lot_counts = dict(connection.execute(text(
+            "SELECT lot_count, count(*) FROM ("
+            "SELECT b.bond_id, count(sl.sale_lot_id) lot_count "
+            "FROM canonical_v2.bonds b LEFT JOIN canonical_v2.sale_lots sl "
+            "ON sl.bond_id = b.bond_id GROUP BY b.bond_id) q GROUP BY lot_count"
+        )))
+        assert sale_lot_counts[0] == 20_171
+        assert sale_lot_counts[1] == 19
+        assert sum(count for lot_count, count in sale_lot_counts.items() if lot_count > 1) == 307
+        assert connection.scalar(select(func.count(distinct(sale_lots.c.bond_id)))) == 326
         assert connection.scalar(select(func.count()).select_from(canonical_entities).join(funds, canonical_entities.c.entity_id == funds.c.fund_id).where(canonical_entities.c.preferred_name.is_not(None))) == 0
         assert connection.scalar(select(func.count()).select_from(canonical_entities).join(funds, canonical_entities.c.entity_id == funds.c.fund_id).where(canonical_entities.c.name_status != "NO_AUTHORITATIVE_FAMILY_NAME")) == 0
         unresolved_links = connection.scalar(
@@ -203,7 +224,7 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
 def test_final_provenance_and_fact_evidence(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
     assert first.provenance_counts["SourceRecords"] == 53_374
-    assert first.provenance_counts["DESCRIBES"] == 46_272
+    assert first.provenance_counts["DESCRIBES"] == 25_024
     assert first.provenance_counts["SUPPORTS"] == 38_456
     with engine.connect() as connection:
         duplicate_describes = connection.scalar(text(
@@ -217,6 +238,32 @@ def test_final_provenance_and_fact_evidence(rebuilt) -> None:
         )
         assert duplicate_describes == 0
         assert evidence_free == 0
+        no_lot_prbd_sources = connection.scalar(text(
+            "SELECT count(*) FROM canonical_v2.source_records sr "
+            "JOIN canonical_v2.dataset_snapshots ds "
+            "ON ds.snapshot_id = sr.snapshot_id "
+            "WHERE ds.dataset_id = 'PRBD01N001' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM canonical_v2.source_record_entities sre "
+            "WHERE sre.source_record_id = sr.source_record_id "
+            "AND sre.provenance_role = 'DESCRIBES')"
+        ))
+        no_lot_prbd_supports = connection.scalar(text(
+            "SELECT count(*) FROM canonical_v2.source_records sr "
+            "JOIN canonical_v2.dataset_snapshots ds "
+            "ON ds.snapshot_id = sr.snapshot_id "
+            "JOIN canonical_v2.source_record_entities sre "
+            "ON sre.source_record_id = sr.source_record_id "
+            "WHERE ds.dataset_id = 'PRBD01N001' "
+            "AND sre.provenance_role = 'SUPPORTS' "
+            "AND sre.entity_kind = 'FINANCIAL_PRODUCT' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM canonical_v2.source_record_entities described "
+            "WHERE described.source_record_id = sr.source_record_id "
+            "AND described.provenance_role = 'DESCRIBES')"
+        ))
+        assert no_lot_prbd_sources == 21_248
+        assert no_lot_prbd_supports == 21_248
 
 
 def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
@@ -413,6 +460,7 @@ def test_semantic_relation_correction_and_safe_fund_promotion(rebuilt) -> None:
     assert first.relation_counts["MANAGED_BY"] == 14_057
     assert first.relation_counts["HAS_TRUSTEE"] == 6_857
     assert first.relation_counts["HAS_BENCHMARK"] == 1_311
+    assert first.relation_counts["HAS_SALE_LOT"] == 634
     # PREF01's authoritative CURR_CD_KRW code is now normalized to KRW.
     assert first.relation_counts["DENOMINATED_IN"] == 28_298
 
