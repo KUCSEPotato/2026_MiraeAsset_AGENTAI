@@ -7,9 +7,9 @@ from app.domain.models import ConstraintStatus, GroundingStatus
 from app.entity.lookup import StaticEntityLookup
 from app.entity.resolver import RegistryEntityResolver
 from app.ontology.loader import OntologyLoader
+from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS
 from app.ontology.rdf_service import RDFOntologyService
 from app.query.analyzer import RuleBasedQueryAnalyzer
-from app.retrieval.rdb import RDBFieldRegistry
 
 
 def _parse(question: str):
@@ -22,7 +22,7 @@ def _ground(question: str):
         resolved = await RegistryEntityResolver(StaticEntityLookup()).resolve(parsed)
         loaded = OntologyLoader(
             Path("ontology"),
-            known_canonical_fields=RDBFieldRegistry().canonical_fields,
+            known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS,
             version="team-v1",
         ).load()
         return await RDFOntologyService(loaded).ground(resolved)

@@ -23,6 +23,7 @@ from app.entity.lookup import StaticEntityLookup
 from app.entity.rdb_lookup import RDBEntityLookup
 from app.entity.resolver import RegistryEntityResolver
 from app.ontology.loader import OntologyLoader
+from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS
 from app.ontology.rdf_service import RDFOntologyService
 from app.planning.coordinator import QueryPlanner
 from app.planning.exceptions import UnsupportedQuerySemanticsError
@@ -46,7 +47,7 @@ def _ontology() -> RDFOntologyService:
     return RDFOntologyService(
         OntologyLoader(
             Path("ontology"),
-            known_canonical_fields=RDBFieldRegistry().canonical_fields,
+            known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS,
         ).load()
     )
 

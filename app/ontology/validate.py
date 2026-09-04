@@ -2,14 +2,14 @@ import json
 from pathlib import Path
 
 from app.ontology.loader import OntologyLoader
-from app.retrieval.rdb import RDBFieldRegistry
+from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS
 
 
 def main() -> int:
     ontology_dir = Path(__file__).resolve().parents[2] / "ontology"
     loaded = OntologyLoader(
         ontology_dir,
-        known_canonical_fields=RDBFieldRegistry().canonical_fields,
+        known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS,
     ).load()
     print(
         json.dumps(

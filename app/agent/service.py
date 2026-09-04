@@ -86,6 +86,7 @@ from app.graph.config import GraphSettings
 from app.graph.mapping import GraphMappingRegistry
 from app.graph.v2 import CanonicalV2GraphBackend, V2_GRAPH_NODE_LABEL
 from app.ontology.loader import OntologyLoader
+from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS
 from app.ontology.rdf_service import RDFOntologyService
 from app.ontology.vocabulary import export_compact_semantic_vocabulary
 from app.planning.coordinator import QueryPlanner
@@ -530,11 +531,7 @@ def create_production_answer_service(
     if ontology_service is None:
         loader = ontology_loader or OntologyLoader(
             Path(__file__).resolve().parents[2] / "ontology",
-            known_canonical_fields=(
-                CanonicalV2FieldRegistry().canonical_fields
-                if settings.rdb_repository_version == "v2"
-                else RDBFieldRegistry().canonical_fields
-            ),
+            known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS,
             version=resolved_graph_settings.ontology_version,
         )
         ontology_service = RDFOntologyService(loader.load())

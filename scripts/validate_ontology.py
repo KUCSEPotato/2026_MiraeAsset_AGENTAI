@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.ontology.index import FP, normalize_ontology_text  # noqa: E402
+from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS  # noqa: E402
 from app.ontology.loader import MANDATORY_ONTOLOGY_FILES, OntologyLoader  # noqa: E402
-from app.retrieval.rdb import RDBFieldRegistry  # noqa: E402
 
 ONTOLOGY = ROOT / "ontology"
 MATERIAL = ROOT / "material" / "1.금융상품"
@@ -26,7 +26,7 @@ EX = Namespace("https://miraeasset.com/data/example/")
 def shacl_conforms(data: Graph) -> tuple[bool, str]:
     shapes = Graph().parse(ONTOLOGY / "shapes.ttl", format="turtle")
     ontology = OntologyLoader(
-        ONTOLOGY, known_canonical_fields=RDBFieldRegistry().canonical_fields
+        ONTOLOGY, known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS
     ).load().graph
     conforms, _, report = validate(
         data_graph=data, shacl_graph=shapes, ont_graph=ontology,
@@ -165,7 +165,7 @@ def validate_source_samples() -> None:
 
 def main() -> None:
     loaded = OntologyLoader(
-        ONTOLOGY, known_canonical_fields=RDBFieldRegistry().canonical_fields
+        ONTOLOGY, known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS
     ).load()
     assert len(loaded.files) == len(MANDATORY_ONTOLOGY_FILES)
     validate_alias_uniqueness(loaded.graph)

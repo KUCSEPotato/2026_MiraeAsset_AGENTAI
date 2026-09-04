@@ -17,6 +17,7 @@ from app.data.schema import canonical_products as v1_products
 from app.data.v2_rebuild import (
     CanonicalV2Rebuilder,
     _RELATION_DOMAIN_CONTRACTS,
+    _etp_insufficient_reasons,
     relation_domain_violations,
 )
 from app.data.v2_schema import (
@@ -247,10 +248,12 @@ def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     # returns). Organizer purchasability is a lifecycle rule, not a metric.
     assert first.metric_status == {
         "COMPARABLE": 33_397,
-        "NOT_COMPARABLE": 89_876,
+        # Fourteen foreign rows have neither source price nor source volume;
+        # absence is preserved instead of fabricating metric observations.
+        "NOT_COMPARABLE": 89_862,
     }
     assert first.metric_counts["MARKET_PRICE"] == 7_799
-    assert first.metric_counts["VOLUME"] == 7_813
+    assert first.metric_counts["VOLUME"] == 7_799
     assert first.metric_counts["ONE_YEAR_RETURN"] == 8_417
     assert "CURRENT_SALE_AVAILABILITY" not in first.metric_counts
     assert "BUYABLE_QUANTITY" not in first.metric_counts
@@ -320,6 +323,7 @@ def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:
         assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF02N001", "ETN") == 65
         assert strict_count(connection, "PREF02N001", "ETF") == 5_629
         assert strict_count(connection, "PREF02N001", "ETN") == 58
+        assert scalar_boolean_count(connection, "etp_insufficient_info", "PREF01N001") == 3
         assert scalar_boolean_count(connection, "etp_insufficient_info", "PREF02N001") == 14
         assert scalar_boolean_count(connection, "stale_etp_price_warning", "PREF02N001") == 336
         assert connection.scalar(
@@ -363,6 +367,31 @@ def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:
                 metric_observations.c.quality_status == "VALID",
             )
         ) == 91
+        insufficient_payloads = connection.execute(
+            select(source_records.c.raw_payload)
+            .select_from(
+                canonical_facts
+                .join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+                .join(
+                    source_record_entities,
+                    source_record_entities.c.entity_id == canonical_facts.c.subject_entity_id,
+                )
+                .join(
+                    source_records,
+                    source_records.c.source_record_id == source_record_entities.c.source_record_id,
+                )
+            )
+            .where(
+                canonical_facts.c.semantic_key == "etp_insufficient_info",
+                canonical_scalar_facts.c.boolean_value.is_(True),
+                source_records.c.snapshot_id == canonical_facts.c.snapshot_id,
+            )
+        ).scalars().all()
+        assert len(insufficient_payloads) == 17
+        assert all(_etp_insufficient_reasons(payload) for payload in insufficient_payloads)
 
 
 def test_crosswalk_and_idempotent_second_run(rebuilt) -> None:

@@ -92,7 +92,10 @@ class RuleBasedQueryAnalyzer:
                 if not (
                     item.field == "region"
                     and str(item.value) in {"국내", "한국"}
-                    and "DomesticETF" in product_universe.operands
+                    and bool(
+                        {"DomesticETF", "DomesticETN", "DomesticETP"}
+                        & set(product_universe.operands)
+                    )
                 )
             ]
         sort, sort_spans = self._extract_sort(question)

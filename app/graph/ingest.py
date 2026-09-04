@@ -15,7 +15,7 @@ from app.graph.mapping import GraphMappingRegistry
 from pathlib import Path
 
 from app.ontology.loader import OntologyLoader
-from app.retrieval.rdb import RDBFieldRegistry
+from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS
 
 
 async def ingest_graph() -> dict:
@@ -23,7 +23,7 @@ async def ingest_graph() -> dict:
     graph_settings = GraphSettings.from_env(require_uri=True)
     ontology = OntologyLoader(
         Path(__file__).resolve().parents[2] / "ontology",
-        known_canonical_fields=RDBFieldRegistry().canonical_fields,
+        known_canonical_fields=ONTOLOGY_CANONICAL_FIELDS,
         version=graph_settings.ontology_version,
     ).load()
     GraphMappingRegistry(ontology.index, version=graph_settings.ontology_version)

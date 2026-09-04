@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy.dialects import postgresql
 
 from app.data.cleaning import (
@@ -15,7 +16,9 @@ from app.data.database import DatabaseSettings
 from app.data.v2_rebuild import (
     _atomic_index,
     _date,
+    _decimal,
     _etp_sale_status,
+    _etp_insufficient_reasons,
     _etp_trading_status,
 )
 from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
@@ -249,6 +252,74 @@ def test_etp_sentinel_dates_are_not_real_lifecycle_dates() -> None:
     assert _date("10001231") is None
     assert _date("99991231") is None
     assert _date("20260821") == date(2026, 8, 21)
+
+
+def test_etp_insufficient_reasons_only_cover_core_availability_inputs() -> None:
+    refinitiv_only_missing = {
+        "pd_sale_yn": "1", "pd_tr_yn": "0", "pd_lstg_dt": "20260101",
+        "pd_isin_cd": None, "pd_ric": None, "pd_ticker": None,
+    }
+    assert _etp_insufficient_reasons(refinitiv_only_missing) == ()
+    assert _etp_insufficient_reasons({
+        **refinitiv_only_missing, "pd_tr_yn": None,
+    }) == ("TRADING_STATUS_MISSING",)
+    assert _etp_insufficient_reasons({
+        **refinitiv_only_missing, "pd_lstg_dt": "10001231",
+    }) == ("LISTING_START_DATE_MISSING",)
+
+
+def test_etp_source_metric_and_insufficient_counts_preserve_missingness() -> None:
+    material = Path("material/1.금융상품")
+    counts = {"volume": 0, "zero_volume": 0, "missing_foreign_volume": 0}
+    insufficient = {"PREF01N001": 0, "PREF02N001": 0}
+    for prefix in insufficient:
+        path = next(material.glob(f"{prefix}_*_datarows.xlsx"))
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        rows = workbook["data"].iter_rows(values_only=True)
+        header = [str(value).strip() for value in next(rows)]
+        for values in rows:
+            row = dict(zip(header, values, strict=False))
+            volume = _decimal(row.get("ru_mkt_volume"))
+            if volume is None:
+                if prefix == "PREF02N001":
+                    counts["missing_foreign_volume"] += 1
+            else:
+                counts["volume"] += 1
+                counts["zero_volume"] += prefix == "PREF02N001" and volume == 0
+            insufficient[prefix] += bool(_etp_insufficient_reasons(row))
+        workbook.close()
+
+    assert counts == {
+        "volume": 7_799,
+        "zero_volume": 91,
+        "missing_foreign_volume": 14,
+    }
+    # Domestic raw has four core-invalid rows; one is quarantined during rebuild.
+    assert insufficient == {"PREF01N001": 4, "PREF02N001": 14}
+
+
+@pytest.mark.parametrize(
+    ("question", "universe", "expected_region"),
+    [
+        ("현재 구매 가능한 국내 ETF", ["DomesticETF"], None),
+        ("현재 판매 중인 국내 ETN", ["DomesticETN"], None),
+        ("현재 구매 가능한 국내 ETP", ["DomesticETP"], None),
+        ("최신 가격이 있는 해외 ETF", ["ForeignETF"], None),
+        ("국내 주식에 투자하는 해외 ETF", ["ForeignETF"], "국내"),
+        ("미국 주식에 투자하는 국내 ETF", ["DomesticETF"], "미국"),
+        ("중국 시장을 추종하는 국내 ETN", ["DomesticETN"], "중국"),
+    ],
+)
+def test_etp_universe_words_do_not_erase_explicit_exposure_regions(
+    question, universe, expected_region
+) -> None:
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze(question))
+    assert parsed.product_universe is not None
+    assert parsed.product_universe.operands == universe
+    region_filters = [item for item in parsed.filters if item.field == "region"]
+    assert [item.value for item in region_filters] == (
+        [] if expected_region is None else [expected_region]
+    )
 
 
 def test_foreign_index_sentence_sentinels_are_not_atomic_indices() -> None:

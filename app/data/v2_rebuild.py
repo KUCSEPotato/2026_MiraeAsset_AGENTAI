@@ -1296,12 +1296,7 @@ class CanonicalV2Rebuilder:
             and listing_start <= snapshot_date
             and listing_has_ended is not True
         )
-        insufficient_info = (
-            sale_status == "UNKNOWN"
-            or trading_status == "UNKNOWN"
-            or listing_start is None
-            or not _etp_core_market_info_available(prefix, cleaned)
-        )
+        insufficient_reasons = _etp_insufficient_reasons(cleaned)
         status_assertions = [
             assertions.get("pd_sale_yn"), assertions.get("pd_tr_yn"),
             assertions.get("pd_lstg_dt"), assertions.get("pd_lste_dt"),
@@ -1360,7 +1355,7 @@ class CanonicalV2Rebuilder:
         )
         self._derived_scalar(
             rows, subject, snapshot_id, "etp_insufficient_info", "BOOLEAN",
-            True if insufficient_info else None, [*status_assertions, *price_assertions],
+            True if insufficient_reasons else None, status_assertions,
         )
 
     def _classifications(
@@ -2122,12 +2117,21 @@ def _is_no_known_end_date(value: Any) -> bool:
     return raw is not None and raw.replace("-", "") == "99991231"
 
 
-def _etp_core_market_info_available(prefix: str, cleaned: dict[str, Any]) -> bool:
-    if prefix == "PREF01N001":
-        fields = ("pd_isin_cd", "pd_ric", "pd_exg_mkt_cd", "pd_curr_cd")
-    else:
-        fields = ("pd_itm_no", "pd_isin_cd", "pd_exg_mkt_cd", "pd_trd_ccy")
-    return all(_value(cleaned.get(field_name)) is not None for field_name in fields)
+def _etp_insufficient_reasons(cleaned: dict[str, Any]) -> tuple[str, ...]:
+    """Return unresolved core availability inputs, excluding vendor linkage.
+
+    Price freshness is represented by its own canonical predicate. Missing
+    Refinitiv identifiers are also not evidence that an otherwise identified
+    ETP cannot be assessed for sale and trading availability.
+    """
+    reasons = []
+    if _etp_sale_status(cleaned.get("pd_sale_yn")) == "UNKNOWN":
+        reasons.append("SALE_STATUS_MISSING")
+    if _etp_trading_status(cleaned.get("pd_tr_yn")) == "UNKNOWN":
+        reasons.append("TRADING_STATUS_MISSING")
+    if _date(cleaned.get("pd_lstg_dt")) is None:
+        reasons.append("LISTING_START_DATE_MISSING")
+    return tuple(reasons)
 
 
 def _organization_target_rejection_reason(value: str | None) -> str | None:
