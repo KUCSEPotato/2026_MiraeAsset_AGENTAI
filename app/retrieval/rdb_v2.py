@@ -50,8 +50,10 @@ from app.data.v2_schema import (
     sale_lots,
     source_datasets,
     source_field_assertions,
+    source_record_entities,
     source_records,
 )
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
 from app.data.holdings_coverage import (
     ISHARES_READY_SCOPE,
     KODEX_READY_SCOPE,
@@ -108,7 +110,7 @@ class CanonicalV2SnapshotSelector:
         snapshot_date: str,
         generation: str = "260824",
         ontology_version: str = "merged-optical-1.4",
-        transformer_version: str = "m10.9-c2-kodex-holdings-1",
+        transformer_version: str = CANONICAL_V2_TRANSFORMER_VERSION,
         schema_version: str = CANONICAL_V2_SCHEMA_VERSION,
         required_datasets: Iterable[str] | None = None,
         include_trusted_holdings: bool = False,
@@ -355,9 +357,31 @@ class CanonicalV2FieldRegistry:
             # Storage is numeric, but the approved comparison contracts are disabled.
             V2FieldMapping("product.aum", "metric", "AUM", False, True, False),
             V2FieldMapping("product.expense_ratio", "metric", "EXPENSE_RATIO", False, True, False),
+            V2FieldMapping("product.price", "metric", "PRICE", False, True, False),
+            V2FieldMapping("product.market_price", "metric", "MARKET_PRICE", False, True, False),
+            V2FieldMapping("product.market_volume", "metric", "VOLUME", False, True, False),
             V2FieldMapping("product.one_year_return", "metric", "ONE_YEAR_RETURN", False, True, False),
             V2FieldMapping("product.credit_rating", "metric", "CREDIT_RATING_ORDER", True, True, False),
             V2FieldMapping("product.current_sale_available", "bond_purchasable", "ORGANIZER_PURCHASABLE_BOND", True, False, False),
+            V2FieldMapping("product.current_bond_purchase_eligible", "bond_purchasable", "BOND_PURCHASE_ELIGIBILITY_V1", True, False, False),
+            V2FieldMapping("product.bond_market_presence", "bond_market_presence", "BOND_MARKET_PRESENCE_V1", True, False, False),
+            V2FieldMapping("product.has_sale_lot", "bond_sale_lot_exists", "BOND_SALE_LOT_EXISTENCE_V1", True, False, False),
+            V2FieldMapping("product.has_multiple_sale_lots", "bond_multiple_sale_lots", "BOND_MULTIPLE_SALE_LOTS_V1", True, False, False),
+            V2FieldMapping("product.has_trade_price_and_buy_yield_sale_lot", "bond_sale_lot_price_yield", "BOND_SALE_LOT_PRICE_YIELD_V1", True, False, False),
+            V2FieldMapping("product.subscription_status", "classification", "SUBSCRIPTION_STATUS", True, False, False),
+            V2FieldMapping("product.is_sold_by_mirae_asset", "scalar_boolean", "is_sold_by_mirae_asset", True, False, False),
+            V2FieldMapping("product.current_fund_subscription_eligible", "fund_subscription_eligible", "FUND_SUBSCRIPTION_RULE_V1", True, False, False),
+            V2FieldMapping("product.latest_fund_price_available", "latest_fund_price", "FUND_PRICE_FRESHNESS_V1", True, False, False),
+            V2FieldMapping("product.etp_distribution_status", "scalar_text", "etp_distribution_status", True, True, False),
+            V2FieldMapping("product.etp_trading_status", "scalar_text", "etp_trading_status", True, True, False),
+            V2FieldMapping("product.listing_start_date", "scalar", "listing_start_date", False, True, False),
+            V2FieldMapping("product.listing_end_date", "scalar", "listing_end_date", False, True, False),
+            V2FieldMapping("product.etp_listing_ended", "scalar_boolean", "etp_listing_ended", True, False, False),
+            V2FieldMapping("product.current_etp_sale_eligible", "scalar_boolean", "current_etp_sale_eligible", True, False, False),
+            V2FieldMapping("product.latest_etp_price_available", "scalar_boolean", "latest_etp_price_available", True, False, False),
+            V2FieldMapping("product.etp_price_freshness_status", "scalar_text", "etp_price_freshness_status", True, True, False),
+            V2FieldMapping("product.stale_etp_price_warning", "scalar_boolean", "stale_etp_price_warning", True, False, False),
+            V2FieldMapping("product.etp_insufficient_info", "scalar_boolean", "etp_insufficient_info", True, False, False),
         )
         self._fields = {item.canonical_field: item for item in mappings}
         runtime = TeamOntologyRuntimeMapping()
@@ -514,9 +538,21 @@ class CanonicalV2QueryCompiler:
         elif codes:
             conditions.append(base.c.product_type.in_(sorted(codes)))
         if public_fund:
-            if grain is not V2ResultGrain.FINANCIAL_PRODUCT:
-                raise RDBQueryCompilationError("public-fund search returns Fund grain")
-            conditions.append(self._public_fund_exists(entity_id, snapshot))
+            if grain is V2ResultGrain.FINANCIAL_PRODUCT:
+                conditions.append(self._public_fund_exists(entity_id, snapshot))
+            elif grain is V2ResultGrain.FUND_SHARE_CLASS:
+                public_iri = self._fields.concept_iri(
+                    "OFFERING_TYPE", "OfferingType.PUBLIC"
+                )
+                conditions.append(
+                    self._classification_exists(
+                        entity_id, "OFFERING_TYPE", [public_iri], snapshot
+                    )
+                )
+            else:
+                raise RDBQueryCompilationError(
+                    "public-fund search does not support sale-lot grain"
+                )
 
         ids = step.inputs.get("entity_ids", [])
         if ids:
@@ -746,6 +782,41 @@ class CanonicalV2QueryCompiler:
             if operator is not FilterOperator.EQ or value is not True:
                 raise RDBQueryCompilationError("bond purchasability supports only eq true")
             return self._organizer_purchasable_bond(entity_id, snapshot)
+        if mapping.kind == "bond_market_presence":
+            if operator is not FilterOperator.EQ or value not in {
+                "EXCHANGE_TRADED", "OTC"
+            }:
+                raise RDBQueryCompilationError(
+                    "bond market presence supports only eq EXCHANGE_TRADED/OTC"
+                )
+            return self._bond_market_presence(entity_id, value, snapshot)
+        if mapping.kind == "bond_sale_lot_exists":
+            if operator is not FilterOperator.EQ or not isinstance(value, bool):
+                raise RDBQueryCompilationError(
+                    "bond SaleLot existence supports only eq boolean"
+                )
+            predicate = self._bond_sale_lot_exists(entity_id, snapshot)
+            return predicate if value else not_(predicate)
+        if mapping.kind == "bond_multiple_sale_lots":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError(
+                    "multiple bond SaleLots supports only eq true"
+                )
+            return self._bond_sale_lot_count(entity_id, snapshot) > 1
+        if mapping.kind == "bond_sale_lot_price_yield":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError(
+                    "same-SaleLot price/yield supports only eq true"
+                )
+            return self._bond_sale_lot_price_yield(entity_id, snapshot)
+        if mapping.kind == "fund_subscription_eligible":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError("fund subscription eligibility supports only eq true")
+            return self._fund_subscription_eligible(entity_id, snapshot)
+        if mapping.kind == "latest_fund_price":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError("latest fund price supports only eq true")
+            return self._latest_fund_price_available(entity_id, snapshot)
         if operator in ordered:
             raise RDBQueryCompilationError(
                 f"operator {operator.value} is unsupported for canonical field {mapping.canonical_field}"
@@ -766,6 +837,12 @@ class CanonicalV2QueryCompiler:
         elif mapping.kind == "classification":
             iris = [self._fields.concept_iri(mapping.semantic_key, item) for item in values]
             predicate = self._classification_exists(entity_id, mapping.semantic_key, iris, snapshot)
+        elif mapping.kind == "scalar_boolean":
+            if operator not in {FilterOperator.EQ, FilterOperator.NE} or not isinstance(value, bool):
+                raise RDBQueryCompilationError("boolean scalar supports only eq/ne boolean")
+            predicate = self._scalar_boolean_exists(entity_id, mapping.semantic_key, value, snapshot)
+        elif mapping.kind == "scalar_text":
+            predicate = self._scalar_text_exists(entity_id, mapping.semantic_key, values, snapshot)
         elif mapping.kind.endswith("relation"):
             values = [
                 _canonical_relation_target(mapping.semantic_key, item)
@@ -874,6 +951,173 @@ class CanonicalV2QueryCompiler:
         return not_(lifecycle_end)
 
     @staticmethod
+    def _bond_market_presence(bond_id, market, snapshot):
+        assertion = source_field_assertions.alias("bond_market_assertion")
+        record_entity = source_record_entities.alias("bond_market_record_entity")
+        record = source_records.alias("bond_market_record")
+        raw_market = {"EXCHANGE_TRADED": "장내", "OTC": "장외"}[market]
+        return exists(
+            select(1)
+            .select_from(
+                record_entity
+                .join(record, record.c.source_record_id == record_entity.c.source_record_id)
+                .join(assertion, assertion.c.source_record_id == record.c.source_record_id)
+            )
+            .where(
+                record_entity.c.entity_id == bond_id,
+                record_entity.c.entity_kind == "FINANCIAL_PRODUCT",
+                record_entity.c.provenance_role == "SUPPORTS",
+                record.c.snapshot_id.in_(snapshot.snapshot_ids),
+                assertion.c.source_column == "pd_exg_mkt",
+                assertion.c.normalized_value == raw_market,
+            )
+        )
+
+    @staticmethod
+    def _bond_sale_lot_exists(bond_id, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                entity_relations.join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == entity_relations.c.fact_id,
+                )
+            )
+            .where(
+                entity_relations.c.subject_entity_id == bond_id,
+                entity_relations.c.relation_type == "HAS_SALE_LOT",
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        )
+
+    @staticmethod
+    def _bond_sale_lot_count(bond_id, _snapshot):
+        return (
+            select(func.count(distinct(sale_lots.c.sale_lot_id)))
+            .where(sale_lots.c.bond_id == bond_id)
+            .scalar_subquery()
+        )
+
+    @staticmethod
+    def _bond_sale_lot_price_yield(bond_id, snapshot):
+        described = source_record_entities.alias("sale_lot_described_record")
+        record = source_records.alias("sale_lot_price_yield_record")
+        lot = sale_lots.alias("price_yield_sale_lot")
+        price = source_field_assertions.alias("trade_price_assertion")
+        yield_ = source_field_assertions.alias("buy_yield_assertion")
+        return exists(
+            select(1)
+            .select_from(
+                described
+                .join(record, record.c.source_record_id == described.c.source_record_id)
+                .join(lot, lot.c.sale_lot_id == described.c.entity_id)
+                .join(price, price.c.source_record_id == record.c.source_record_id)
+                .join(yield_, yield_.c.source_record_id == record.c.source_record_id)
+            )
+            .where(
+                described.c.entity_kind == "SALE_LOT",
+                described.c.provenance_role == "DESCRIBES",
+                lot.c.bond_id == bond_id,
+                record.c.snapshot_id.in_(snapshot.snapshot_ids),
+                price.c.source_column == "trade_price",
+                price.c.normalized_value.is_not(None),
+                price.c.normalized_value != "",
+                yield_.c.source_column == "buy_yield",
+                yield_.c.normalized_value.is_not(None),
+                yield_.c.normalized_value != "",
+            )
+        )
+
+    def _fund_subscription_eligible(self, share_class_id, snapshot):
+        public = self._fields.concept_iri("OFFERING_TYPE", "OfferingType.PUBLIC")
+        opened = self._fields.concept_iri(
+            "SUBSCRIPTION_STATUS", "SubscriptionStatus.OPEN_FOR_SUBSCRIPTION"
+        )
+        return and_(
+            self._classification_exists(
+                share_class_id, "OFFERING_TYPE", [public], snapshot
+            ),
+            self._classification_exists(
+                share_class_id, "SUBSCRIPTION_STATUS", [opened], snapshot
+            ),
+            self._scalar_boolean_exists(
+                share_class_id, "is_sold_by_mirae_asset", True, snapshot
+            ),
+        )
+
+    @staticmethod
+    def _scalar_boolean_exists(entity_id, key, value, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.subject_entity_id == entity_id,
+                canonical_facts.c.semantic_key == key,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                canonical_scalar_facts.c.value_type == "BOOLEAN",
+                canonical_scalar_facts.c.boolean_value.is_(value),
+            )
+        )
+
+    @staticmethod
+    def _scalar_text_exists(entity_id, key, values, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.subject_entity_id == entity_id,
+                canonical_facts.c.semantic_key == key,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+                canonical_scalar_facts.c.value_type == "TEXT",
+                canonical_scalar_facts.c.text_value.in_([str(item) for item in values]),
+            )
+        )
+
+    @staticmethod
+    def _latest_fund_price_available(entity_id, snapshot):
+        latest_source_date = (
+            select(func.max(metric_observations.c.observed_on))
+            .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+            .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+            .join(source_datasets, source_datasets.c.dataset_id == dataset_snapshots.c.dataset_id)
+            .where(
+                metric_observations.c.metric_code == "PRICE",
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                source_datasets.c.dataset_code == "PRFD01N001",
+            )
+            .scalar_subquery()
+        )
+        return exists(
+            select(1)
+            .select_from(
+                metric_observations.join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                )
+            )
+            .where(
+                metric_observations.c.subject_entity_id == entity_id,
+                metric_observations.c.metric_code == "PRICE",
+                metric_observations.c.observed_on == latest_source_date,
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        )
+
+    @staticmethod
     def _dataset_entity_exists(entity_id, dataset_code, snapshot):
         return exists(
             select(1)
@@ -900,7 +1144,8 @@ class CanonicalV2QueryCompiler:
         if not operands or len(operands) != len(set(operands)):
             raise RDBQueryCompilationError("product universe operands must be unique")
         allowed = {
-            "DomesticETF", "ForeignETF", "ETF", "PublicFund", "Fund",
+            "DomesticETF", "ForeignETF", "DomesticETN", "ForeignETN",
+            "DomesticETP", "ForeignETP", "ETF", "PublicFund", "Fund",
             KODEX_READY_SCOPE, TIGER_READY_SCOPE, ISHARES_READY_SCOPE,
         }
         if set(operands) - allowed:
@@ -925,6 +1170,34 @@ class CanonicalV2QueryCompiler:
                 branches.append(
                     and_(
                         base.c.product_type == "ETF",
+                        self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
+                    )
+                )
+            elif operand == "DomesticETN":
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETN",
+                        self._dataset_entity_exists(entity_id, "PREF01N001", snapshot),
+                    )
+                )
+            elif operand == "ForeignETN":
+                branches.append(
+                    and_(
+                        base.c.product_type == "ETN",
+                        self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
+                    )
+                )
+            elif operand == "DomesticETP":
+                branches.append(
+                    and_(
+                        base.c.product_type.in_(("ETF", "ETN")),
+                        self._dataset_entity_exists(entity_id, "PREF01N001", snapshot),
+                    )
+                )
+            elif operand == "ForeignETP":
+                branches.append(
+                    and_(
+                        base.c.product_type.in_(("ETF", "ETN")),
                         self._dataset_entity_exists(entity_id, "PREF02N001", snapshot),
                     )
                 )
@@ -1478,6 +1751,23 @@ class CanonicalV2RDBRetriever:
             elif mapping.kind == "scalar":
                 rows = connection.execute(
                     select(canonical_facts.c.subject_entity_id, canonical_scalar_facts.c.date_value)
+                    .join(canonical_scalar_facts, canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id)
+                    .where(
+                        canonical_facts.c.subject_entity_id.in_(entity_ids),
+                        canonical_facts.c.semantic_key == mapping.semantic_key,
+                        canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                        canonical_facts.c.resolution_status == "RESOLVED",
+                    ).order_by(canonical_facts.c.subject_entity_id)
+                ).all()
+                CanonicalV2RDBRetriever._collect_projection(result, field, rows)
+            elif mapping.kind in {"scalar_text", "scalar_boolean"}:
+                value_column = (
+                    canonical_scalar_facts.c.text_value
+                    if mapping.kind == "scalar_text"
+                    else canonical_scalar_facts.c.boolean_value
+                )
+                rows = connection.execute(
+                    select(canonical_facts.c.subject_entity_id, value_column)
                     .join(canonical_scalar_facts, canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id)
                     .where(
                         canonical_facts.c.subject_entity_id.in_(entity_ids),

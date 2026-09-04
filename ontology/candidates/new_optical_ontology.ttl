@@ -123,7 +123,8 @@ fin:FundShareClass
 fin:SaleLot
     a owl:Class ;
     rdfs:subClassOf fin:EvidenceBearingEntity ;
-    rdfs:label "Bond sale lot"@en, "채권 판매 LOT"@ko .
+    rdfs:label "Bond sale lot"@en, "채권 판매 LOT"@ko ;
+    rdfs:comment "A concrete PRBD sale-condition bundle evidenced by price, yield, channel, or sale-condition date fields. It is distinct from organizer-policy bond purchase eligibility."@en .
 
 #################################################################
 # Reference and organization classes
@@ -330,7 +331,8 @@ fin:hasShareClass
 fin:hasSaleLot
     a owl:ObjectProperty ;
     rdfs:domain fin:Bond ;
-    rdfs:range fin:SaleLot .
+    rdfs:range fin:SaleLot ;
+    rdfs:comment "Optional 0..N relation from a Bond to concrete sale-condition lots; absence of a SaleLot does not imply purchase ineligibility."@en .
 
 # Index
 fin:hasUnderlyingIndex
@@ -420,6 +422,11 @@ fin:hasInterestPaymentType a owl:ObjectProperty ; rdfs:domain fin:Bond ; rdfs:ra
 fin:hasCreditRating a owl:ObjectProperty ; rdfs:domain fin:DebtSecurity ; rdfs:range fin:CreditRating .
 fin:hasTradingType a owl:ObjectProperty ; rdfs:domain fin:SaleLot ; rdfs:range fin:TradingType .
 fin:availableThroughSalesChannel a owl:ObjectProperty ; rdfs:domain fin:FundShareClass ; rdfs:range fin:SalesChannel .
+fin:subscriptionStatus a owl:ObjectProperty ; rdfs:domain fin:FundShareClass ; rdfs:range fin:SubscriptionStatus ; rdfs:label "subscription status"@en, "신규 가입·추가매수 상태"@ko ; rdfs:comment "신규 가입 및 추가매수 접수 상태이며 청산, 운용 종료 또는 환매 가능 여부를 뜻하지 않는다."@ko .
+fin:isSoldByMiraeAsset a owl:DatatypeProperty ; rdfs:domain fin:FundShareClass ; rdfs:range xsd:boolean ; rdfs:label "sold by Mirae Asset"@en, "미래에셋 판매 대상 여부"@ko ; rdfs:comment "명시적 Y/N만 true/false로 변환하며 원본 결측은 false로 변환하지 않는다."@ko .
+fin:SubscriptionStatus a owl:Class ; rdfs:label "Subscription status"@en, "가입·추가매수 상태"@ko .
+fin:OPEN_FOR_SUBSCRIPTION a fin:SubscriptionStatus ; rdfs:label "Open for subscription"@en, "판매중"@ko .
+fin:CLOSED_FOR_SUBSCRIPTION a fin:SubscriptionStatus ; rdfs:label "Closed for subscription"@en, "판매완료"@ko ; rdfs:comment "신규 가입·추가매수 접수 종료만 의미하며 청산 또는 환매 제한을 의미하지 않는다."@ko .
 fin:availableThroughTradingChannel a owl:ObjectProperty ; rdfs:domain fin:SaleLot ; rdfs:range fin:TradingChannel .
 fin:hasDistributionFrequency a owl:ObjectProperty ; rdfs:range fin:DistributionFrequency .
 fin:hasIncomeDistributionType a owl:ObjectProperty ; rdfs:range fin:IncomeDistributionType .
@@ -977,6 +984,16 @@ fin:FundShareClassShape
         sh:path fin:hasOfferingType ;
         sh:maxCount 1 ;
         sh:class fin:OfferingType
+    ] ;
+    sh:property [
+        sh:path fin:subscriptionStatus ;
+        sh:maxCount 1 ;
+        sh:class fin:SubscriptionStatus
+    ] ;
+    sh:property [
+        sh:path fin:isSoldByMiraeAsset ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean
     ] .
 
 fin:SaleLotShape

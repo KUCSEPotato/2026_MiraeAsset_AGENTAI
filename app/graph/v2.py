@@ -38,6 +38,7 @@ from app.data.v2_schema import (
     source_records,
 )
 from app.derived.manifest import DerivedStoreManifest, DerivedStoreStatus
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
 from app.graph.config import GraphSettings
 from app.graph.models import GraphBuildData, GraphBuildStats, GraphEdge, GraphNode
 
@@ -46,7 +47,7 @@ V2_GRAPH_NODE_LABEL = "M108DNode"
 V2_GRAPH_METADATA_LABEL = "M108DDerivedStoreMetadata"
 V2_GRAPH_METADATA_KEY = "canonical-v2-graph"
 V2_GRAPH_PROJECTION_VERSION = "m10.9-c2.8-canonical-v2-graph-5"
-V2_TRANSFORMER_VERSION = "m10.9-c2-kodex-holdings-1"
+V2_TRANSFORMER_VERSION = CANONICAL_V2_TRANSFORMER_VERSION
 
 V2_RELATIONS = frozenset(
     {
@@ -55,7 +56,7 @@ V2_RELATIONS = frozenset(
         "HAS_BENCHMARK", "DENOMINATED_IN", "TRADED_IN_CURRENCY",
         "LISTED_IN_COUNTRY", "HAS_INSTRUMENT_COUNTRY", "HAS_ASSET_CLASS",
         "HAS_EXPOSURE_REGION", "HAS_MARKET_SCOPE", "HAS_RISK_GRADE",
-        "HAS_BOND_TYPE", "HAS_OFFERING_TYPE", "HOLDS",
+        "HAS_BOND_TYPE", "HAS_OFFERING_TYPE", "HAS_SUBSCRIPTION_STATUS", "HOLDS",
         "SECURITY_ISSUED_BY",
     }
 )
@@ -68,6 +69,7 @@ _TYPE_LABELS = {
     "asset_class": "AssetClass", "exposure_region": "ExposureRegion",
     "market_scope": "MarketScope", "risk_grade": "RiskGrade",
     "bond_type": "BondType", "offering_type": "OfferingType",
+    "subscription_status": "SubscriptionStatus",
 }
 
 

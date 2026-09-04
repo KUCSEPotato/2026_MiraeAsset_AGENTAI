@@ -9,17 +9,36 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import create_engine, func, insert, inspect, select, text
+from sqlalchemy import create_engine, distinct, func, insert, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 
 from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
-from app.data.v2_rebuild import CanonicalV2Rebuilder, relation_domain_violations
+from app.data.v2_rebuild import (
+    CanonicalV2Rebuilder,
+    PRFD_MISSING_ASSERTION_FIELDS,
+    TARGET_FIELDS,
+    _Rows,
+    _date,
+    _RELATION_DOMAIN_CONTRACTS,
+    _etp_insufficient_reasons,
+    relation_domain_violations,
+)
+from app.data.cleaning import (
+    PRBD_SALE_LOT_EVIDENCE_FIELDS,
+    clean_source_row,
+    has_prbd_sale_lot_evidence,
+    normalized_date,
+    source_assertion_semantics,
+)
+from app.data.catalog import DATASET_SPECS
+from app.data.mapping import map_product
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
     bonds,
     canonical_entities,
     canonical_facts,
+    canonical_scalar_facts,
     dataset_snapshots,
     entity_classifications,
     entity_id_crosswalk,
@@ -35,6 +54,7 @@ from app.data.v2_schema import (
     identity_resolution_cases,
     index_relations,
     metric_observations,
+    ontology_concepts,
     organization_relations,
     organizations,
     quarantine_records,
@@ -49,6 +69,171 @@ from app.data.v2_schema import (
 pytestmark = pytest.mark.postgresql
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_TABLE = "alembic_version_m10_8"
+
+
+def test_subscription_status_relation_domain_contract_is_narrow() -> None:
+    contract = _RELATION_DOMAIN_CONTRACTS["HAS_SUBSCRIPTION_STATUS"]
+    assert contract.subject_grains == frozenset({("FUND_SHARE_CLASS", None)})
+    assert contract.target_grains == frozenset(
+        {("ONTOLOGY_CONCEPT", "subscription_status")}
+    )
+    assert ("FINANCIAL_PRODUCT", "BOND") not in contract.subject_grains
+    assert ("ONTOLOGY_CONCEPT", "offering_type") not in contract.target_grains
+
+
+def test_prbd_sale_lot_evidence_predicate_ignores_buyable_quantity() -> None:
+    assert "buyable_quantity" not in PRBD_SALE_LOT_EVIDENCE_FIELDS
+    assert not has_prbd_sale_lot_evidence({"buyable_quantity": 100})
+    assert not has_prbd_sale_lot_evidence({"trade_price": "", "buy_yield": None})
+    assert not has_prbd_sale_lot_evidence({"trade_price": float("nan")})
+    assert not has_prbd_sale_lot_evidence({"trade_price": "NaN"})
+    assert has_prbd_sale_lot_evidence({"trade_price": 0})
+    assert has_prbd_sale_lot_evidence({"bdbns_abl_chnl_nm": "온오프 겸용"})
+
+
+def test_trade_price_is_preserved_as_sale_lot_source_assertion() -> None:
+    assert "trade_price" in TARGET_FIELDS["PRBD01N001"]
+
+
+@pytest.mark.parametrize("raw", [None, "", "   ", float("nan")])
+def test_actual_missing_assertion_normalizes_to_null(raw) -> None:
+    cleaned, changed = clean_source_row({"thco_sale_yn": raw})
+    quality, normalized, _ = source_assertion_semantics(
+        "PRFD01N001", "thco_sale_yn", raw, cleaned["thco_sale_yn"]
+    )
+    assert (quality, normalized) == ("MISSING", None)
+    if isinstance(raw, str) and raw:
+        assert changed["thco_sale_yn"] == raw
+
+
+@pytest.mark.parametrize(
+    ("dataset", "field", "raw"),
+    [
+        ("PRBD01N001", "isu_dt", "00000000"),
+        ("PRBD01N001", "mat_dt", "00000000"),
+        ("PREF01N001", "pd_lste_dt", "99991231"),
+        ("PREF01N001", "pd_lstg_dt", "10001231"),
+        ("PREF02N001", "pd_lstg_dt", "00000000"),
+    ],
+)
+def test_known_date_sentinel_has_no_canonical_date(
+    dataset: str, field: str, raw: str
+) -> None:
+    quality, normalized, _ = source_assertion_semantics(
+        dataset, field, raw, raw
+    )
+    assert (quality, normalized) == ("SENTINEL", None)
+    assert _date(raw) is None
+
+
+def test_valid_and_malformed_dates_fail_closed_consistently() -> None:
+    assert normalized_date("20260821") == ("2026-08-21", None)
+    assert _date("20260821") == date(2026, 8, 21)
+    assert normalized_date("20261340") == (None, "INVALID_DATE")
+    quality, normalized, _ = source_assertion_semantics(
+        "PREF01N001", "pd_lstg_dt", "20261340", "20261340"
+    )
+    assert (quality, normalized) == ("INVALID", None)
+
+
+@pytest.mark.parametrize(
+    ("raw", "quality"),
+    [
+        (None, "MISSING"),
+        ("KR0000000000", "SENTINEL"),
+        ("000000000000", "SENTINEL"),
+        ("kr0000000000", "INVALID"),
+        ("wtrewrwe", "INVALID"),
+        ("031910490159", "VALID"),
+    ],
+)
+def test_representative_fund_id_assertion_quality(raw, quality: str) -> None:
+    cleaned, _ = clean_source_row({"rptt_ksd_itm_no": raw})
+    actual, normalized, _ = source_assertion_semantics(
+        "PRFD01N001", "rptt_ksd_itm_no", raw,
+        cleaned["rptt_ksd_itm_no"],
+    )
+    assert actual == quality
+    assert (normalized is not None) == (quality == "VALID")
+
+
+@pytest.mark.parametrize(
+    ("raw", "quality"),
+    [
+        ("Index is not provided by Management Company", "SOURCE_NOT_PROVIDED"),
+        ("Index is not available on Lipper Database", "VENDOR_NOT_AVAILABLE"),
+        (None, "MISSING"),
+        ("MSCI ACWI", "VALID"),
+    ],
+)
+def test_foreign_index_placeholder_reasons_are_distinct(
+    raw, quality: str
+) -> None:
+    actual, normalized, _ = source_assertion_semantics(
+        "PREF02N001", "cu_base_index", raw, raw
+    )
+    assert actual == quality
+    assert (normalized is not None) == (quality == "VALID")
+
+
+@pytest.mark.parametrize(
+    ("raw_parent", "expected_raw", "expected_quality"),
+    [
+        (None, None, "MISSING"),
+        ("   ", "   ", "MISSING"),
+        ("KR0000000000", "KR0000000000", "SENTINEL"),
+        ("000000000000", "000000000000", "SENTINEL"),
+        ("wtrewrwe", "wtrewrwe", "INVALID"),
+    ],
+)
+def test_unresolved_parent_assertion_preserves_missing_and_raw_invalid_values(
+    raw_parent: str | None,
+    expected_raw: str | None,
+    expected_quality: str,
+) -> None:
+    raw = {
+        "itm_no": "OS555085028M",
+        "itm_nm": "테스트 공모펀드",
+        "prvo_pbff_desc": "공모",
+        "rptt_ksd_itm_no": raw_parent,
+        "thco_sale_yn": None,
+    }
+    cleaned, _ = clean_source_row(raw)
+    rows = _Rows()
+    assertions = CanonicalV2Rebuilder(None)._assertions(
+        rows, "PRFD01N001", "source:test", raw, cleaned
+    )
+    assertion = next(
+        item
+        for item in rows._rows[source_field_assertions]
+        if item["source_column"] == "rptt_ksd_itm_no"
+    )
+    public_fund_spec = next(
+        spec for spec in DATASET_SPECS if spec.prefix == "PRFD01N001"
+    )
+    mapped, error = map_product(
+        public_fund_spec,
+        cleaned,
+        source_file="prfd01n001_data.xlsx",
+        source_row_number=2,
+        snapshot="2026-08-24",
+    )
+
+    assert PRFD_MISSING_ASSERTION_FIELDS == frozenset(
+        {"rptt_ksd_itm_no", "thco_sale_yn"}
+    )
+    assert assertions["rptt_ksd_itm_no"] == assertion["assertion_id"]
+    assert assertion["raw_value"] == expected_raw
+    expected_normalized = (
+        cleaned["rptt_ksd_itm_no"]
+        if expected_quality == "VALID"
+        else None
+    )
+    assert assertion["normalized_value"] == expected_normalized
+    assert assertion["quality_status"] == expected_quality
+    assert error is None
+    assert mapped is not None and mapped.fund is None
+    assert mapped.fund_class is None
 
 
 def _url() -> str:
@@ -156,7 +341,7 @@ def test_clean_rebuild_counts_and_ready_gate(rebuilt) -> None:
         "ETN": 610,
         "Fund": 6_867,
         "FundShareClass": 16_574,
-        "SaleLot": 21_882,
+        "SaleLot": 634,
     }
     assert {key: first.canonical_counts[key] for key in expected} == expected
     assert first.unresolved_rows == 7_102
@@ -166,6 +351,115 @@ def test_clean_rebuild_counts_and_ready_gate(rebuilt) -> None:
     with engine.connect() as connection:
         assert connection.scalar(select(func.count()).select_from(dataset_snapshots).where(dataset_snapshots.c.status == "READY")) == 4
         assert connection.scalar(select(func.count()).select_from(quarantine_records)) == 1
+        assert "buyable_quantity" not in PRBD_SALE_LOT_EVIDENCE_FIELDS
+
+
+def test_unresolved_parent_missing_evidence_and_reconciliation(rebuilt) -> None:
+    engine = rebuilt[0]
+    with engine.connect() as connection:
+        counts = connection.execute(text("""
+            WITH unresolved AS (
+                SELECT irc.source_record_id, sr.normalized_payload
+                FROM canonical_v2.identity_resolution_cases irc
+                JOIN canonical_v2.source_records sr
+                  ON sr.source_record_id = irc.source_record_id
+                JOIN canonical_v2.dataset_snapshots ds
+                  ON ds.snapshot_id = sr.snapshot_id
+                WHERE ds.dataset_id = 'PRFD01N001'
+                  AND irc.reason_code = 'UNRESOLVED_PARENT'
+            ), parent_assertions AS (
+                SELECT sfa.source_record_id, sfa.raw_value,
+                       sfa.normalized_value, sfa.quality_status
+                FROM canonical_v2.source_field_assertions sfa
+                JOIN unresolved u ON u.source_record_id = sfa.source_record_id
+                WHERE sfa.source_column = 'rptt_ksd_itm_no'
+            )
+            SELECT
+                (SELECT count(*) FROM unresolved) AS unresolved_total,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE quality_status = 'MISSING'
+                   AND btrim(coalesce(raw_value, '')) = ''
+                   AND normalized_value IS NULL) AS actual_null_or_blank,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE raw_value = 'KR0000000000'
+                   AND normalized_value IS NULL
+                   AND quality_status = 'SENTINEL') AS kr_sentinel,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE raw_value = '000000000000'
+                   AND normalized_value IS NULL
+                   AND quality_status = 'SENTINEL') AS zero_sentinel,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE raw_value IS NOT NULL
+                   AND raw_value NOT IN ('KR0000000000', '000000000000')
+                   AND quality_status = 'INVALID') AS malformed,
+                (SELECT count(*) FROM unresolved
+                 WHERE normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                   AND normalized_payload ->> 'sale_yn' = '판매중') AS public_open_unresolved,
+                (SELECT count(*) FROM unresolved
+                 WHERE normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                   AND normalized_payload ->> 'sale_yn' = '판매중'
+                   AND normalized_payload ->> 'thco_sale_yn' = 'Y') AS strict_unresolved
+        """)).one()._mapping
+        assert dict(counts) == {
+            "unresolved_total": 7_102,
+            "actual_null_or_blank": 120,
+            "kr_sentinel": 5_308,
+            "zero_sentinel": 1_645,
+            "malformed": 29,
+            "public_open_unresolved": 110,
+            "strict_unresolved": 0,
+        }
+
+        source_counts = connection.execute(text("""
+            SELECT
+                count(*) AS source_rows,
+                count(*) FILTER (
+                    WHERE sr.normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                      AND sr.normalized_payload ->> 'sale_yn' = '판매중'
+                ) AS raw_public_open,
+                count(*) FILTER (
+                    WHERE sr.normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                      AND sr.normalized_payload ->> 'sale_yn' = '판매중'
+                      AND sr.normalized_payload ->> 'thco_sale_yn' = 'Y'
+                ) AS raw_strict
+            FROM canonical_v2.source_records sr
+            JOIN canonical_v2.dataset_snapshots ds
+              ON ds.snapshot_id = sr.snapshot_id
+            WHERE ds.dataset_id = 'PRFD01N001'
+        """)).one()._mapping
+        assert dict(source_counts) == {
+            "source_rows": 23_676,
+            "raw_public_open": 8_969,
+            "raw_strict": 8_550,
+        }
+        assert source_counts.raw_public_open == 8_859 + counts.public_open_unresolved
+        assert source_counts.raw_strict == 8_550 + counts.strict_unresolved
+
+        orphan_classes = connection.scalar(
+            select(func.count())
+            .select_from(
+                fund_share_classes.outerjoin(
+                    funds,
+                    fund_share_classes.c.parent_fund_id == funds.c.fund_id,
+                )
+            )
+            .where(funds.c.fund_id.is_(None))
+        )
+        false_company_sale_facts = connection.scalar(
+            select(func.count())
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.semantic_key == "is_sold_by_mirae_asset",
+                canonical_scalar_facts.c.boolean_value.is_(False),
+            )
+        )
+        assert orphan_classes == 0
+        assert false_company_sale_facts == 0
 
 
 def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
@@ -173,6 +467,16 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
     with engine.connect() as connection:
         assert connection.scalar(select(func.count()).select_from(fund_share_classes).outerjoin(funds, fund_share_classes.c.parent_fund_id == funds.c.fund_id).where(funds.c.fund_id.is_(None))) == 0
         assert connection.scalar(select(func.count()).select_from(sale_lots).outerjoin(bonds, sale_lots.c.bond_id == bonds.c.bond_id).where(bonds.c.bond_id.is_(None))) == 0
+        sale_lot_counts = dict(connection.execute(text(
+            "SELECT lot_count, count(*) FROM ("
+            "SELECT b.bond_id, count(sl.sale_lot_id) lot_count "
+            "FROM canonical_v2.bonds b LEFT JOIN canonical_v2.sale_lots sl "
+            "ON sl.bond_id = b.bond_id GROUP BY b.bond_id) q GROUP BY lot_count"
+        )).all())
+        assert sale_lot_counts[0] == 20_171
+        assert sale_lot_counts[1] == 19
+        assert sum(count for lot_count, count in sale_lot_counts.items() if lot_count > 1) == 307
+        assert connection.scalar(select(func.count(distinct(sale_lots.c.bond_id)))) == 326
         assert connection.scalar(select(func.count()).select_from(canonical_entities).join(funds, canonical_entities.c.entity_id == funds.c.fund_id).where(canonical_entities.c.preferred_name.is_not(None))) == 0
         assert connection.scalar(select(func.count()).select_from(canonical_entities).join(funds, canonical_entities.c.entity_id == funds.c.fund_id).where(canonical_entities.c.name_status != "NO_AUTHORITATIVE_FAMILY_NAME")) == 0
         unresolved_links = connection.scalar(
@@ -186,7 +490,7 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
 def test_final_provenance_and_fact_evidence(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
     assert first.provenance_counts["SourceRecords"] == 53_374
-    assert first.provenance_counts["DESCRIBES"] == 46_272
+    assert first.provenance_counts["DESCRIBES"] == 25_024
     assert first.provenance_counts["SUPPORTS"] == 38_456
     with engine.connect() as connection:
         duplicate_describes = connection.scalar(text(
@@ -200,6 +504,32 @@ def test_final_provenance_and_fact_evidence(rebuilt) -> None:
         )
         assert duplicate_describes == 0
         assert evidence_free == 0
+        no_lot_prbd_sources = connection.scalar(text(
+            "SELECT count(*) FROM canonical_v2.source_records sr "
+            "JOIN canonical_v2.dataset_snapshots ds "
+            "ON ds.snapshot_id = sr.snapshot_id "
+            "WHERE ds.dataset_id = 'PRBD01N001' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM canonical_v2.source_record_entities sre "
+            "WHERE sre.source_record_id = sr.source_record_id "
+            "AND sre.provenance_role = 'DESCRIBES')"
+        ))
+        no_lot_prbd_supports = connection.scalar(text(
+            "SELECT count(*) FROM canonical_v2.source_records sr "
+            "JOIN canonical_v2.dataset_snapshots ds "
+            "ON ds.snapshot_id = sr.snapshot_id "
+            "JOIN canonical_v2.source_record_entities sre "
+            "ON sre.source_record_id = sr.source_record_id "
+            "WHERE ds.dataset_id = 'PRBD01N001' "
+            "AND sre.provenance_role = 'SUPPORTS' "
+            "AND sre.entity_kind = 'FINANCIAL_PRODUCT' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM canonical_v2.source_record_entities described "
+            "WHERE described.source_record_id = sr.source_record_id "
+            "AND described.provenance_role = 'DESCRIBES')"
+        ))
+        assert no_lot_prbd_sources == 21_248
+        assert no_lot_prbd_supports == 21_248
 
 
 def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
@@ -209,6 +539,7 @@ def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
     for category in (
         "asset_class", "exposure_region", "market_scope", "risk_grade",
         "offering_type",
+        "subscription_status",
     ):
         accounting = first.classification_accounting["PRFD01N001"][category]
         assert accounting.get("source", 0) + accounting.get("missing", 0) == 23_676
@@ -230,8 +561,12 @@ def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     # returns). Organizer purchasability is a lifecycle rule, not a metric.
     assert first.metric_status == {
         "COMPARABLE": 33_397,
-        "NOT_COMPARABLE": 74_264,
+        # Fourteen foreign rows have neither source price nor source volume;
+        # absence is preserved instead of fabricating metric observations.
+        "NOT_COMPARABLE": 89_862,
     }
+    assert first.metric_counts["MARKET_PRICE"] == 7_799
+    assert first.metric_counts["VOLUME"] == 7_799
     assert first.metric_counts["ONE_YEAR_RETURN"] == 8_417
     assert "CURRENT_SALE_AVAILABILITY" not in first.metric_counts
     assert "BUYABLE_QUANTITY" not in first.metric_counts
@@ -240,6 +575,192 @@ def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
         value = connection.scalar(select(metric_observations.c.numeric_value).where(metric_observations.c.numeric_value.is_not(None)).limit(1))
         assert isinstance(value, Decimal)
         assert connection.scalar(select(func.count()).select_from(bonds).where(bonds.c.maturity_date == date(9999, 12, 31))) == 0
+
+
+def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:
+    engine = rebuilt[0]
+
+    def scalar_boolean_count(connection, key: str, dataset: str, product_type: str | None = None) -> int:
+        statement = (
+            select(func.count(distinct(canonical_facts.c.subject_entity_id)))
+            .select_from(
+                canonical_facts
+                .join(canonical_scalar_facts, canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+                .join(financial_products, financial_products.c.product_id == canonical_facts.c.subject_entity_id)
+            )
+            .where(
+                dataset_snapshots.c.dataset_id == dataset,
+                canonical_facts.c.semantic_key == key,
+                canonical_scalar_facts.c.value_type == "BOOLEAN",
+                canonical_scalar_facts.c.boolean_value.is_(True),
+            )
+        )
+        if product_type is not None:
+            statement = statement.where(financial_products.c.product_type_code == product_type)
+        return int(connection.scalar(statement) or 0)
+
+    def strict_count(connection, dataset: str, product_type: str | None = None) -> int:
+        current = canonical_facts.alias("current_fact")
+        current_scalar = canonical_scalar_facts.alias("current_scalar")
+        latest = canonical_facts.alias("latest_fact")
+        latest_scalar = canonical_scalar_facts.alias("latest_scalar")
+        statement = (
+            select(func.count(distinct(current.c.subject_entity_id)))
+            .select_from(
+                current
+                .join(current_scalar, current_scalar.c.fact_id == current.c.fact_id)
+                .join(latest, latest.c.subject_entity_id == current.c.subject_entity_id)
+                .join(latest_scalar, latest_scalar.c.fact_id == latest.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == current.c.snapshot_id)
+                .join(financial_products, financial_products.c.product_id == current.c.subject_entity_id)
+            )
+            .where(
+                dataset_snapshots.c.dataset_id == dataset,
+                current.c.snapshot_id == latest.c.snapshot_id,
+                current.c.semantic_key == "current_etp_sale_eligible",
+                latest.c.semantic_key == "latest_etp_price_available",
+                current_scalar.c.boolean_value.is_(True),
+                latest_scalar.c.boolean_value.is_(True),
+            )
+        )
+        if product_type is not None:
+            statement = statement.where(financial_products.c.product_type_code == product_type)
+        return int(connection.scalar(statement) or 0)
+
+    with engine.connect() as connection:
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF01N001", "ETF") == 1_160
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF01N001", "ETN") == 373
+        assert strict_count(connection, "PREF01N001") == 1_533
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF02N001", "ETF") == 5_958
+        assert scalar_boolean_count(connection, "current_etp_sale_eligible", "PREF02N001", "ETN") == 65
+        assert strict_count(connection, "PREF02N001", "ETF") == 5_629
+        assert strict_count(connection, "PREF02N001", "ETN") == 58
+        assert scalar_boolean_count(connection, "etp_insufficient_info", "PREF01N001") == 3
+        assert scalar_boolean_count(connection, "etp_insufficient_info", "PREF02N001") == 14
+        assert scalar_boolean_count(connection, "stale_etp_price_warning", "PREF02N001") == 336
+        assert connection.scalar(
+            select(func.count())
+            .select_from(exchange_traded_products)
+            .where(
+                exchange_traded_products.c.listing_date == date(1000, 12, 31)
+            )
+        ) == 0
+        assert connection.scalar(
+            select(func.count())
+            .select_from(exchange_traded_products)
+            .where(
+                exchange_traded_products.c.delisting_date == date(9999, 12, 31)
+            )
+        ) == 0
+        assert connection.scalar(
+            select(func.count())
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.semantic_key == "listing_end_date_status",
+                canonical_scalar_facts.c.text_value == "NO_KNOWN_END_DATE",
+            )
+        ) == 1_535
+        assert connection.scalar(
+            select(func.count())
+            .select_from(
+                metric_observations
+                .join(canonical_facts, canonical_facts.c.fact_id == metric_observations.c.fact_id)
+                .join(dataset_snapshots, dataset_snapshots.c.snapshot_id == canonical_facts.c.snapshot_id)
+            )
+            .where(
+                dataset_snapshots.c.dataset_id == "PREF02N001",
+                metric_observations.c.metric_code == "VOLUME",
+                metric_observations.c.numeric_value == 0,
+                metric_observations.c.quality_status == "VALID",
+            )
+        ) == 91
+        insufficient_payloads = connection.execute(
+            select(source_records.c.raw_payload)
+            .select_from(
+                canonical_facts
+                .join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+                .join(
+                    source_record_entities,
+                    source_record_entities.c.entity_id == canonical_facts.c.subject_entity_id,
+                )
+                .join(
+                    source_records,
+                    source_records.c.source_record_id == source_record_entities.c.source_record_id,
+                )
+            )
+            .where(
+                canonical_facts.c.semantic_key == "etp_insufficient_info",
+                canonical_scalar_facts.c.boolean_value.is_(True),
+                source_records.c.snapshot_id == canonical_facts.c.snapshot_id,
+            )
+        ).scalars().all()
+        assert len(insufficient_payloads) == 17
+        assert all(_etp_insufficient_reasons(payload) for payload in insufficient_payloads)
+
+
+def test_missingness_quality_assertion_cardinality(rebuilt) -> None:
+    engine = rebuilt[0]
+    sale_fields = sorted(PRBD_SALE_LOT_EVIDENCE_FIELDS)
+    with engine.connect() as connection:
+        sale_counts = dict(connection.execute(text("""
+            SELECT source_column, count(*)
+            FROM canonical_v2.source_field_assertions
+            WHERE source_column = ANY(:fields)
+              AND quality_status <> 'MISSING'
+            GROUP BY source_column
+        """), {"fields": sale_fields}).all())
+        assert sale_counts == {field: 634 for field in sale_fields}
+        assert connection.scalar(text("""
+            SELECT count(*) FROM canonical_v2.source_field_assertions
+            WHERE source_column = ANY(:fields) AND quality_status = 'MISSING'
+        """), {"fields": sale_fields}) == 0
+
+        expected = {
+            ("PRBD01N001", "isu_dt", "SENTINEL"): 25,
+            ("PRBD01N001", "mat_dt", "SENTINEL"): 4,
+            ("PREF01N001", "pd_lste_dt", "SENTINEL"): 1_535,
+            ("PREF01N001", "pd_lstg_dt", "SENTINEL"): 1,
+            ("PREF02N001", "pd_lstg_dt", "SENTINEL"): 11,
+            ("PREF02N001", "cu_base_index", "SOURCE_NOT_PROVIDED"): 2_285,
+            ("PREF02N001", "cu_base_index", "VENDOR_NOT_AVAILABLE"): 635,
+            ("PREF02N001", "cu_base_index", "MISSING"): 11,
+            ("PRFD01N001", "rptt_ksd_itm_no", "MISSING"): 120,
+            ("PRFD01N001", "rptt_ksd_itm_no", "SENTINEL"): 6_953,
+            ("PRFD01N001", "rptt_ksd_itm_no", "INVALID"): 29,
+            ("PRFD01N001", "thco_sale_yn", "MISSING"): 13_079,
+            ("PRBD01N001", "buyable_quantity", "UNUSABLE_BY_POLICY"): 634,
+        }
+        result = connection.execute(text("""
+            SELECT ds.dataset_id, sfa.source_column, sfa.quality_status,
+                   count(*)
+            FROM canonical_v2.source_field_assertions sfa
+            JOIN canonical_v2.source_records sr USING (source_record_id)
+            JOIN canonical_v2.dataset_snapshots ds USING (snapshot_id)
+            WHERE (sfa.source_column, sfa.quality_status) IN (
+                ('isu_dt', 'SENTINEL'), ('mat_dt', 'SENTINEL'),
+                ('pd_lste_dt', 'SENTINEL'), ('pd_lstg_dt', 'SENTINEL'),
+                ('cu_base_index', 'SOURCE_NOT_PROVIDED'),
+                ('cu_base_index', 'VENDOR_NOT_AVAILABLE'),
+                ('cu_base_index', 'MISSING'),
+                ('rptt_ksd_itm_no', 'MISSING'),
+                ('rptt_ksd_itm_no', 'SENTINEL'),
+                ('rptt_ksd_itm_no', 'INVALID'),
+                ('thco_sale_yn', 'MISSING'),
+                ('buyable_quantity', 'UNUSABLE_BY_POLICY')
+            )
+            GROUP BY ds.dataset_id, sfa.source_column, sfa.quality_status
+        """))
+        actual = {(row[0], row[1], row[2]): row[3] for row in result}
+        assert actual == expected
 
 
 def test_crosswalk_and_idempotent_second_run(rebuilt) -> None:
@@ -261,6 +782,7 @@ def test_semantic_relation_correction_and_safe_fund_promotion(rebuilt) -> None:
     assert first.relation_counts["MANAGED_BY"] == 14_057
     assert first.relation_counts["HAS_TRUSTEE"] == 6_857
     assert first.relation_counts["HAS_BENCHMARK"] == 1_311
+    assert first.relation_counts["HAS_SALE_LOT"] == 634
     # PREF01's authoritative CURR_CD_KRW code is now normalized to KRW.
     assert first.relation_counts["DENOMINATED_IN"] == 28_298
 
@@ -469,6 +991,37 @@ def test_relation_domain_ready_gate_and_relation_deduplication(rebuilt) -> None:
     engine = rebuilt[0]
     with engine.connect() as connection:
         assert relation_domain_violations(connection) == []
+        subscription_grains = connection.execute(
+            select(
+                canonical_entities.c.entity_kind,
+                ontology_concepts.c.concept_category,
+                func.count(),
+            )
+            .select_from(
+                entity_classifications
+                .join(
+                    canonical_entities,
+                    canonical_entities.c.entity_id
+                    == entity_classifications.c.entity_id,
+                )
+                .join(
+                    ontology_concepts,
+                    ontology_concepts.c.concept_iri
+                    == entity_classifications.c.concept_iri,
+                )
+            )
+            .where(
+                entity_classifications.c.classification_type
+                == "SUBSCRIPTION_STATUS"
+            )
+            .group_by(
+                canonical_entities.c.entity_kind,
+                ontology_concepts.c.concept_category,
+            )
+        ).all()
+        assert subscription_grains == [
+            ("FUND_SHARE_CLASS", "subscription_status", 16_574)
+        ]
         duplicate_groups = connection.scalar(text(
             "WITH rel AS ("
             "SELECT cf.snapshot_id, er.subject_entity_id subject_id, er.relation_type, er.object_entity_id target_id "

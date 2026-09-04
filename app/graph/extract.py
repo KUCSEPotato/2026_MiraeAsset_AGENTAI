@@ -14,6 +14,7 @@ from app.data.schema import (
     source_domestic_bonds,
     source_public_funds,
 )
+from app.data.cleaning import has_prbd_sale_lot_evidence
 from app.domain.models import CanonicalConcept
 from app.graph.identity import (
     canonical_concept_id,
@@ -740,27 +741,29 @@ class CanonicalGraphExtractor:
         bond_id = str(row["canonical_product_id"])
         source_key = str(row["source_record_key"])
         payload = row["payload"] or {}
-        lot_id = explicit_source_id("sale_lot", "domestic_bond", source_key)
-        self._add_node(
-            lot_id,
-            "SaleLot",
-            ("M10Entity", "SaleLot"),
-            {
-                "display_name": source_key,
-                "source_dataset": "domestic_bond",
-                "source_record_key": source_key,
-                "lot_sequence": payload.get("info_seq"),
-                "identity_basis": "source_record_key",
-            },
-        )
-        self._add_edge(
-            bond_id,
-            "HAS_SALE_LOT",
-            lot_id,
-            "domestic_bond",
-            source_key,
-            "source_domestic_bonds.source_record_key",
-        )
+        lot_id = None
+        if has_prbd_sale_lot_evidence(payload):
+            lot_id = explicit_source_id("sale_lot", "domestic_bond", source_key)
+            self._add_node(
+                lot_id,
+                "SaleLot",
+                ("M10Entity", "SaleLot"),
+                {
+                    "display_name": source_key,
+                    "source_dataset": "domestic_bond",
+                    "source_record_key": source_key,
+                    "lot_sequence": payload.get("info_seq"),
+                    "identity_basis": "source_record_key",
+                },
+            )
+            self._add_edge(
+                bond_id,
+                "HAS_SALE_LOT",
+                lot_id,
+                "domestic_bond",
+                source_key,
+                "source_domestic_bonds.source_record_key",
+            )
         for edge_type, node_type, value, source_field, subject_id in (
             ("HAS_BOND_TYPE", "BondType", payload.get("bd_knd"), "payload.bd_knd", bond_id),
             ("HAS_INTEREST_RATE_TYPE", "InterestRateType", payload.get("bd_inrt_tcd"), "payload.bd_inrt_tcd", bond_id),
@@ -769,6 +772,8 @@ class CanonicalGraphExtractor:
             ("HAS_TRADING_TYPE", "TradingType", payload.get("pd_exg_mkt"), "payload.pd_exg_mkt", lot_id),
             ("AVAILABLE_THROUGH_TRADING_CHANNEL", "TradingChannel", payload.get("bdbns_abl_chnl_nm"), "payload.bdbns_abl_chnl_nm", lot_id),
         ):
+            if subject_id is None:
+                continue
             self._concept_relation(
                 subject_id,
                 edge_type,

@@ -26,7 +26,16 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
         if entity.resolution_status is ResolutionStatus.RESOLVED
         and entity.canonical_id is not None
     ]
-    result_grain = _result_grain(resolved_entities)
+    fund_subscription_fields = {
+        "product.current_fund_subscription_eligible",
+        "product.subscription_status",
+        "product.latest_fund_price_available",
+    }
+    result_grain = (
+        "fund_share_class"
+        if any(item.canonical_field in fund_subscription_fields for item in query.grounded_filters)
+        else _result_grain(resolved_entities)
+    )
     return {
         # Physical compatibility keys are isolated at this planner/compiler
         # boundary. Ontology identity remains available alongside them.

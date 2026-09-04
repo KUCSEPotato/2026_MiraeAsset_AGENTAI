@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from pyshacl import validate
-from rdflib import Graph, Literal, Namespace, OWL, RDF, RDFS, XSD
+from rdflib import Graph, Literal, Namespace, OWL, RDF, RDFS, SH, XSD
 from rdflib.compare import isomorphic
 
 from app.ontology.loader import OntologyLoader, TEAM_V1_ONTOLOGY_FILES
@@ -86,6 +86,25 @@ def _conforms(ontology: Graph, data: Graph) -> tuple[bool, str]:
     return bool(conforms), str(report)
 
 
+def _legacy_listing_conforms(product_type, listing_count: int) -> tuple[bool, str]:
+    shapes = Graph().parse(ONTOLOGY_ROOT / "shapes.ttl", format="turtle")
+    data = Graph()
+    data.bind("fin", FIN)
+    data.add((EX.product, RDF.type, product_type))
+    for index in range(listing_count):
+        listing = EX[f"listing-{index}"]
+        data.add((EX.product, FIN.hasListing, listing))
+        data.add((listing, RDF.type, FIN.Listing))
+    conforms, _, report = validate(
+        data_graph=data,
+        shacl_graph=shapes,
+        inference="none",
+        advanced=True,
+        abort_on_first=False,
+    )
+    return bool(conforms), str(report)
+
+
 def test_required_submission_modules_exist_parse_and_are_nonempty() -> None:
     assert TEAM_V1_ONTOLOGY_FILES == (
         "common.ttl",
@@ -104,7 +123,7 @@ def test_module_union_is_graph_isomorphic_to_merged_baseline() -> None:
     before = _baseline()
     after = _modules()
 
-    assert len(before) == len(after) == 1_244
+    assert len(before) == len(after) == 1_276
     assert isomorphic(before, after)
 
 
@@ -194,6 +213,69 @@ def test_shacl_results_match_before_and_after_split() -> None:
         after, _representative_data(invalid_holding=True)
     )
     assert invalid_before is invalid_after is False
+
+
+@pytest.mark.parametrize("product_type", (FIN.ETF, FIN.ETN))
+@pytest.mark.parametrize("listing_count", (0, 1, 2))
+def test_etp_listing_cardinality_allows_zero_one_or_multiple_listings(
+    product_type,
+    listing_count: int,
+) -> None:
+    conforms, report = _legacy_listing_conforms(product_type, listing_count)
+
+    assert conforms, report
+
+
+@pytest.mark.parametrize("product_type", (FIN.ETF, FIN.ETN))
+def test_etp_has_listing_rejects_a_non_listing_target(product_type) -> None:
+    shapes = Graph().parse(ONTOLOGY_ROOT / "shapes.ttl", format="turtle")
+    data = Graph()
+    data.bind("fin", FIN)
+    data.add((EX.product, RDF.type, product_type))
+    data.add((EX.product, FIN.hasListing, Literal("not-a-listing")))
+
+    conforms, _, _ = validate(
+        data_graph=data,
+        shacl_graph=shapes,
+        inference="none",
+        advanced=True,
+        abort_on_first=False,
+    )
+
+    assert not conforms
+
+
+def test_only_etp_listing_upper_bound_is_relaxed() -> None:
+    shapes = Graph().parse(ONTOLOGY_ROOT / "shapes.ttl", format="turtle")
+    for etp_shape in (FIN.ETFShape, FIN.ETNShape):
+        listing_shapes = {
+            shape
+            for shape in shapes.objects(etp_shape, SH.property)
+            if (shape, SH.path, FIN.hasListing) in shapes
+        }
+        assert len(listing_shapes) == 1
+        listing_shape = listing_shapes.pop()
+        assert (listing_shape, SH["class"], FIN.Listing) in shapes
+        assert not tuple(shapes.objects(listing_shape, SH.maxCount))
+
+    baseline = _baseline()
+    for owner_shape, parent_relation, parent_class in (
+        (FIN.FundShareClassShape, FIN.hasShareClass, FIN.Fund),
+        (FIN.SaleLotShape, FIN.hasSaleLot, FIN.Bond),
+    ):
+        parent_shapes = {
+            shape
+            for shape in baseline.objects(owner_shape, SH.property)
+            if any(
+                (path, SH.inversePath, parent_relation) in baseline
+                for path in baseline.objects(shape, SH.path)
+            )
+        }
+        assert len(parent_shapes) == 1
+        parent_shape = parent_shapes.pop()
+        assert (parent_shape, SH.minCount, Literal(1)) in baseline
+        assert (parent_shape, SH.maxCount, Literal(1)) in baseline
+        assert (parent_shape, SH["class"], parent_class) in baseline
 
 
 def test_team_loader_fails_closed_when_any_module_is_missing(tmp_path: Path) -> None:

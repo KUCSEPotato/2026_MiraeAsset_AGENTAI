@@ -132,6 +132,16 @@ def test_ready_snapshot_selection_is_exact(v2_engine, selector) -> None:
     assert len(selected.snapshot_ids) == 4
 
 
+def test_unknown_explicit_transformer_version_fails_closed(v2_engine) -> None:
+    selector = CanonicalV2SnapshotSelector(
+        snapshot_date="2026-08-24",
+        transformer_version="missing-transformer-version",
+    )
+    with v2_engine.connect() as connection:
+        with pytest.raises(V2SnapshotUnavailableError, match="snapshot unavailable"):
+            selector.select(connection)
+
+
 def test_no_ready_snapshot_fails_closed(v2_engine, selector) -> None:
     with v2_engine.connect() as connection:
         transaction = connection.begin()

@@ -41,6 +41,19 @@ fin:maturityOrFirstCallDate a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs
   rdfs:comment "일반채권은 상환일, 영구채는 1차 콜행사개시일일 수 있다."@ko .
 fin:totalIssueAmount a owl:DatatypeProperty ; rdfs:domain fin:Bond ; rdfs:range xsd:decimal .
 fin:sourceProductKind a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
+fin:etpDistributionStatus a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string ;
+  rdfs:comment "Source-specific ETP distribution status derived from pd_sale_yn; not asserted as listing-grain unless the source provides exchange-specific evidence."@en .
+fin:etpTradingStatus a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string ;
+  rdfs:comment "ETP trading status derived from pd_tr_yn."@en .
+fin:etpListingEnded a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:boolean ;
+  rdfs:comment "Explicit listing-end indicator only when source lifecycle evidence exists."@en .
+fin:currentEtpSaleEligible a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:boolean ;
+  rdfs:comment "Derived candidate predicate: sale available, trading active, valid listing start, and no explicit ended listing."@en .
+fin:latestEtpPriceAvailable a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:boolean ;
+  rdfs:comment "Derived from a positive source price whose observation date equals the dataset latest observation date."@en .
+fin:etpPriceFreshnessStatus a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
+fin:staleEtpPriceWarning a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:boolean .
+fin:etpInsufficientInfo a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:boolean .
 fin:strategyDescription a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
 fin:replicationMethod a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:string .
 fin:leverageFactor a owl:DatatypeProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range xsd:decimal .

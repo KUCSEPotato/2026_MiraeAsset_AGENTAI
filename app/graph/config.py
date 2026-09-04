@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
+
 
 @dataclass(frozen=True)
 class GraphSettings:
@@ -19,7 +21,7 @@ class GraphSettings:
     v2_graph_projection_version: str = "m10.9-c2.8-canonical-v2-graph-5"
     v2_generation: str = "260824"
     v2_ontology_version: str = "merged-optical-1.4"
-    v2_transformer_version: str = "m10.9-c2-kodex-holdings-1"
+    v2_transformer_version: str = CANONICAL_V2_TRANSFORMER_VERSION
 
     @classmethod
     def from_env(cls, *, require_uri: bool = False) -> "GraphSettings":
@@ -56,7 +58,8 @@ class GraphSettings:
                 "CANONICAL_V2_ONTOLOGY_VERSION", "merged-optical-1.4"
             ),
             v2_transformer_version=os.getenv(
-                "CANONICAL_V2_TRANSFORMER_VERSION", "m10.9-c2-kodex-holdings-1"
+                "CANONICAL_V2_TRANSFORMER_VERSION",
+                CANONICAL_V2_TRANSFORMER_VERSION,
             ),
         )
         aliases = {"team_v1": "team-v1"}

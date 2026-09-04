@@ -270,11 +270,13 @@ fin:TradingType a owl:Class ;
 
 fin:hasSaleLot a owl:ObjectProperty ;
     rdfs:domain fin:Bond ;
-    rdfs:range fin:SaleLot .
+    rdfs:range fin:SaleLot ;
+    rdfs:comment "Optional 0..N relation from a Bond to concrete sale-condition lots; absence of a SaleLot does not imply purchase ineligibility."@en .
 
 fin:SaleLot a owl:Class ;
     rdfs:label "Bond sale lot"@en,
         "채권 판매 LOT"@ko ;
+    rdfs:comment "A concrete PRBD sale-condition bundle evidenced by price, yield, channel, or sale-condition date fields. It is distinct from organizer-policy bond purchase eligibility."@en ;
     rdfs:subClassOf fin:EvidenceBearingEntity .
 
 fin:Bond a owl:Class ;

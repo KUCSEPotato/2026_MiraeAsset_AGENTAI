@@ -2,13 +2,44 @@ import re
 import unicodedata
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import math
 from typing import Any
 
-DATE_SENTINELS = {"0", "99991231"}
+DATE_SENTINELS = {"0", "00000000", "10001231", "99991231"}
 INDEX_SENTINELS = {
     "Index is not provided by Management Company",
     "Index is not available on Lipper Database",
 }
+KNOWN_DATE_SENTINELS = {
+    ("PRBD01N001", "isu_dt"): frozenset({"00000000"}),
+    ("PRBD01N001", "mat_dt"): frozenset({"00000000"}),
+    ("PREF01N001", "pd_lste_dt"): frozenset({"99991231"}),
+    ("PREF01N001", "pd_lstg_dt"): frozenset({"10001231"}),
+    ("PREF02N001", "pd_lstg_dt"): frozenset({"00000000"}),
+}
+REPRESENTATIVE_FUND_ID_SENTINELS = frozenset(
+    {"KR0000000000", "000000000000"}
+)
+FOREIGN_INDEX_PLACEHOLDER_QUALITY = {
+    "Index is not provided by Management Company": "SOURCE_NOT_PROVIDED",
+    "Index is not available on Lipper Database": "VENDOR_NOT_AVAILABLE",
+}
+PRBD_SALE_LOT_EVIDENCE_FIELDS = frozenset(
+    {
+        "after_tax_yield",
+        "avg_annual_tax_yield",
+        "bdbns_abl_chnl_nm",
+        "bdbns_abl_chnl_tcd",
+        "buy_yield",
+        "corp_after_tax_yield",
+        "corp_pretax_yield",
+        "depo_equiv_yield_154",
+        "depo_equiv_yield_495",
+        "pref_tax_yield",
+        "sale_yield_base_dt",
+        "trade_price",
+    }
+)
 
 
 def clean_source_row(
@@ -40,6 +71,27 @@ def json_value(value: Any) -> Any:
     return value
 
 
+def has_prbd_sale_lot_evidence(row: dict[str, Any]) -> bool:
+    """True when a PRBD row has concrete sale-condition evidence."""
+    return any(
+        _has_source_value(row.get(field_name))
+        for field_name in PRBD_SALE_LOT_EVIDENCE_FIELDS
+    )
+
+
+def _has_source_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    if isinstance(value, Decimal) and value.is_nan():
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(stripped) and stripped.casefold() != "nan"
+    return True
+
+
 def as_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -64,8 +116,13 @@ def normalized_date(
     if isinstance(value, date):
         return value.isoformat(), None
     if re.fullmatch(r"\d{8}", raw):
-        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}", None
-    return raw, None
+        candidate = f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    else:
+        candidate = raw.replace(".", "-").replace("/", "-")
+    try:
+        return date.fromisoformat(candidate[:10]).isoformat(), None
+    except ValueError:
+        return None, "INVALID_DATE"
 
 
 def normalized_base_index(value: Any) -> tuple[str | None, str | None]:
@@ -77,6 +134,70 @@ def normalized_base_index(value: Any) -> tuple[str | None, str | None]:
     if raw in INDEX_SENTINELS:
         return None, "UNKNOWN_BASE_INDEX"
     return raw, None
+
+
+def source_assertion_semantics(
+    dataset: str,
+    field: str,
+    raw_value: Any,
+    normalized_value: Any,
+) -> tuple[str, Any, str | None]:
+    """Classify reviewed source-field exceptions without changing row identity.
+
+    The returned normalized value is assertion-specific.  Cleaned source
+    payloads retain sentinel/placeholder text so downstream fail-closed rules
+    and the raw payload remain independently auditable.
+    """
+    if not _has_source_value(normalized_value):
+        return "MISSING", None, "source field is structurally present but blank/null"
+
+    text = str(normalized_value).strip()
+    compact_date = text.replace("-", "").replace(".", "").replace("/", "")
+    if compact_date in KNOWN_DATE_SENTINELS.get((dataset, field), frozenset()):
+        return "SENTINEL", None, "known source date sentinel; canonical date suppressed"
+
+    if (dataset, field) in KNOWN_DATE_SENTINELS:
+        parsed, date_quality = normalized_date(normalized_value)
+        if date_quality == "INVALID_DATE":
+            return "INVALID", None, "malformed source date; canonical date suppressed"
+        return "VALID", parsed, None
+
+    if dataset == "PRFD01N001" and field == "rptt_ksd_itm_no":
+        if text in REPRESENTATIVE_FUND_ID_SENTINELS:
+            return "SENTINEL", None, "known representative Fund identifier sentinel"
+        if text.upper() in REPRESENTATIVE_FUND_ID_SENTINELS:
+            return "INVALID", None, "malformed representative Fund identifier"
+        if not re.fullmatch(r"[A-Za-z0-9]{12}", text):
+            return "INVALID", None, "malformed representative Fund identifier"
+
+    if dataset == "PRBD01N001" and field == "buyable_quantity":
+        return (
+            "UNUSABLE_BY_POLICY",
+            normalized_value,
+            "organizer-invalid purchase indicator; provenance only",
+        )
+
+    if dataset == "PREF02N001" and field == "cu_base_index":
+        quality = FOREIGN_INDEX_PLACEHOLDER_QUALITY.get(text)
+        if quality is not None:
+            return quality, None, "source index placeholder; Index relation suppressed"
+
+    return "VALID", normalized_value, None
+
+
+def canonical_subscription_status(value: Any) -> str | None:
+    """Map only the organizer-confirmed FundShareClass subscription states."""
+    normalized = str(value).strip() if value is not None else ""
+    return {
+        "판매중": "OPEN_FOR_SUBSCRIPTION",
+        "판매완료": "CLOSED_FOR_SUBSCRIPTION",
+    }.get(normalized)
+
+
+def canonical_mirae_sale_flag(value: Any) -> bool | None:
+    """Preserve the distinction between an explicit N and missing evidence."""
+    normalized = str(value).strip().upper() if value is not None else ""
+    return {"Y": True, "N": False}.get(normalized)
 
 
 def canonical_asset_type(value: Any) -> str | None:

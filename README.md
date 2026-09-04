@@ -572,7 +572,7 @@ RDB_MAX_LIMIT=10000
 RUNTIME_DATA_VERSION=v2
 CANONICAL_V2_GENERATION=260824
 CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.4
-CANONICAL_V2_TRANSFORMER_VERSION=m10.9-c2-kodex-holdings-1
+CANONICAL_V2_TRANSFORMER_VERSION=missingness-quality-semantics-1
 SEMANTIC_ARTIFACT_ROOT=/srv/financial-semantic-agent/artifacts/260824
 SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/v1/semantic_search.json
 SEMANTIC_INDEX_VERSION=m10.7-strategy-20260829
@@ -605,6 +605,17 @@ API_PORT=8000
 
 SQL execution, schema, constraints, NULL behavior, transaction 및 RDBRetriever test는
 반드시 disposable PostgreSQL에서 실행합니다.
+
+Canonical v2 source assertions distinguish reviewed provenance states without
+changing product identity or recommendation policy. Null/blank source cells
+are `MISSING`; known date and representative-Fund-ID placeholders are
+`SENTINEL`; malformed representative IDs are `INVALID`; organizer-invalid
+`buyable_quantity` values are `UNUSABLE_BY_POLICY`; and the two foreign-index
+phrases remain separate as `SOURCE_NOT_PROVIDED` and `VENDOR_NOT_AVAILABLE`.
+Raw values are retained while sentinel/placeholder normalized values are null.
+Structural absence (for example, no `pd_lste_dt` column in PREF02 or no
+SaleLot fields on a no-lot PRBD row) does not create synthetic assertion rows,
+false booleans, dates, entities, or recommendation evidence.
 
 실제 secret을 담은 `.env`는 Git에 포함하지 않습니다.
 

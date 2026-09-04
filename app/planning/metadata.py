@@ -77,6 +77,56 @@ class RoutingMetadataRegistry:
                 (RetrievalSource.RDB,),
                 filter_and_project,
             ),
+            "product.etp_distribution_status": CanonicalFieldMetadata(
+                "product.etp_distribution_status",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+            "product.etp_trading_status": CanonicalFieldMetadata(
+                "product.etp_trading_status",
+                (RetrievalSource.RDB,),
+                filter_and_project,
+            ),
+            "product.current_etp_sale_eligible": CanonicalFieldMetadata(
+                "product.current_etp_sale_eligible",
+                (RetrievalSource.RDB,),
+                frozenset({FieldCapability.FILTER}),
+            ),
+            "product.latest_etp_price_available": CanonicalFieldMetadata(
+                "product.latest_etp_price_available",
+                (RetrievalSource.RDB,),
+                frozenset({FieldCapability.FILTER}),
+            ),
+            "product.etp_listing_ended": CanonicalFieldMetadata(
+                "product.etp_listing_ended",
+                (RetrievalSource.RDB,),
+                frozenset({FieldCapability.FILTER}),
+            ),
+            "product.stale_etp_price_warning": CanonicalFieldMetadata(
+                "product.stale_etp_price_warning",
+                (RetrievalSource.RDB,),
+                frozenset({FieldCapability.FILTER}),
+            ),
+            "product.etp_insufficient_info": CanonicalFieldMetadata(
+                "product.etp_insufficient_info",
+                (RetrievalSource.RDB,),
+                frozenset({FieldCapability.FILTER}),
+            ),
+            **{
+                field: CanonicalFieldMetadata(
+                    field,
+                    (RetrievalSource.RDB,),
+                    frozenset({FieldCapability.FILTER}),
+                )
+                for field in (
+                    "product.current_sale_available",
+                    "product.current_bond_purchase_eligible",
+                    "product.bond_market_presence",
+                    "product.has_sale_lot",
+                    "product.has_multiple_sale_lots",
+                    "product.has_trade_price_and_buy_yield_sale_lot",
+                )
+            },
         }
         self._source_operations = {
             RetrievalSource.RDB: frozenset(

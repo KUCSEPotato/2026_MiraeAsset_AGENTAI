@@ -15,7 +15,7 @@ from app.ontology.index import normalize_ontology_text
 ONTOLOGY_URI = "https://miraeasset.com/ontology/financial-product"
 ONTOLOGY_NAMESPACE = f"{ONTOLOGY_URI}#"
 ONTOLOGY_VERSION = "merged-optical-1.4"
-SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-08-29.1"
+SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-09-03.3"
 DATASET_SNAPSHOT = "2026-08-24"
 
 BOND_TYPE_RESOURCES = {
@@ -253,6 +253,8 @@ def _concept_mappings() -> tuple[ConceptMapping, ...]:
         ),
         ConceptMapping("OfferingType.PUBLIC", "offering_type", "OfferingType.PUBLIC", ("공모", "Public"), "PUBLIC", active, ("FinancialProduct.PublicFund", "공모펀드")),
         ConceptMapping("OfferingType.PRIVATE", "offering_type", "OfferingType.PRIVATE", ("사모", "Private"), "PRIVATE"),
+        ConceptMapping("SubscriptionStatus.OPEN_FOR_SUBSCRIPTION", "subscription_status", "SubscriptionStatus.OPEN_FOR_SUBSCRIPTION", ("판매중", "가입 가능", "추가매수 가능"), "OPEN_FOR_SUBSCRIPTION"),
+        ConceptMapping("SubscriptionStatus.CLOSED_FOR_SUBSCRIPTION", "subscription_status", "SubscriptionStatus.CLOSED_FOR_SUBSCRIPTION", ("판매완료", "가입 종료", "추가매수 종료"), "CLOSED_FOR_SUBSCRIPTION"),
         ConceptMapping("AssetClass.Equity", "asset_class", "AssetType.Equity", ("Equity", "주식", "주식형"), "ASSET_EQUITY", active, ("AssetType.Equity",)),
         ConceptMapping("AssetClass.Bond", "asset_class", "AssetType.Bond", ("Bond", "채권", "채권형"), "ASSET_BOND", active, ("AssetType.Bond",)),
         ConceptMapping("AssetClass.Commodity", "asset_class", "AssetType.Commodity", ("Commodity", "원자재"), "ASSET_COMMODITY", active, ("AssetType.Commodity",)),
@@ -327,7 +329,23 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         FieldMapping("product.observed_at", "observedAt", ("관측일", "기준일"), "rdb", "canonical_products.observed_at", exact_ops),
         FieldMapping("product.strategy_description", "investmentStrategyDescription", ("전략", "투자전략"), "vector_bm25", "etf_attributes.strategy", project),
         FieldMapping("product.credit_rating", "hasCreditRating", ("신용등급", "credit_rating"), "rdb", "canonical_v2.metric_observations", frozenset({"filter", "project", "ordered_comparison"}), active, "ordinal", "ordinal", "CREDIT_RATING_V1"),
-        FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available", "구매 가능"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),
+        FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),
+        FieldMapping("product.current_bond_purchase_eligible", "OperationalConstraint", ("현재 구매 가능한 채권", "구매 가능한 채권", "current_bond_purchase_eligible"), "rdb", "derived NOT EXISTS confirmed bond delisting/listing-end rule", frozenset({"filter"}), active, "derived organizer rule", "boolean", "BOND_PURCHASE_ELIGIBILITY_V1"),
+        FieldMapping("product.bond_market_presence", "OperationalConstraint", ("채권 시장 존재", "bond_market_presence"), "rdb", "snapshot-bound pd_exg_mkt source assertion EXISTS", frozenset({"filter"}), active, "source assertion", "multi-valued enum", "BOND_MARKET_PRESENCE_V1"),
+        FieldMapping("product.has_sale_lot", "OperationalConstraint", ("판매 LOT 존재", "has_sale_lot"), "rdb", "snapshot-bound HAS_SALE_LOT relation EXISTS/NOT EXISTS", frozenset({"filter"}), active, "derived relation rule", "boolean", "BOND_SALE_LOT_EXISTENCE_V1"),
+        FieldMapping("product.has_multiple_sale_lots", "OperationalConstraint", ("복수 판매 LOT", "has_multiple_sale_lots"), "rdb", "snapshot-bound distinct HAS_SALE_LOT count greater than one", frozenset({"filter"}), active, "derived relation rule", "boolean", "BOND_MULTIPLE_SALE_LOTS_V1"),
+        FieldMapping("product.has_trade_price_and_buy_yield_sale_lot", "OperationalConstraint", ("동일 판매 LOT 매매단가 수익률", "has_trade_price_and_buy_yield_sale_lot"), "rdb", "same source-record-described SaleLot has trade_price and buy_yield assertions", frozenset({"filter"}), active, "derived provenance rule", "boolean", "BOND_SALE_LOT_PRICE_YIELD_V1"),
+        FieldMapping("product.subscription_status", "subscriptionStatus", ("가입 상태", "추가매수 상태", "subscription_status"), "rdb", "canonical_v2.entity_classifications", exact_ops),
+        FieldMapping("product.is_sold_by_mirae_asset", "isSoldByMiraeAsset", ("미래에셋 판매 대상", "당사판매여부"), "rdb", "canonical_v2.canonical_scalar_facts", frozenset({"filter"})),
+        FieldMapping("product.current_fund_subscription_eligible", "OperationalConstraint", ("현재 미래에셋 가입 가능", "추가매수 가능", "미래에셋 판매 중"), "rdb", "derived public+open subscription+Mirae sale rule", frozenset({"filter"}), active, "derived organizer rule", "boolean", "FUND_SUBSCRIPTION_RULE_V1"),
+        FieldMapping("product.latest_fund_price_available", "OperationalConstraint", ("최신 기준가 있음",), "rdb", "derived latest PRFD PRICE observation rule", frozenset({"filter"}), active, "derived freshness rule", "boolean", "FUND_PRICE_FRESHNESS_V1"),
+        FieldMapping("product.etp_distribution_status", "OperationalConstraint", ("ETP 판매 상태", "etp_distribution_status", "상품판매여부"), "rdb", "canonical_v2.canonical_scalar_facts.etp_distribution_status", exact_ops, active, "source-specific distribution status", "text", "ETP_DISTRIBUTION_STATUS_V1"),
+        FieldMapping("product.etp_trading_status", "OperationalConstraint", ("ETP 거래 상태", "etp_trading_status", "거래정지 상태"), "rdb", "canonical_v2.canonical_scalar_facts.etp_trading_status", exact_ops, active, "source trading status", "text", "ETP_TRADING_STATUS_V1"),
+        FieldMapping("product.current_etp_sale_eligible", "OperationalConstraint", ("현재 ETP 구매 가능", "현재 ETP 판매 중", "current_etp_sale_eligible", "현재 구매 가능한 ETP"), "rdb", "derived ETP sale+trading+listing rule", frozenset({"filter"}), active, "derived ETP availability rule", "boolean", "ETP_AVAILABILITY_RULE_V1"),
+        FieldMapping("product.latest_etp_price_available", "OperationalConstraint", ("최신 ETP 가격 있음", "최신 가격 있는 ETP", "latest_etp_price_available"), "rdb", "derived dataset-scoped latest ETP PRICE observation rule", frozenset({"filter"}), active, "derived ETP freshness rule", "boolean", "ETP_PRICE_FRESHNESS_V1"),
+        FieldMapping("product.etp_listing_ended", "OperationalConstraint", ("ETP 상장 종료", "상장 종료된 ETP", "etp_listing_ended"), "rdb", "domestic ETP explicit listing-end fact", frozenset({"filter"}), active, "explicit lifecycle end only", "boolean", "ETP_LISTING_END_RULE_V1"),
+        FieldMapping("product.stale_etp_price_warning", "OperationalConstraint", ("ETP 가격 오래됨", "가격 오래된 ETP", "stale_etp_price_warning"), "rdb", "eligible ETP with non-latest source price", frozenset({"filter"}), active, "freshness warning", "boolean", "ETP_STALE_PRICE_WARNING_V1"),
+        FieldMapping("product.etp_insufficient_info", "OperationalConstraint", ("ETP 정보 부족", "추천하기 어려운 ETP", "etp_insufficient_info"), "rdb", "missing ETP sale/trading/listing/core market evidence", frozenset({"filter"}), active, "insufficient source information", "boolean", "ETP_INSUFFICIENT_INFO_V1"),
         FieldMapping("product.listing_country", "listedInCountry", ("상장국가", "listing_country"), "rdb+graph", "LISTED_IN_COUNTRY", exact_ops),
         FieldMapping("product.maturity", "maturityOrFirstCallDate", ("만기", "만기일"), "rdb", "bond_attributes.maturity_date", project, prospective, "date", "date"),
         FieldMapping("product.return", "PerformanceMetric", ("수익률",), "rdb", "metric_observations.return", project, prospective, "percent", None),
