@@ -19,6 +19,7 @@ from app.data.v2_rebuild import (
     PRFD_MISSING_ASSERTION_FIELDS,
     TARGET_FIELDS,
     _Rows,
+    _date,
     _RELATION_DOMAIN_CONTRACTS,
     _etp_insufficient_reasons,
     relation_domain_violations,
@@ -27,6 +28,8 @@ from app.data.cleaning import (
     PRBD_SALE_LOT_EVIDENCE_FIELDS,
     clean_source_row,
     has_prbd_sale_lot_evidence,
+    normalized_date,
+    source_assertion_semantics,
 )
 from app.data.catalog import DATASET_SPECS
 from app.data.mapping import map_product
@@ -92,14 +95,95 @@ def test_trade_price_is_preserved_as_sale_lot_source_assertion() -> None:
     assert "trade_price" in TARGET_FIELDS["PRBD01N001"]
 
 
+@pytest.mark.parametrize("raw", [None, "", "   ", float("nan")])
+def test_actual_missing_assertion_normalizes_to_null(raw) -> None:
+    cleaned, changed = clean_source_row({"thco_sale_yn": raw})
+    quality, normalized, _ = source_assertion_semantics(
+        "PRFD01N001", "thco_sale_yn", raw, cleaned["thco_sale_yn"]
+    )
+    assert (quality, normalized) == ("MISSING", None)
+    if isinstance(raw, str) and raw:
+        assert changed["thco_sale_yn"] == raw
+
+
+@pytest.mark.parametrize(
+    ("dataset", "field", "raw"),
+    [
+        ("PRBD01N001", "isu_dt", "00000000"),
+        ("PRBD01N001", "mat_dt", "00000000"),
+        ("PREF01N001", "pd_lste_dt", "99991231"),
+        ("PREF01N001", "pd_lstg_dt", "10001231"),
+        ("PREF02N001", "pd_lstg_dt", "00000000"),
+    ],
+)
+def test_known_date_sentinel_has_no_canonical_date(
+    dataset: str, field: str, raw: str
+) -> None:
+    quality, normalized, _ = source_assertion_semantics(
+        dataset, field, raw, raw
+    )
+    assert (quality, normalized) == ("SENTINEL", None)
+    assert _date(raw) is None
+
+
+def test_valid_and_malformed_dates_fail_closed_consistently() -> None:
+    assert normalized_date("20260821") == ("2026-08-21", None)
+    assert _date("20260821") == date(2026, 8, 21)
+    assert normalized_date("20261340") == (None, "INVALID_DATE")
+    quality, normalized, _ = source_assertion_semantics(
+        "PREF01N001", "pd_lstg_dt", "20261340", "20261340"
+    )
+    assert (quality, normalized) == ("INVALID", None)
+
+
+@pytest.mark.parametrize(
+    ("raw", "quality"),
+    [
+        (None, "MISSING"),
+        ("KR0000000000", "SENTINEL"),
+        ("000000000000", "SENTINEL"),
+        ("kr0000000000", "INVALID"),
+        ("wtrewrwe", "INVALID"),
+        ("031910490159", "VALID"),
+    ],
+)
+def test_representative_fund_id_assertion_quality(raw, quality: str) -> None:
+    cleaned, _ = clean_source_row({"rptt_ksd_itm_no": raw})
+    actual, normalized, _ = source_assertion_semantics(
+        "PRFD01N001", "rptt_ksd_itm_no", raw,
+        cleaned["rptt_ksd_itm_no"],
+    )
+    assert actual == quality
+    assert (normalized is not None) == (quality == "VALID")
+
+
+@pytest.mark.parametrize(
+    ("raw", "quality"),
+    [
+        ("Index is not provided by Management Company", "SOURCE_NOT_PROVIDED"),
+        ("Index is not available on Lipper Database", "VENDOR_NOT_AVAILABLE"),
+        (None, "MISSING"),
+        ("MSCI ACWI", "VALID"),
+    ],
+)
+def test_foreign_index_placeholder_reasons_are_distinct(
+    raw, quality: str
+) -> None:
+    actual, normalized, _ = source_assertion_semantics(
+        "PREF02N001", "cu_base_index", raw, raw
+    )
+    assert actual == quality
+    assert (normalized is not None) == (quality == "VALID")
+
+
 @pytest.mark.parametrize(
     ("raw_parent", "expected_raw", "expected_quality"),
     [
         (None, None, "MISSING"),
         ("   ", "   ", "MISSING"),
-        ("KR0000000000", "KR0000000000", "VALID"),
-        ("000000000000", "000000000000", "VALID"),
-        ("wtrewrwe", "wtrewrwe", "VALID"),
+        ("KR0000000000", "KR0000000000", "SENTINEL"),
+        ("000000000000", "000000000000", "SENTINEL"),
+        ("wtrewrwe", "wtrewrwe", "INVALID"),
     ],
 )
 def test_unresolved_parent_assertion_preserves_missing_and_raw_invalid_values(
@@ -135,11 +219,15 @@ def test_unresolved_parent_assertion_preserves_missing_and_raw_invalid_values(
         snapshot="2026-08-24",
     )
 
-    assert PRFD_MISSING_ASSERTION_FIELDS == frozenset({"rptt_ksd_itm_no"})
+    assert PRFD_MISSING_ASSERTION_FIELDS == frozenset(
+        {"rptt_ksd_itm_no", "thco_sale_yn"}
+    )
     assert assertions["rptt_ksd_itm_no"] == assertion["assertion_id"]
     assert assertion["raw_value"] == expected_raw
     expected_normalized = (
-        None if expected_quality == "MISSING" else cleaned["rptt_ksd_itm_no"]
+        cleaned["rptt_ksd_itm_no"]
+        if expected_quality == "VALID"
+        else None
     )
     assert assertion["normalized_value"] == expected_normalized
     assert assertion["quality_status"] == expected_quality
@@ -294,16 +382,16 @@ def test_unresolved_parent_missing_evidence_and_reconciliation(rebuilt) -> None:
                    AND normalized_value IS NULL) AS actual_null_or_blank,
                 (SELECT count(*) FROM parent_assertions
                  WHERE raw_value = 'KR0000000000'
-                   AND normalized_value = 'KR0000000000'
-                   AND quality_status <> 'MISSING') AS kr_sentinel,
+                   AND normalized_value IS NULL
+                   AND quality_status = 'SENTINEL') AS kr_sentinel,
                 (SELECT count(*) FROM parent_assertions
                  WHERE raw_value = '000000000000'
-                   AND normalized_value = '000000000000'
-                   AND quality_status <> 'MISSING') AS zero_sentinel,
+                   AND normalized_value IS NULL
+                   AND quality_status = 'SENTINEL') AS zero_sentinel,
                 (SELECT count(*) FROM parent_assertions
                  WHERE raw_value IS NOT NULL
                    AND raw_value NOT IN ('KR0000000000', '000000000000')
-                   AND quality_status <> 'MISSING') AS malformed,
+                   AND quality_status = 'INVALID') AS malformed,
                 (SELECT count(*) FROM unresolved
                  WHERE normalized_payload ->> 'prvo_pbff_desc' = '공모'
                    AND normalized_payload ->> 'sale_yn' = '판매중') AS public_open_unresolved,
@@ -617,6 +705,62 @@ def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:
         ).scalars().all()
         assert len(insufficient_payloads) == 17
         assert all(_etp_insufficient_reasons(payload) for payload in insufficient_payloads)
+
+
+def test_missingness_quality_assertion_cardinality(rebuilt) -> None:
+    engine = rebuilt[0]
+    sale_fields = sorted(PRBD_SALE_LOT_EVIDENCE_FIELDS)
+    with engine.connect() as connection:
+        sale_counts = dict(connection.execute(text("""
+            SELECT source_column, count(*)
+            FROM canonical_v2.source_field_assertions
+            WHERE source_column = ANY(:fields)
+              AND quality_status <> 'MISSING'
+            GROUP BY source_column
+        """), {"fields": sale_fields}).all())
+        assert sale_counts == {field: 634 for field in sale_fields}
+        assert connection.scalar(text("""
+            SELECT count(*) FROM canonical_v2.source_field_assertions
+            WHERE source_column = ANY(:fields) AND quality_status = 'MISSING'
+        """), {"fields": sale_fields}) == 0
+
+        expected = {
+            ("PRBD01N001", "isu_dt", "SENTINEL"): 25,
+            ("PRBD01N001", "mat_dt", "SENTINEL"): 4,
+            ("PREF01N001", "pd_lste_dt", "SENTINEL"): 1_535,
+            ("PREF01N001", "pd_lstg_dt", "SENTINEL"): 1,
+            ("PREF02N001", "pd_lstg_dt", "SENTINEL"): 11,
+            ("PREF02N001", "cu_base_index", "SOURCE_NOT_PROVIDED"): 2_285,
+            ("PREF02N001", "cu_base_index", "VENDOR_NOT_AVAILABLE"): 635,
+            ("PREF02N001", "cu_base_index", "MISSING"): 11,
+            ("PRFD01N001", "rptt_ksd_itm_no", "MISSING"): 120,
+            ("PRFD01N001", "rptt_ksd_itm_no", "SENTINEL"): 6_953,
+            ("PRFD01N001", "rptt_ksd_itm_no", "INVALID"): 29,
+            ("PRFD01N001", "thco_sale_yn", "MISSING"): 13_079,
+            ("PRBD01N001", "buyable_quantity", "UNUSABLE_BY_POLICY"): 634,
+        }
+        result = connection.execute(text("""
+            SELECT ds.dataset_id, sfa.source_column, sfa.quality_status,
+                   count(*)
+            FROM canonical_v2.source_field_assertions sfa
+            JOIN canonical_v2.source_records sr USING (source_record_id)
+            JOIN canonical_v2.dataset_snapshots ds USING (snapshot_id)
+            WHERE (sfa.source_column, sfa.quality_status) IN (
+                ('isu_dt', 'SENTINEL'), ('mat_dt', 'SENTINEL'),
+                ('pd_lste_dt', 'SENTINEL'), ('pd_lstg_dt', 'SENTINEL'),
+                ('cu_base_index', 'SOURCE_NOT_PROVIDED'),
+                ('cu_base_index', 'VENDOR_NOT_AVAILABLE'),
+                ('cu_base_index', 'MISSING'),
+                ('rptt_ksd_itm_no', 'MISSING'),
+                ('rptt_ksd_itm_no', 'SENTINEL'),
+                ('rptt_ksd_itm_no', 'INVALID'),
+                ('thco_sale_yn', 'MISSING'),
+                ('buyable_quantity', 'UNUSABLE_BY_POLICY')
+            )
+            GROUP BY ds.dataset_id, sfa.source_column, sfa.quality_status
+        """))
+        actual = {(row[0], row[1], row[2]): row[3] for row in result}
+        assert actual == expected
 
 
 def test_crosswalk_and_idempotent_second_run(rebuilt) -> None:
