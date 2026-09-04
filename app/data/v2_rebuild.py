@@ -107,6 +107,7 @@ ETP_MISSING_ASSERTION_FIELDS = frozenset(
         "ru_mkt_volume",
     }
 )
+PRFD_MISSING_ASSERTION_FIELDS = frozenset({"rptt_ksd_itm_no"})
 ETP_PRICE_DATE_FIELDS = {
     "PREF01N001": "du_upt_dt",
     "PREF02N001": "du_clpr_base_dt",
@@ -1044,7 +1045,11 @@ class CanonicalV2Rebuilder:
             value = cleaned.get(field_name)
             missing = value is None or value == ""
             preserve_missing = (
-                prefix in ETP_PREFIXES and field_name in ETP_MISSING_ASSERTION_FIELDS
+                prefix in ETP_PREFIXES
+                and field_name in ETP_MISSING_ASSERTION_FIELDS
+            ) or (
+                prefix == "PRFD01N001"
+                and field_name in PRFD_MISSING_ASSERTION_FIELDS
             )
             if missing and not preserve_missing:
                 continue

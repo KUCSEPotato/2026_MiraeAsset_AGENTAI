@@ -16,13 +16,20 @@ from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
 from app.data.v2_rebuild import (
     CanonicalV2Rebuilder,
+    PRFD_MISSING_ASSERTION_FIELDS,
     TARGET_FIELDS,
+    _Rows,
     _RELATION_DOMAIN_CONTRACTS,
     _etp_insufficient_reasons,
     relation_domain_violations,
 )
-from app.data.cleaning import PRBD_SALE_LOT_EVIDENCE_FIELDS
-from app.data.cleaning import has_prbd_sale_lot_evidence
+from app.data.cleaning import (
+    PRBD_SALE_LOT_EVIDENCE_FIELDS,
+    clean_source_row,
+    has_prbd_sale_lot_evidence,
+)
+from app.data.catalog import DATASET_SPECS
+from app.data.mapping import map_product
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
     bonds,
@@ -83,6 +90,62 @@ def test_prbd_sale_lot_evidence_predicate_ignores_buyable_quantity() -> None:
 
 def test_trade_price_is_preserved_as_sale_lot_source_assertion() -> None:
     assert "trade_price" in TARGET_FIELDS["PRBD01N001"]
+
+
+@pytest.mark.parametrize(
+    ("raw_parent", "expected_raw", "expected_quality"),
+    [
+        (None, None, "MISSING"),
+        ("   ", "   ", "MISSING"),
+        ("KR0000000000", "KR0000000000", "VALID"),
+        ("000000000000", "000000000000", "VALID"),
+        ("wtrewrwe", "wtrewrwe", "VALID"),
+    ],
+)
+def test_unresolved_parent_assertion_preserves_missing_and_raw_invalid_values(
+    raw_parent: str | None,
+    expected_raw: str | None,
+    expected_quality: str,
+) -> None:
+    raw = {
+        "itm_no": "OS555085028M",
+        "itm_nm": "테스트 공모펀드",
+        "prvo_pbff_desc": "공모",
+        "rptt_ksd_itm_no": raw_parent,
+        "thco_sale_yn": None,
+    }
+    cleaned, _ = clean_source_row(raw)
+    rows = _Rows()
+    assertions = CanonicalV2Rebuilder(None)._assertions(
+        rows, "PRFD01N001", "source:test", raw, cleaned
+    )
+    assertion = next(
+        item
+        for item in rows._rows[source_field_assertions]
+        if item["source_column"] == "rptt_ksd_itm_no"
+    )
+    public_fund_spec = next(
+        spec for spec in DATASET_SPECS if spec.prefix == "PRFD01N001"
+    )
+    mapped, error = map_product(
+        public_fund_spec,
+        cleaned,
+        source_file="prfd01n001_data.xlsx",
+        source_row_number=2,
+        snapshot="2026-08-24",
+    )
+
+    assert PRFD_MISSING_ASSERTION_FIELDS == frozenset({"rptt_ksd_itm_no"})
+    assert assertions["rptt_ksd_itm_no"] == assertion["assertion_id"]
+    assert assertion["raw_value"] == expected_raw
+    expected_normalized = (
+        None if expected_quality == "MISSING" else cleaned["rptt_ksd_itm_no"]
+    )
+    assert assertion["normalized_value"] == expected_normalized
+    assert assertion["quality_status"] == expected_quality
+    assert error is None
+    assert mapped is not None and mapped.fund is None
+    assert mapped.fund_class is None
 
 
 def _url() -> str:
@@ -201,6 +264,114 @@ def test_clean_rebuild_counts_and_ready_gate(rebuilt) -> None:
         assert connection.scalar(select(func.count()).select_from(dataset_snapshots).where(dataset_snapshots.c.status == "READY")) == 4
         assert connection.scalar(select(func.count()).select_from(quarantine_records)) == 1
         assert "buyable_quantity" not in PRBD_SALE_LOT_EVIDENCE_FIELDS
+
+
+def test_unresolved_parent_missing_evidence_and_reconciliation(rebuilt) -> None:
+    engine = rebuilt[0]
+    with engine.connect() as connection:
+        counts = connection.execute(text("""
+            WITH unresolved AS (
+                SELECT irc.source_record_id, sr.normalized_payload
+                FROM canonical_v2.identity_resolution_cases irc
+                JOIN canonical_v2.source_records sr
+                  ON sr.source_record_id = irc.source_record_id
+                JOIN canonical_v2.dataset_snapshots ds
+                  ON ds.snapshot_id = sr.snapshot_id
+                WHERE ds.dataset_id = 'PRFD01N001'
+                  AND irc.reason_code = 'UNRESOLVED_PARENT'
+            ), parent_assertions AS (
+                SELECT sfa.source_record_id, sfa.raw_value,
+                       sfa.normalized_value, sfa.quality_status
+                FROM canonical_v2.source_field_assertions sfa
+                JOIN unresolved u ON u.source_record_id = sfa.source_record_id
+                WHERE sfa.source_column = 'rptt_ksd_itm_no'
+            )
+            SELECT
+                (SELECT count(*) FROM unresolved) AS unresolved_total,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE quality_status = 'MISSING'
+                   AND btrim(coalesce(raw_value, '')) = ''
+                   AND normalized_value IS NULL) AS actual_null_or_blank,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE raw_value = 'KR0000000000'
+                   AND normalized_value = 'KR0000000000'
+                   AND quality_status <> 'MISSING') AS kr_sentinel,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE raw_value = '000000000000'
+                   AND normalized_value = '000000000000'
+                   AND quality_status <> 'MISSING') AS zero_sentinel,
+                (SELECT count(*) FROM parent_assertions
+                 WHERE raw_value IS NOT NULL
+                   AND raw_value NOT IN ('KR0000000000', '000000000000')
+                   AND quality_status <> 'MISSING') AS malformed,
+                (SELECT count(*) FROM unresolved
+                 WHERE normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                   AND normalized_payload ->> 'sale_yn' = '판매중') AS public_open_unresolved,
+                (SELECT count(*) FROM unresolved
+                 WHERE normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                   AND normalized_payload ->> 'sale_yn' = '판매중'
+                   AND normalized_payload ->> 'thco_sale_yn' = 'Y') AS strict_unresolved
+        """)).one()._mapping
+        assert dict(counts) == {
+            "unresolved_total": 7_102,
+            "actual_null_or_blank": 120,
+            "kr_sentinel": 5_308,
+            "zero_sentinel": 1_645,
+            "malformed": 29,
+            "public_open_unresolved": 110,
+            "strict_unresolved": 0,
+        }
+
+        source_counts = connection.execute(text("""
+            SELECT
+                count(*) AS source_rows,
+                count(*) FILTER (
+                    WHERE sr.normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                      AND sr.normalized_payload ->> 'sale_yn' = '판매중'
+                ) AS raw_public_open,
+                count(*) FILTER (
+                    WHERE sr.normalized_payload ->> 'prvo_pbff_desc' = '공모'
+                      AND sr.normalized_payload ->> 'sale_yn' = '판매중'
+                      AND sr.normalized_payload ->> 'thco_sale_yn' = 'Y'
+                ) AS raw_strict
+            FROM canonical_v2.source_records sr
+            JOIN canonical_v2.dataset_snapshots ds
+              ON ds.snapshot_id = sr.snapshot_id
+            WHERE ds.dataset_id = 'PRFD01N001'
+        """)).one()._mapping
+        assert dict(source_counts) == {
+            "source_rows": 23_676,
+            "raw_public_open": 8_969,
+            "raw_strict": 8_550,
+        }
+        assert source_counts.raw_public_open == 8_859 + counts.public_open_unresolved
+        assert source_counts.raw_strict == 8_550 + counts.strict_unresolved
+
+        orphan_classes = connection.scalar(
+            select(func.count())
+            .select_from(
+                fund_share_classes.outerjoin(
+                    funds,
+                    fund_share_classes.c.parent_fund_id == funds.c.fund_id,
+                )
+            )
+            .where(funds.c.fund_id.is_(None))
+        )
+        false_company_sale_facts = connection.scalar(
+            select(func.count())
+            .select_from(
+                canonical_facts.join(
+                    canonical_scalar_facts,
+                    canonical_scalar_facts.c.fact_id == canonical_facts.c.fact_id,
+                )
+            )
+            .where(
+                canonical_facts.c.semantic_key == "is_sold_by_mirae_asset",
+                canonical_scalar_facts.c.boolean_value.is_(False),
+            )
+        )
+        assert orphan_classes == 0
+        assert false_company_sale_facts == 0
 
 
 def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
