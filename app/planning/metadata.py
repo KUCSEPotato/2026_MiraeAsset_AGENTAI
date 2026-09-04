@@ -112,6 +112,21 @@ class RoutingMetadataRegistry:
                 (RetrievalSource.RDB,),
                 frozenset({FieldCapability.FILTER}),
             ),
+            **{
+                field: CanonicalFieldMetadata(
+                    field,
+                    (RetrievalSource.RDB,),
+                    frozenset({FieldCapability.FILTER}),
+                )
+                for field in (
+                    "product.current_sale_available",
+                    "product.current_bond_purchase_eligible",
+                    "product.bond_market_presence",
+                    "product.has_sale_lot",
+                    "product.has_multiple_sale_lots",
+                    "product.has_trade_price_and_buy_yield_sale_lot",
+                )
+            },
         }
         self._source_operations = {
             RetrievalSource.RDB: frozenset(

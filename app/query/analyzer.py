@@ -30,6 +30,14 @@ from app.domain.models import (
 )
 
 
+_BOND_LIFECYCLE_EXCLUSION_PATTERN = re.compile(
+    r"(?:상장\s*폐지|리스팅\s*종료)"
+    r"(?:\s*또는\s*(?:상장\s*폐지|리스팅\s*종료))?"
+    r"\s*채권(?:을|은|는)?\s*제외",
+    re.IGNORECASE,
+)
+
+
 @dataclass(frozen=True)
 class _Draft:
     start: int
@@ -408,10 +416,17 @@ class RuleBasedQueryAnalyzer:
         )
         if "펀드 클래스" in question:
             matches = [value for value in matches if value != "펀드"]
+        lifecycle_bond_exclusion = bool(
+            _BOND_LIFECYCLE_EXCLUSION_PATTERN.search(question)
+        )
         matches = [
             value for value in matches
-            if not re.search(rf"{re.escape(value)}(?:이|가)?\s*(?:아닌|제외)",
-                             question, re.IGNORECASE)
+            if lifecycle_bond_exclusion and value == "채권"
+            or not re.search(
+                rf"{re.escape(value)}(?:이|가)?\s*(?:아닌|제외)",
+                question,
+                re.IGNORECASE,
+            )
         ]
         non_bond_product = any(
             value.upper() in {"ETF", "ETN"}
@@ -439,6 +454,9 @@ class RuleBasedQueryAnalyzer:
             assets = [value for value in assets if value != "통화"]
         if product_types == ["채권"]:
             assets = [value for value in assets if value != "채권"]
+        lifecycle_bond_exclusion = bool(
+            _BOND_LIFECYCLE_EXCLUSION_PATTERN.search(question)
+        )
         if regions:
             listing_regions = {
                 match.group(1).casefold()
@@ -474,6 +492,8 @@ class RuleBasedQueryAnalyzer:
         for value in self._find_aliases(
             question, self._product_type_aliases, excluded_spans=excluded_spans,
         ):
+            if value == "채권" and lifecycle_bond_exclusion:
+                continue
             if re.search(rf"{re.escape(value)}(?:이|가)?\s*(?:아닌|제외)",
                          question, re.IGNORECASE):
                 filters.append(FilterSpec(field="product_type", operator="ne", value=value))
@@ -573,6 +593,78 @@ class RuleBasedQueryAnalyzer:
                     value=True,
                 )
             )
+        bond_requested = "채권" in product_types or bool(
+            re.search(r"채권", question, re.IGNORECASE)
+        )
+        if bond_requested and (
+            re.search(
+                r"(?:(?:현재|지금)\s*)?구매\s*가능(?:한)?",
+                question,
+                re.IGNORECASE,
+            )
+            or lifecycle_bond_exclusion
+        ):
+            filters.append(FilterSpec(
+                field="current_bond_purchase_eligible",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        if bond_requested and re.search(r"장내\s*채권", question):
+            filters.append(FilterSpec(
+                field="bond_market_presence",
+                operator=FilterOperator.EQ,
+                value="EXCHANGE_TRADED",
+            ))
+        if bond_requested and re.search(r"장외\s*채권", question):
+            filters.append(FilterSpec(
+                field="bond_market_presence",
+                operator=FilterOperator.EQ,
+                value="OTC",
+            ))
+        no_sale_lot = bond_requested and bool(re.search(
+            r"(?:판매\s*(?:LOT|로트)|판매조건)(?:이|은|는|가)?\s*없",
+            question,
+            re.IGNORECASE,
+        ))
+        multiple_sale_lots = bond_requested and bool(re.search(
+            r"(?:하나의\s*종목에\s*)?(?:여러|복수)\s*(?:판매조건|판매\s*(?:LOT|로트))",
+            question,
+            re.IGNORECASE,
+        ))
+        same_lot_price_yield = bond_requested and bool(re.search(
+            r"매매단가(?:와|과)\s*수익률(?:이|가)?\s*제공된",
+            question,
+            re.IGNORECASE,
+        ))
+        has_sale_lot = bond_requested and bool(re.search(
+            r"(?:미래에셋\s*)?(?:판매조건|판매\s*(?:LOT|로트))(?:이|은|는|가)?\s*있는",
+            question,
+            re.IGNORECASE,
+        ))
+        if no_sale_lot:
+            filters.append(FilterSpec(
+                field="has_sale_lot",
+                operator=FilterOperator.EQ,
+                value=False,
+            ))
+        elif multiple_sale_lots:
+            filters.append(FilterSpec(
+                field="has_multiple_sale_lots",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        elif has_sale_lot:
+            filters.append(FilterSpec(
+                field="has_sale_lot",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
+        if same_lot_price_yield:
+            filters.append(FilterSpec(
+                field="has_trade_price_and_buy_yield_sale_lot",
+                operator=FilterOperator.EQ,
+                value=True,
+            ))
         fund_subscription = re.search(
             r"(?:(?:현재|지금)\s*)?(?:미래에셋(?:에서)?\s*)?(?:가입|신규\s*가입|추가매수)(?:할\s*수\s*있는|\s*가능(?:한)?)|미래에셋(?:에서)?\s*판매\s*중(?:인)?",
             question,
@@ -1075,6 +1167,24 @@ class RuleBasedQueryAnalyzer:
             "currency": r"원화\s*채권",
             "credit_rating": r"(?:신용등급\s*)?[A-Z]{1,4}(?:[+\-0])?\s*(?:이상|이하|초과|미만)",
             "current_sale_available": r"현재\s*판매\s*가능(?:한)?",
+            "current_bond_purchase_eligible": (
+                r"(?:(?:현재|지금)\s*)?구매\s*가능(?:한)?"
+                r"|(?:상장\s*폐지|리스팅\s*종료)"
+                r"(?:\s*또는\s*(?:상장\s*폐지|리스팅\s*종료))?"
+                r"\s*채권(?:을|은|는)?\s*제외"
+            ),
+            "bond_market_presence": r"(?:장내|장외)\s*채권",
+            "has_sale_lot": (
+                r"(?:미래에셋\s*)?(?:판매조건|판매\s*(?:LOT|로트))"
+                r"(?:이|은|는|가)?\s*(?:있는|없지만|없는)"
+            ),
+            "has_multiple_sale_lots": (
+                r"(?:하나의\s*종목에\s*)?(?:여러|복수)\s*"
+                r"(?:판매조건|판매\s*(?:LOT|로트))(?:이|은|는|가)?\s*있는"
+            ),
+            "has_trade_price_and_buy_yield_sale_lot": (
+                r"매매단가(?:와|과)\s*수익률(?:이|가)?\s*제공된"
+            ),
             "current_etp_sale_eligible": r"(?:\ud604\uc7ac|\uc9c0\uae08)?\s*(?:\uad6c\ub9e4|\ub9e4\uc218|\ud310\ub9e4)\s*(?:\uac00\ub2a5|\uc911)(?:\ud558\uc9c0\ub9cc|\ud55c|\uc778)?\s*(?:\uad6d\ub0b4|\ud574\uc678)?\s*(?:ETF|ETN|ETP|\uc0c1\uc7a5\uc9c0\uc218\w*)?",
             "etp_trading_status": r"\uac70\ub798\s*\uc815\uc9c0(?:\uac00|\ub294)?\s*\uc544\ub2cc|\uac70\ub798\uc815\uc9c0\uac00\s*\uc544\ub2cc|\uac70\ub798\uc815\uc9c0\s*\uc81c\uc678",
             "etp_listing_ended": r"\uc0c1\uc7a5\s*(?:\uc885\ub8cc|\ud3d0\uc9c0).*?\uc81c\uc678",

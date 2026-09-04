@@ -50,6 +50,7 @@ from app.data.v2_schema import (
     sale_lots,
     source_datasets,
     source_field_assertions,
+    source_record_entities,
     source_records,
 )
 from app.data.v2_version import CANONICAL_V2_TRANSFORMER_VERSION
@@ -362,6 +363,11 @@ class CanonicalV2FieldRegistry:
             V2FieldMapping("product.one_year_return", "metric", "ONE_YEAR_RETURN", False, True, False),
             V2FieldMapping("product.credit_rating", "metric", "CREDIT_RATING_ORDER", True, True, False),
             V2FieldMapping("product.current_sale_available", "bond_purchasable", "ORGANIZER_PURCHASABLE_BOND", True, False, False),
+            V2FieldMapping("product.current_bond_purchase_eligible", "bond_purchasable", "BOND_PURCHASE_ELIGIBILITY_V1", True, False, False),
+            V2FieldMapping("product.bond_market_presence", "bond_market_presence", "BOND_MARKET_PRESENCE_V1", True, False, False),
+            V2FieldMapping("product.has_sale_lot", "bond_sale_lot_exists", "BOND_SALE_LOT_EXISTENCE_V1", True, False, False),
+            V2FieldMapping("product.has_multiple_sale_lots", "bond_multiple_sale_lots", "BOND_MULTIPLE_SALE_LOTS_V1", True, False, False),
+            V2FieldMapping("product.has_trade_price_and_buy_yield_sale_lot", "bond_sale_lot_price_yield", "BOND_SALE_LOT_PRICE_YIELD_V1", True, False, False),
             V2FieldMapping("product.subscription_status", "classification", "SUBSCRIPTION_STATUS", True, False, False),
             V2FieldMapping("product.is_sold_by_mirae_asset", "scalar_boolean", "is_sold_by_mirae_asset", True, False, False),
             V2FieldMapping("product.current_fund_subscription_eligible", "fund_subscription_eligible", "FUND_SUBSCRIPTION_RULE_V1", True, False, False),
@@ -776,6 +782,33 @@ class CanonicalV2QueryCompiler:
             if operator is not FilterOperator.EQ or value is not True:
                 raise RDBQueryCompilationError("bond purchasability supports only eq true")
             return self._organizer_purchasable_bond(entity_id, snapshot)
+        if mapping.kind == "bond_market_presence":
+            if operator is not FilterOperator.EQ or value not in {
+                "EXCHANGE_TRADED", "OTC"
+            }:
+                raise RDBQueryCompilationError(
+                    "bond market presence supports only eq EXCHANGE_TRADED/OTC"
+                )
+            return self._bond_market_presence(entity_id, value, snapshot)
+        if mapping.kind == "bond_sale_lot_exists":
+            if operator is not FilterOperator.EQ or not isinstance(value, bool):
+                raise RDBQueryCompilationError(
+                    "bond SaleLot existence supports only eq boolean"
+                )
+            predicate = self._bond_sale_lot_exists(entity_id, snapshot)
+            return predicate if value else not_(predicate)
+        if mapping.kind == "bond_multiple_sale_lots":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError(
+                    "multiple bond SaleLots supports only eq true"
+                )
+            return self._bond_sale_lot_count(entity_id, snapshot) > 1
+        if mapping.kind == "bond_sale_lot_price_yield":
+            if operator is not FilterOperator.EQ or value is not True:
+                raise RDBQueryCompilationError(
+                    "same-SaleLot price/yield supports only eq true"
+                )
+            return self._bond_sale_lot_price_yield(entity_id, snapshot)
         if mapping.kind == "fund_subscription_eligible":
             if operator is not FilterOperator.EQ or value is not True:
                 raise RDBQueryCompilationError("fund subscription eligibility supports only eq true")
@@ -916,6 +949,85 @@ class CanonicalV2QueryCompiler:
             )
         )
         return not_(lifecycle_end)
+
+    @staticmethod
+    def _bond_market_presence(bond_id, market, snapshot):
+        assertion = source_field_assertions.alias("bond_market_assertion")
+        record_entity = source_record_entities.alias("bond_market_record_entity")
+        record = source_records.alias("bond_market_record")
+        raw_market = {"EXCHANGE_TRADED": "장내", "OTC": "장외"}[market]
+        return exists(
+            select(1)
+            .select_from(
+                record_entity
+                .join(record, record.c.source_record_id == record_entity.c.source_record_id)
+                .join(assertion, assertion.c.source_record_id == record.c.source_record_id)
+            )
+            .where(
+                record_entity.c.entity_id == bond_id,
+                record_entity.c.entity_kind == "FINANCIAL_PRODUCT",
+                record_entity.c.provenance_role == "SUPPORTS",
+                record.c.snapshot_id.in_(snapshot.snapshot_ids),
+                assertion.c.source_column == "pd_exg_mkt",
+                assertion.c.normalized_value == raw_market,
+            )
+        )
+
+    @staticmethod
+    def _bond_sale_lot_exists(bond_id, snapshot):
+        return exists(
+            select(1)
+            .select_from(
+                entity_relations.join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == entity_relations.c.fact_id,
+                )
+            )
+            .where(
+                entity_relations.c.subject_entity_id == bond_id,
+                entity_relations.c.relation_type == "HAS_SALE_LOT",
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+        )
+
+    @staticmethod
+    def _bond_sale_lot_count(bond_id, _snapshot):
+        return (
+            select(func.count(distinct(sale_lots.c.sale_lot_id)))
+            .where(sale_lots.c.bond_id == bond_id)
+            .scalar_subquery()
+        )
+
+    @staticmethod
+    def _bond_sale_lot_price_yield(bond_id, snapshot):
+        described = source_record_entities.alias("sale_lot_described_record")
+        record = source_records.alias("sale_lot_price_yield_record")
+        lot = sale_lots.alias("price_yield_sale_lot")
+        price = source_field_assertions.alias("trade_price_assertion")
+        yield_ = source_field_assertions.alias("buy_yield_assertion")
+        return exists(
+            select(1)
+            .select_from(
+                described
+                .join(record, record.c.source_record_id == described.c.source_record_id)
+                .join(lot, lot.c.sale_lot_id == described.c.entity_id)
+                .join(price, price.c.source_record_id == record.c.source_record_id)
+                .join(yield_, yield_.c.source_record_id == record.c.source_record_id)
+            )
+            .where(
+                described.c.entity_kind == "SALE_LOT",
+                described.c.provenance_role == "DESCRIBES",
+                lot.c.bond_id == bond_id,
+                record.c.snapshot_id.in_(snapshot.snapshot_ids),
+                price.c.source_column == "trade_price",
+                price.c.normalized_value.is_not(None),
+                price.c.normalized_value != "",
+                yield_.c.source_column == "buy_yield",
+                yield_.c.normalized_value.is_not(None),
+                yield_.c.normalized_value != "",
+            )
+        )
 
     def _fund_subscription_eligible(self, share_class_id, snapshot):
         public = self._fields.concept_iri("OFFERING_TYPE", "OfferingType.PUBLIC")

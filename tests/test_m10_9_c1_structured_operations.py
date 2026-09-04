@@ -631,6 +631,126 @@ def test_bond_compiler_ignores_quantity_and_excludes_lifecycle_end_facts() -> No
     assert compiled.result_grain.value == "financial_product"
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_filters"),
+    [
+        (
+            "현재 구매 가능한 채권",
+            {"product.current_bond_purchase_eligible": True},
+        ),
+        (
+            "현재 구매 가능한 장내채권",
+            {
+                "product.current_bond_purchase_eligible": True,
+                "product.bond_market_presence": "EXCHANGE_TRADED",
+            },
+        ),
+        (
+            "현재 구매 가능한 장외채권",
+            {
+                "product.current_bond_purchase_eligible": True,
+                "product.bond_market_presence": "OTC",
+            },
+        ),
+        (
+            "미래에셋 판매조건이 있는 채권",
+            {"product.has_sale_lot": True},
+        ),
+        (
+            "매매단가와 수익률이 제공된 장외채권",
+            {
+                "product.bond_market_presence": "OTC",
+                "product.has_trade_price_and_buy_yield_sale_lot": True,
+            },
+        ),
+        (
+            "판매 LOT은 없지만 구매 가능한 채권",
+            {
+                "product.current_bond_purchase_eligible": True,
+                "product.has_sale_lot": False,
+            },
+        ),
+        (
+            "하나의 종목에 여러 판매조건이 있는 채권",
+            {"product.has_multiple_sale_lots": True},
+        ),
+        (
+            "상장폐지 또는 리스팅 종료 채권 제외",
+            {"product.current_bond_purchase_eligible": True},
+        ),
+    ],
+)
+def test_bond_query_contract_is_structured_and_compiles_at_bond_grain(
+    question: str, expected_filters: dict[str, object]
+) -> None:
+    parsed, _, plan = asyncio.run(_plan(question))
+    assert parsed.unparsed_material_spans == []
+    inputs = plan.steps[0].inputs
+    assert inputs["product_types"] == ["FinancialProduct.Bond"]
+    assert {
+        item["canonical_field"]: item["canonical_value"]
+        for item in inputs["filters"]
+    } == expected_filters
+
+    snapshot = V2SnapshotSelection(
+        snapshot_date=date(2026, 8, 24),
+        generation="260824",
+        ontology_version="merged-optical-1.4",
+        snapshot_ids=("prbd",),
+        dataset_ids=("PRBD01N001",),
+    )
+    compiled = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=100
+    ).compile(plan.steps[0], snapshot)
+    sql = str(compiled.statement.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+    assert compiled.result_grain.value == "financial_product"
+    assert "buyable_quantity" not in sql.casefold()
+    if "product.current_bond_purchase_eligible" in expected_filters:
+        assert "BOND_DELISTING_DATE" in sql
+        assert "BOND_LISTING_END_DATE" in sql
+        assert "maturity_date" not in sql
+        assert "remaining_days" not in sql
+    if "product.bond_market_presence" in expected_filters:
+        assert "pd_exg_mkt" in sql
+        assert "EXISTS" in sql
+    if expected_filters.get("product.has_sale_lot") is False:
+        assert "NOT (EXISTS" in sql
+    if "product.has_multiple_sale_lots" in expected_filters:
+        assert "count(DISTINCT" in sql
+    if "product.has_trade_price_and_buy_yield_sale_lot" in expected_filters:
+        assert "trade_price" in sql
+        assert "buy_yield" in sql
+        assert "sale_lot_price_yield_record" in sql
+
+
+def test_bond_lifecycle_exclusion_is_not_product_type_or_asset_exclusion() -> None:
+    parsed, _, plan = asyncio.run(
+        _plan("상장폐지 또는 리스팅 종료 채권 제외")
+    )
+    assert parsed.product_types == ["채권"]
+    assert not any(
+        item.field in {"product_type", "asset_type"}
+        and item.operator.value == "ne"
+        for item in parsed.filters
+    )
+    assert plan.steps[0].inputs["product_types"] == ["FinancialProduct.Bond"]
+
+
+def test_bond_market_presence_is_distinct_from_exposure_region() -> None:
+    parsed, _, plan = asyncio.run(_plan("국내 장외채권 알려줘"))
+    assert parsed.unparsed_material_spans == []
+    fields = {
+        item["canonical_field"]: item["canonical_value"]
+        for item in plan.steps[0].inputs["filters"]
+    }
+    assert fields == {
+        "product.region": "Region.KR",
+        "product.bond_market_presence": "OTC",
+    }
+
+
 def test_allowlisted_cross_product_shape_compiles_one_global_ranking() -> None:
     step = QueryStep(
         step_id="cross-product",

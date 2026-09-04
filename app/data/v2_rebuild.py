@@ -125,7 +125,6 @@ EXPECTED_CANONICAL_COUNTS = {
     "etn": 610,
     "funds": 6_867,
     "fund_share_classes": 16_574,
-    "sale_lots": 634,
     "unresolved_fund_rows": 7_102,
 }
 
@@ -135,7 +134,7 @@ TARGET_FIELDS = {
             "pd_no", "pd_nm", "pd_abrv_nm", "pd_pbcm", "isu_dt", "mat_dt",
             "isu_bal_amt", "pd_risk_gcd", "pd_risk_nm", "bd_knd", "bd_ofr_tcd",
             "curr_cd", "pd_ctry_cd", "pd_exg_mkt", "info_base_dt", "info_seq",
-            "eval_price", "buy_yield", "crd_grd", "crd_grd_dt",
+            "eval_price", "trade_price", "buy_yield", "crd_grd", "crd_grd_dt",
         }
     ),
     "PREF01N001": frozenset(
@@ -741,7 +740,9 @@ class CanonicalV2Rebuilder:
                 rows.flush(connection)
                 if force_failure_stage == "before_reconciliation":
                     raise RuntimeError("forced M10.8-B failure before reconciliation")
-                counts = self._reconcile(connection)
+                counts = self._reconcile(
+                    connection, expected_sale_lots=len(audit.sale_lot_ids)
+                )
                 self._mark_ready(connection, audit, snapshot_ids, counts)
             return self._report(audit, status="READY", skipped=False)
         except Exception as exc:
@@ -1879,7 +1880,9 @@ class CanonicalV2Rebuilder:
             ]).on_conflict_do_nothing()
         )
 
-    def _reconcile(self, connection) -> dict[str, int]:
+    def _reconcile(
+        self, connection, *, expected_sale_lots: int | None = None
+    ) -> dict[str, int]:
         counts = {
             "financial_products": connection.scalar(select(func.count()).select_from(financial_products)),
             "bonds": connection.scalar(select(func.count()).select_from(bonds)),
@@ -1890,7 +1893,15 @@ class CanonicalV2Rebuilder:
             "etn": connection.scalar(select(func.count()).select_from(exchange_traded_products).where(exchange_traded_products.c.product_type_code == "ETN")),
             "unresolved_fund_rows": connection.scalar(select(func.count()).select_from(identity_resolution_cases).where(identity_resolution_cases.c.reason_code == "UNRESOLVED_PARENT")),
         }
-        if counts != EXPECTED_CANONICAL_COUNTS:
+        expected_counts = {
+            **EXPECTED_CANONICAL_COUNTS,
+            "sale_lots": (
+                counts["sale_lots"]
+                if expected_sale_lots is None
+                else expected_sale_lots
+            ),
+        }
+        if counts != expected_counts:
             raise ValueError(f"canonical reconciliation mismatch: {counts}")
         source_count = connection.scalar(select(func.count()).select_from(source_records))
         quarantine_count = connection.scalar(select(func.count()).select_from(quarantine_records))

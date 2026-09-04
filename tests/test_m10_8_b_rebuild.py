@@ -16,6 +16,7 @@ from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
 from app.data.v2_rebuild import (
     CanonicalV2Rebuilder,
+    TARGET_FIELDS,
     _RELATION_DOMAIN_CONTRACTS,
     _etp_insufficient_reasons,
     relation_domain_violations,
@@ -74,8 +75,14 @@ def test_prbd_sale_lot_evidence_predicate_ignores_buyable_quantity() -> None:
     assert "buyable_quantity" not in PRBD_SALE_LOT_EVIDENCE_FIELDS
     assert not has_prbd_sale_lot_evidence({"buyable_quantity": 100})
     assert not has_prbd_sale_lot_evidence({"trade_price": "", "buy_yield": None})
+    assert not has_prbd_sale_lot_evidence({"trade_price": float("nan")})
+    assert not has_prbd_sale_lot_evidence({"trade_price": "NaN"})
     assert has_prbd_sale_lot_evidence({"trade_price": 0})
     assert has_prbd_sale_lot_evidence({"bdbns_abl_chnl_nm": "온오프 겸용"})
+
+
+def test_trade_price_is_preserved_as_sale_lot_source_assertion() -> None:
+    assert "trade_price" in TARGET_FIELDS["PRBD01N001"]
 
 
 def _url() -> str:
@@ -206,7 +213,7 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
             "SELECT b.bond_id, count(sl.sale_lot_id) lot_count "
             "FROM canonical_v2.bonds b LEFT JOIN canonical_v2.sale_lots sl "
             "ON sl.bond_id = b.bond_id GROUP BY b.bond_id) q GROUP BY lot_count"
-        )))
+        )).all())
         assert sale_lot_counts[0] == 20_171
         assert sale_lot_counts[1] == 19
         assert sum(count for lot_count, count in sale_lot_counts.items() if lot_count > 1) == 307
