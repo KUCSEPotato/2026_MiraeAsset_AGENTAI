@@ -64,6 +64,8 @@ def normalized_entity_form(value: str, entity_type: str) -> str:
 def entity_name_similarity(left: str, right: str, entity_type: str) -> float:
     """Deterministic lexical score for candidate generation, never identity."""
 
+    if entity_type in _ORGANIZATION_TYPES and _identity_suffix(left) != _identity_suffix(right):
+        return 0.0
     query = normalized_entity_form(left, entity_type)
     candidate = normalized_entity_form(right, entity_type)
     if not query or not candidate:
@@ -97,7 +99,17 @@ def _text_variants(value: str, entity_type: str) -> tuple[str, ...]:
             if replaced and replaced != organization:
                 variants.append(replaced)
                 organization = replaced
-        stripped = re.sub(r"(?:자산운용|운용사|증권)$", "", organization).strip()
-        if stripped and stripped != organization:
-            variants.append(stripped)
     return tuple(dict.fromkeys(variants))
+
+
+def _identity_suffix(value: str) -> str | None:
+    legal = _LEGAL_AFFIX_PATTERN.sub("", value.strip()).strip()
+    match = re.search(r"(자산운용사?|운용사|증권사?|은행|보험)$", legal)
+    return match.group(1).removesuffix("사") if match else None
+
+
+def organization_identity_compatible(raw: str, canonical: str | None, entity_type: str) -> bool:
+    """A qualified organization name cannot alias a different business identity."""
+    if entity_type not in _ORGANIZATION_TYPES or not _identity_suffix(raw):
+        return True
+    return bool(canonical) and _identity_suffix(raw) == _identity_suffix(canonical)

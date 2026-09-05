@@ -7,6 +7,7 @@ from app.domain.models import (
     EntityResolutionCandidate,
 )
 from app.entity.normalization import (
+    organization_identity_compatible,
     FUZZY_ACCEPTANCE_THRESHOLD,
     FUZZY_AMBIGUITY_MARGIN,
     FUZZY_CANDIDATE_LIMIT,
@@ -46,6 +47,8 @@ class StaticEntityLookup:
         tiered_matches: list[tuple[int, EntityLookupMatch]] = []
         for entity in self._entities:
             if entity.entity_type != entity_type:
+                continue
+            if not organization_identity_compatible(raw_text, entity.official_name, entity_type):
                 continue
             candidates = [
                 (entity.official_name, "official_name"),
@@ -102,6 +105,8 @@ class StaticEntityLookup:
         ranked: list[EntityLookupMatch] = []
         for entity in self._entities:
             if entity.entity_type != entity_type:
+                continue
+            if not organization_identity_compatible(raw_text, entity.official_name, entity_type):
                 continue
             names = [
                 (entity.official_name, "official_name"),

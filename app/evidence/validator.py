@@ -2,12 +2,16 @@ from collections import defaultdict
 
 from app.domain.models import (
     AnswerabilityReasonCode,
+    AnswerabilityStatus,
+    ClauseResult,
+    ClauseStatus,
     CoverageStatus,
     ConceptCategory,
     Evidence,
     EvidenceBundle,
     FindingSeverity,
     GroundedQuery,
+    GroundedField,
     QueryIntent,
     ResolutionStatus,
     SnapshotPolicy,
@@ -32,6 +36,118 @@ class QualityAwareEvidenceValidator:
         self._quality_provider = quality_provider
 
     async def validate(
+        self, query: GroundedQuery, evidence: EvidenceBundle,
+    ) -> ValidationResult:
+        if not query.grounded_requested_fields and not query.parsed_query.selectors:
+            return await self._validate_full(query, evidence)
+        from app.planning.output_requirements import prepare_outputs
+        from app.planning.capabilities import SemanticCapabilityValidator
+        from app.planning.semantic_ir import build_semantic_ir
+        try:
+            prepared = prepare_outputs(query)
+            SemanticCapabilityValidator().validate(prepared.query, build_semantic_ir(prepared.query))
+        except UnsupportedQuerySemanticsError as exc:
+            return ValidationResult(answerable=False,
+                reason_codes=[AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT], reasons=exc.reasons,
+                clauses=[ClauseResult(label=item.raw_text, field=item.canonical_field,
+                    status=ClauseStatus.UNSUPPORTED, reason="hard_constraint_or_no_executable_output")
+                    for item in query.grounded_requested_fields])
+
+        factual = prepared.query
+        comparison_requested = query.parsed_query.comparison is not None or query.parsed_query.intent is QueryIntent.COMPARE_PRODUCTS or bool(query.parsed_query.selectors)
+        if comparison_requested and not query.grounded_sort:
+            factual = factual.model_copy(update={"parsed_query": factual.parsed_query.model_copy(update={
+                "comparison": None, "intent": QueryIntent.SEARCH_PRODUCT,
+            })})
+        result = await self._validate_full(factual, evidence)
+        clauses = [item for item in prepared.disclosures if item.kind != "COMPARISON"]
+        hard_fields = {item.canonical_field for item in (*query.grounded_filters, *query.grounded_sort)}
+        local_codes = {
+            AnswerabilityReasonCode.MISSING_REQUIRED_FIELD, AnswerabilityReasonCode.INVALID_SENTINEL,
+            AnswerabilityReasonCode.CONFLICTING_EVIDENCE, AnswerabilityReasonCode.INSUFFICIENT_COVERAGE,
+        }
+        global_failure = any(item.severity is FindingSeverity.BLOCKING and not (
+            item.code in local_codes and item.field is not None and item.field not in hard_fields
+        ) for item in result.findings)
+        expected = {
+            item.canonical_id: item.raw_text for item in factual.resolved_entities
+            if item.resolution_status is ResolutionStatus.RESOLVED and item.entity_type == "product" and item.canonical_id
+        }
+        if not expected or query.grounded_sort:
+            expected = {item.entity_id: item.entity_id for item in evidence.evidence if item.entity_id}
+        if not expected:
+            expected = {None: None}
+        clauses = [cell for item in clauses for cell in (
+            [item.model_copy(update={"entity_id": entity_id, "entity_label": label})
+             for entity_id, label in expected.items()] if item.kind == "OUTPUT" else [item]
+        )]
+        output_fields = list(factual.grounded_requested_fields)
+        output_fields.extend(GroundedField(raw_text=item.raw_sort.field, canonical_field=item.canonical_field,
+                                            status=item.status) for item in factual.grounded_sort
+                             if item.canonical_field not in {field.canonical_field for field in output_fields})
+        for field in output_fields:
+            for entity_id, label in expected.items():
+                relevant = [item for item in result.findings if item.field == field.canonical_field
+                            and item.entity_id in {None, entity_id} and item.severity is FindingSeverity.BLOCKING]
+                indices = [index for index, item in enumerate(evidence.evidence)
+                           if item.field == field.canonical_field and item.entity_id == entity_id
+                           and not self._is_missing(item.value) and not self._is_sentinel(item)]
+                ambiguous = any(item.code is AnswerabilityReasonCode.CONFLICTING_EVIDENCE for item in relevant)
+                status = (ClauseStatus.AMBIGUOUS if ambiguous else ClauseStatus.MISSING if not indices
+                          else ClauseStatus.UNSUPPORTED if relevant or global_failure else ClauseStatus.SATISFIED)
+                clauses.append(ClauseResult(label=field.raw_text, field=field.canonical_field,
+                    entity_id=entity_id, entity_label=label, status=status,
+                    reason=None if status is ClauseStatus.SATISFIED else "output_evidence_unavailable",
+                    evidence_indices=indices if status is ClauseStatus.SATISFIED else []))
+        # Missing entities/selectors apply to every requested output as well.
+        for item in list(clauses):
+            if item.kind in {"ENTITY", "SELECTOR"}:
+                clauses.extend(ClauseResult(label=field.raw_text, field=field.canonical_field,
+                    entity_label=item.label, status=item.status, reason=item.reason)
+                    for field in query.grounded_requested_fields)
+
+        comparison_completed = False
+        if comparison_requested:
+            comparison_findings = self._comparison_contract_findings(query, evidence)
+            comparison_findings.extend(self._snapshot_findings(_required_fields(query), True, evidence))
+            comparison_findings.extend(self._coverage_findings(_required_fields(query), True, False,
+                                                               _query_product_type(query), evidence))
+            for finding in comparison_findings:
+                if finding.code is AnswerabilityReasonCode.INSUFFICIENT_EVIDENCE and finding.field:
+                    for clause in clauses:
+                        if clause.kind == "OUTPUT" and clause.field == finding.field and clause.entity_id == finding.entity_id:
+                            clause.status = ClauseStatus.UNSUPPORTED
+                            clause.reason = "invalid_metric_evidence_contract"
+                            clause.evidence_indices = []
+            # Even older compare payloads without ComparisonSpec must have a
+            # current contract and at least two evidenced resolved identities.
+            inputs = structured_query_inputs(query)
+            reasons = [MetricCapabilityRegistry().comparison_contract(field, inputs)[1]
+                       for field in _required_fields(query)]
+            comparison_completed = bool(len(expected) >= 2 and not global_failure
+                and not prepared.disclosures and not any(reasons)
+                and all(item.status is ClauseStatus.SATISFIED for item in clauses)
+                and not any(item.severity is FindingSeverity.BLOCKING for item in comparison_findings))
+            clauses.append(ClauseResult(kind="COMPARISON", label="상품 간 비교",
+                status=ClauseStatus.SATISFIED if comparison_completed else ClauseStatus.UNSUPPORTED,
+                reason=None if comparison_completed else "comparison_not_completed"))
+            result.findings.extend(comparison_findings)
+
+        has_facts = any(item.kind == "OUTPUT" and item.status is ClauseStatus.SATISFIED for item in clauses)
+        partial = any(item.status is not ClauseStatus.SATISFIED for item in clauses)
+        state = (AnswerabilityStatus.UNANSWERABLE if global_failure or not has_facts else
+                 AnswerabilityStatus.PARTIALLY_ANSWERABLE if partial else AnswerabilityStatus.FULLY_ANSWERABLE)
+        codes = list(dict.fromkeys(item.code for item in result.findings))
+        if state is not AnswerabilityStatus.UNANSWERABLE:
+            codes.insert(0, AnswerabilityReasonCode.ANSWERABLE)
+        return ValidationResult(answerable=state is not AnswerabilityStatus.UNANSWERABLE,
+            answerability=state, clauses=clauses, comparison_completed=comparison_completed,
+            findings=result.findings, reason_codes=codes, reasons=[item.value for item in codes],
+            missing_fields=list(dict.fromkeys(item.field for item in clauses
+                if item.kind == "OUTPUT" and item.field and item.status is not ClauseStatus.SATISFIED)),
+            warnings=result.warnings)
+
+    async def _validate_full(
         self,
         query: GroundedQuery,
         evidence: EvidenceBundle,
@@ -64,7 +180,7 @@ class QualityAwareEvidenceValidator:
         findings.extend(self._comparison_contract_findings(query, evidence))
         findings.extend(
             self._coverage_findings(
-                required_fields,
+                [item.canonical_field for item in query.grounded_sort if item.canonical_field] if ranking_scope else required_fields,
                 comparison_scope,
                 ranking_scope,
                 product_type,

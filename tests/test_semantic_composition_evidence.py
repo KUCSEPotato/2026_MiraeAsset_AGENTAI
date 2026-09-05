@@ -66,7 +66,8 @@ def test_each_entity_requires_each_field_even_if_field_exists_elsewhere():
     bundle = _bundle()
     bundle.evidence.pop()
     result = _validate(_query(), bundle)
-    assert not result.answerable
+    assert result.answerability == "PARTIALLY_ANSWERABLE"
+    assert not result.comparison_completed
     assert FIELDS[1] in result.missing_fields
     assert any(finding.entity_id == IDS[1] and finding.field == FIELDS[1] for finding in result.findings)
 
@@ -75,7 +76,8 @@ def test_missing_comparison_entity_cannot_be_omitted():
     bundle = _bundle()
     bundle.evidence = bundle.evidence[:2]
     result = _validate(_query(), bundle)
-    assert not result.answerable
+    assert result.answerability == "PARTIALLY_ANSWERABLE"
+    assert not result.comparison_completed
     assert any(finding.entity_id == IDS[1] for finding in result.findings)
 
 
@@ -87,7 +89,11 @@ def test_missing_comparison_entity_cannot_be_omitted():
 def test_comparison_evidence_must_match_contract_and_provenance(key, value):
     bundle = _bundle()
     bundle.evidence[0].metadata[key] = value
-    assert not _validate(_query(), bundle).answerable
+    result = _validate(_query(), bundle)
+    assert result.answerability == "PARTIALLY_ANSWERABLE"
+    assert not result.comparison_completed
+    invalid = next(item for item in result.clauses if item.kind == "OUTPUT" and item.entity_id == IDS[0] and item.field == FIELDS[0])
+    assert invalid.status == "UNSUPPORTED" and invalid.evidence_indices == []
 
 
 def test_cross_store_snapshots_are_checked_even_for_different_fields():

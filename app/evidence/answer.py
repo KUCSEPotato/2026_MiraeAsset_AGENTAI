@@ -1,4 +1,4 @@
-from app.domain.models import EvidenceBundle, ValidationResult
+from app.domain.models import AnswerabilityStatus, ClauseStatus, EvidenceBundle, ValidationResult
 
 
 VALUE_ONLY_FIELDS = frozenset({"product.risk_grade"})
@@ -52,6 +52,8 @@ class DeterministicEvidenceAnswerGenerator:
         evidence: EvidenceBundle,
         validation: ValidationResult,
     ) -> str:
+        if validation.answerability is AnswerabilityStatus.PARTIALLY_ANSWERABLE:
+            return render_partial_answer(evidence, validation)
         del question, validation
         lines: list[str] = []
         disclosures: list[str] = []
@@ -99,3 +101,34 @@ class DeterministicEvidenceAnswerGenerator:
         else:
             basis = "확인된 데이터 기준 결과입니다. "
         return basis + " / ".join(lines)
+
+
+def render_partial_answer(evidence: EvidenceBundle, validation: ValidationResult) -> str:
+    """Only validated entity×field cells may contribute factual output."""
+    lines = ["확인 가능한 정보는 다음과 같습니다. (일부 항목 확인 불가)"]
+    for clause in validation.clauses:
+        label = _FIELD_LABELS.get(clause.field, clause.label)
+        prefix = f"{clause.entity_label} — " if clause.entity_label else ""
+        if clause.kind == "COMPARISON":
+            if clause.status is not ClauseStatus.SATISFIED:
+                lines.append("상품 간 비교는 완료하지 못했으며 우열을 판단할 수 없습니다.")
+            continue
+        if clause.status is ClauseStatus.SATISFIED:
+            values = []
+            for index in clause.evidence_indices:
+                item = evidence.evidence[index]
+                if item.field != clause.field or item.entity_id != clause.entity_id or item.value is None:
+                    raise ValueError("partial answer evidence does not match its clause")
+                value = item.value
+                if item.field not in VALUE_ONLY_FIELDS and item.metadata.get("metric_unit") == "PERCENT":
+                    value = value if value.rstrip().endswith("%") else value + "%"
+                if value not in values:
+                    values.append(value)
+            if values:
+                lines.append(f"- {prefix}{label}: {', '.join(values)}")
+        else:
+            unavailable = ("하나로 특정할 수 없음" if clause.status is ClauseStatus.AMBIGUOUS
+                           else "현재 지원되는 근거로 확인할 수 없음" if clause.status is ClauseStatus.UNSUPPORTED
+                           else "현재 데이터에서 확인할 수 없음")
+            lines.append(f"- {prefix}{label}: {unavailable}")
+    return "\n".join(lines)

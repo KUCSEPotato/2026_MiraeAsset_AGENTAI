@@ -144,6 +144,7 @@ def _is_understood_unsupported(parsed: ParsedQuery) -> bool:
         "dataset_unit_mapping_unverified",
         "historical_metric_series_unavailable",
         "holdings_weight_projection_unavailable",
+        "peer_selector_unverified",
     }
 
 

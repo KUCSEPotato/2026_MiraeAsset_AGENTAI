@@ -26,6 +26,11 @@ class StructuredQueryPlanValidator:
         self._metadata = metadata
 
     def validate(self, plan: QueryPlan, query: GroundedQuery) -> QueryPlan:
+        from app.planning.output_requirements import prepare_outputs
+        prepared = prepare_outputs(query)
+        if plan.output_disclosures != prepared.disclosures:
+            raise QueryPlanValidationError(["changed_output_disclosures"])
+        query = prepared.query
         errors: list[str] = []
         planner = self._as_planner_type(plan.planner)
         if planner is None:

@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import httpx
 
-from app.domain.models import EvidenceBundle, ValidationResult
+from app.domain.models import AnswerabilityStatus, EvidenceBundle, ValidationResult
 from app.evidence.answer import (
     DeterministicEvidenceAnswerGenerator, answer_contract, satisfies_answer_contract,
 )
@@ -103,6 +103,8 @@ class HyperCLOVAEvidenceAnswerGenerator:
     ) -> str:
         if not validation.answerable:
             raise ValueError("answer generation requires validated evidence")
+        if validation.answerability is AnswerabilityStatus.PARTIALLY_ANSWERABLE:
+            return await DeterministicEvidenceAnswerGenerator().generate(question, evidence, validation)
         endpoint = (
             f"{self._settings.base_url}/v3/chat-completions/"
             f"{quote(self._settings.model, safe='')}"
