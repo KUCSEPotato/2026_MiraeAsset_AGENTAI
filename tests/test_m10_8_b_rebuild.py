@@ -76,6 +76,33 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION_TABLE = "alembic_version_m10_8"
 
 
+def _skip_if_organizer_material_is_fully_unprovisioned(root: Path) -> None:
+    """Skip only when none of the four organizer datasets is provisioned."""
+
+    matches: list[Path] = []
+    for spec in DATASET_SPECS:
+        matches.extend(root.rglob(f"{spec.prefix.lower()}_data.xlsx"))
+        matches.extend(root.rglob(f"{spec.prefix.lower()}_schema.xlsx"))
+        matches.extend(root.rglob(f"{spec.prefix}_*_datarows.xlsx"))
+        matches.extend(root.rglob(f"{spec.prefix}_*_schema.xlsx"))
+    if not matches:
+        pytest.skip(
+            "authoritative 2026-08-24 organizer material is not provisioned"
+        )
+
+
+def test_organizer_material_availability_skips_only_when_fully_absent(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_organizer_material_is_fully_unprovisioned(tmp_path)
+
+    (tmp_path / "prbd01n001_data.xlsx").touch()
+    _skip_if_organizer_material_is_fully_unprovisioned(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        discover_dataset_files(tmp_path)
+
+
 def test_subscription_status_relation_domain_contract_is_narrow() -> None:
     contract = _RELATION_DOMAIN_CONTRACTS["HAS_SUBSCRIPTION_STATUS"]
     assert contract.subject_grains == frozenset({("FUND_SHARE_CLASS", None)})
@@ -127,6 +154,7 @@ def test_pref01_return_metric_contract_uses_field_evidence_not_entity_support() 
 
 
 def test_authoritative_organizer_source_baseline_is_unchanged() -> None:
+    _skip_if_organizer_material_is_fully_unprovisioned(ROOT / "material")
     rebuilder = object.__new__(CanonicalV2Rebuilder)
     audit = rebuilder._audit(discover_dataset_files(ROOT / "material"))
     actual = {
