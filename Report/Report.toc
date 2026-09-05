@@ -1,0 +1,67 @@
+\contentsline {section}{\numberline {1}제안 개요}{4}{section.1}%
+\contentsline {subsection}{\numberline {1.1}제안 배경 및 문제 인식}{4}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}제안 목표}{5}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}핵심 아이디어}{5}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}기존 방식과의 차별점}{6}{subsection.1.4}%
+\contentsline {section}{\numberline {2}문제 정의}{7}{section.2}%
+\contentsline {subsection}{\numberline {2.1}금융상품 데이터의 분산 및 이질성}{7}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}상품 유형별 데이터 구조의 차이}{7}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}의미적 불일치와 Entity/Relation 정합성 문제}{7}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}LLM 단독 질의응답의 한계}{7}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}Ontology 기반 의미 통합의 필요성}{7}{subsection.2.5}%
+\contentsline {section}{\numberline {3}제안 시스템 개요}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}전체 Architecture}{8}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}전체 데이터 및 질의 처리 흐름}{9}{subsection.3.2}%
+\contentsline {subsubsection}{\numberline {3.2.1}사전 지식 구축}{9}{subsubsection.3.2.1}%
+\contentsline {subsubsection}{\numberline {3.2.2}온라인 질의 처리}{9}{subsubsection.3.2.2}%
+\contentsline {subsection}{\numberline {3.3}Data Layer}{10}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Knowledge Layer}{11}{subsection.3.4}%
+\contentsline {subsubsection}{\numberline {3.4.1}Ontology}{11}{subsubsection.3.4.1}%
+\contentsline {subsubsection}{\numberline {3.4.2}Knowledge Graph}{11}{subsubsection.3.4.2}%
+\contentsline {subsubsection}{\numberline {3.4.3}Semantic Index}{11}{subsubsection.3.4.3}%
+\contentsline {subsection}{\numberline {3.5}Agent Layer}{12}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}API / Service Layer}{12}{subsection.3.6}%
+\contentsline {section}{\numberline {4}금융상품 지식 모델링}{15}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Canonical Data Model}{15}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}금융상품 Ontology 설계}{15}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}주요 Entity}{15}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}주요 Relation}{15}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}금융 지표 및 속성 모델링}{15}{subsection.4.5}%
+\contentsline {subsection}{\numberline {4.6}Entity Resolution 및 Relation Construction}{15}{subsection.4.6}%
+\contentsline {subsection}{\numberline {4.7}Data--Ontology Mapping}{15}{subsection.4.7}%
+\contentsline {subsection}{\numberline {4.8}외부 데이터 및 Provenance 관리}{15}{subsection.4.8}%
+\contentsline {subsection}{\numberline {4.9}Ontology Constraint 및 정합성 검증}{15}{subsection.4.9}%
+\contentsline {section}{\numberline {5}Agent 기반 질의 처리}{15}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Query Understanding}{15}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Entity Resolution}{15}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Ontology Grounding}{15}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Query Planning}{15}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}RDB / Graph / Semantic Retrieval}{15}{subsection.5.5}%
+\contentsline {subsection}{\numberline {5.6}Evidence Construction}{15}{subsection.5.6}%
+\contentsline {subsection}{\numberline {5.7}Validation}{15}{subsection.5.7}%
+\contentsline {subsection}{\numberline {5.8}HyperCLOVA X 기반 최종 응답 생성}{15}{subsection.5.8}%
+\contentsline {section}{\numberline {6}주요 질의 유형 및 사용자 시나리오}{15}{section.6}%
+\contentsline {subsection}{\numberline {6.1}조건 기반 금융상품 검색}{15}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}상품 비교 및 Ranking}{15}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}특정 기업 관련 금융상품 탐색}{15}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}ETF 구성종목 기반 탐색}{15}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}관계 기반 복합 질의}{15}{subsection.6.5}%
+\contentsline {subsection}{\numberline {6.6}자연어 설명형 질의}{15}{subsection.6.6}%
+\contentsline {subsection}{\numberline {6.7}데이터 부족·비교 불가 질의 처리}{15}{subsection.6.7}%
+\contentsline {section}{\numberline {7}신뢰성 및 검증}{15}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Source Provenance}{15}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Snapshot 및 Version 관리}{15}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Ontology--Data 정합성}{15}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}PostgreSQL--Neo4j 정합성}{15}{subsection.7.4}%
+\contentsline {subsection}{\numberline {7.5}수치 및 Ranking 검증}{15}{subsection.7.5}%
+\contentsline {subsection}{\numberline {7.6}Evidence Validation}{15}{subsection.7.6}%
+\contentsline {subsection}{\numberline {7.7}Fail-Closed 전략}{15}{subsection.7.7}%
+\contentsline {section}{\numberline {8}기대 효과 및 확장성}{15}{section.8}%
+\contentsline {subsection}{\numberline {8.1}금융상품 탐색 편의성}{15}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}근거 기반 답변 신뢰도 향상}{15}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}금융상품 간 의미적 연결}{15}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}신규 금융상품 및 데이터 공급자 확장}{15}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}실시간 데이터 연계}{15}{subsection.8.5}%
+\contentsline {subsection}{\numberline {8.6}사용자 맞춤형 Agent로의 발전}{15}{subsection.8.6}%
+\contentsline {section}{\numberline {9}결론}{15}{section.9}%
+\contentsline {section}{\numberline {A}용어 및 약어}{16}{appendix.A}%

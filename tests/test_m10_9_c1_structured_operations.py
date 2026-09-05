@@ -270,10 +270,26 @@ def test_etp_insufficient_reasons_only_cover_core_availability_inputs() -> None:
 
 def test_etp_source_metric_and_insufficient_counts_preserve_missingness() -> None:
     material = Path("material/1.금융상품")
+    # This validation intentionally runs only where both authoritative source
+    # workbooks are provisioned; repository-only CI does not contain material/.
+    source_workbooks = {
+        prefix: sorted(material.glob(f"{prefix}_*_datarows.xlsx"))
+        for prefix in ("PREF01N001", "PREF02N001")
+    }
+    missing_sources = [
+        prefix for prefix, candidates in source_workbooks.items() if not candidates
+    ]
+    if missing_sources:
+        pytest.skip(
+            "authoritative ETP source workbook(s) are not provisioned under "
+            "material/1.금융상품: "
+            + ", ".join(missing_sources)
+        )
+
     counts = {"volume": 0, "zero_volume": 0, "missing_foreign_volume": 0}
     insufficient = {"PREF01N001": 0, "PREF02N001": 0}
     for prefix in insufficient:
-        path = next(material.glob(f"{prefix}_*_datarows.xlsx"))
+        path = source_workbooks[prefix][0]
         workbook = load_workbook(path, read_only=True, data_only=True)
         rows = workbook["data"].iter_rows(values_only=True)
         header = [str(value).strip() for value in next(rows)]
