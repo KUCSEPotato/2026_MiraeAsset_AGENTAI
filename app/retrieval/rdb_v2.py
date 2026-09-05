@@ -1550,6 +1550,22 @@ class CanonicalV2RDBRetriever:
             for item in step.inputs.get("filters", [])
             if isinstance(item, dict) and item.get("canonical_field")
         )
+        # Only attach matches after compilation and SQL execution succeeded.
+        # Preserve predicates (including IN/NE/ranges), never turn them into
+        # equality facts inferred from a name or from the user's question.
+        constraint_ids = step.inputs.get("filter_constraint_ids", [])
+        constraint_matches = [
+            {
+                "constraint_id": constraint_ids[index] if index < len(constraint_ids) else None,
+                "canonical_field": item["canonical_field"],
+                "operator": item["raw"]["operator"],
+                "value": item.get("canonical_value")
+                if item.get("canonical_value") is not None else item["raw"].get("value"),
+                "raw": item["raw"],
+                "satisfied": True,
+            }
+            for index, item in enumerate(step.inputs.get("filters", []))
+        ]
         records: list[RetrievalRecord] = []
         for row in rows:
             entity_id = str(row["entity_id"])
@@ -1584,6 +1600,7 @@ class CanonicalV2RDBRetriever:
                             "preferred_name": typed.preferred_name,
                             "name_status": typed.name_status,
                             "matched_constraints": list(typed.matched_constraints),
+                            "structured_constraint_matches": constraint_matches,
                             "canonical_fact_ids": list(typed.canonical_fact_ids),
                             "evidence_assertion_ids": list(typed.evidence_assertion_ids),
                             "source_record_ids": list(typed.source_record_ids),

@@ -41,6 +41,7 @@ class QualityAwareEvidenceValidator:
         )
 
         findings.extend(self._execution_findings(evidence))
+        findings.extend(self._structured_constraint_findings(query, evidence))
         findings.extend(self._ranking_findings(query, evidence))
         findings.extend(self._required_field_findings(required_fields, evidence))
         findings.extend(self._sentinel_findings(required_fields, evidence))
@@ -109,6 +110,47 @@ class QualityAwareEvidenceValidator:
             missing_fields=missing_fields,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _structured_constraint_findings(
+        query: GroundedQuery, bundle: EvidenceBundle,
+    ) -> list[ValidationFinding]:
+        findings: list[ValidationFinding] = []
+        # Current structured plans apply all grounded filters conjunctively in
+        # their RDB candidate step. Do not let losing both the field-name list
+        # and its value receipt turn a constrained query into an unconstrained one.
+        required = {item.canonical_field for item in query.grounded_filters if item.canonical_field}
+        for item in bundle.evidence:
+            if item.metadata.get("repository_version") != "v2" or item.source_type != "rdb":
+                continue
+            fields = item.metadata.get("matched_constraints", [])
+            matches = item.metadata.get("structured_constraint_matches", [])
+            valid = isinstance(matches, list) and all(
+                isinstance(match, dict)
+                and isinstance(match.get("canonical_field"), str)
+                and bool(match["canonical_field"])
+                and isinstance(match.get("operator"), str)
+                and match.get("operator") in {"eq", "ne", "in", "gt", "gte", "lt", "lte"}
+                and match.get("value") is not None
+                and match.get("satisfied") is True
+                for match in matches
+            )
+            if (
+                valid
+                and isinstance(fields, list)
+                and all(isinstance(field, str) for field in fields)
+                and required.issubset(fields)
+                and sorted(fields) == sorted(match["canonical_field"] for match in matches)
+            ):
+                continue
+            findings.append(ValidationFinding(
+                code=AnswerabilityReasonCode.INSUFFICIENT_EVIDENCE,
+                severity=FindingSeverity.BLOCKING,
+                entity_id=item.entity_id,
+                source_ids=[item.source_id],
+                message="Executed structured constraint semantics are missing or incomplete.",
+            ))
+        return findings
 
     @staticmethod
     def _execution_findings(

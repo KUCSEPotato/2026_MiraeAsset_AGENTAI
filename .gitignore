@@ -34,6 +34,7 @@ tests/*
 !tests/test_m10_8_d_derived.py
 !tests/test_m10_9_operations.py
 !tests/test_m10_9_hyperclova_answer.py
+!tests/test_structured_answer_evidence.py
 !tests/test_m10_9_docker_deployment.py
 !tests/test_m10_9_c1_structured_operations.py
 !tests/test_m10_9_c1_postgresql.py
