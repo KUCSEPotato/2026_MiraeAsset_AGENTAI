@@ -98,6 +98,13 @@ uses `NAVER_DEPLOY_HOST`, `NAVER_DEPLOY_USER`, `NAVER_DEPLOY_SSH_KEY`, and a
 pinned `NAVER_DEPLOY_HOST_KEY`; application credentials stay on the server.
 `ARTIFACT_RELEASE_ID` selects the already verified server-side data release.
 
+As verified on 2026-09-05, the healthy production runtime uses
+`submission-candidate-20260905-dd331fa-v1`. The repository variable must select
+this release for the current canonical_v2 runtime; the earlier
+`submission-candidate-20260902-v4` index lacks the required derived manifest.
+The deploy script validates application startup in a temporary container before
+replacing the live API, so an incompatible artifact fails before replacement.
+
 The server script accepts `CODE_SHA IMAGE_REF ARTIFACT_RELEASE_ID`. It verifies
 the retained artifact tar checksum without extracting or retransferring it,
 checks that the image tag equals `CODE_SHA`, preserves the database/graph

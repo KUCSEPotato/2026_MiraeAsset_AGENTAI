@@ -69,12 +69,27 @@ rollback() {
   fi
   echo "no previous known-good code release is available for rollback" >&2
 }
-trap rollback ERR
-
 docker compose --env-file "$environment_file" \
   -f "$app_dir/docker-compose.prod.yml" pull agent-api
 docker compose --env-file "$environment_file" \
   -f "$app_dir/docker-compose.prod.yml" up -d postgres neo4j
+
+# Validate the selected release with the new image before replacing the live API.
+# A bad artifact must not interrupt the currently healthy application.
+docker compose --env-file "$environment_file" \
+  -f "$app_dir/docker-compose.prod.yml" run --rm --no-deps -T \
+  --entrypoint python agent-api -c '
+import asyncio
+from app.main import app
+
+async def check():
+    async with app.router.lifespan_context(app):
+        print("production runtime preflight passed")
+
+asyncio.run(check())
+'
+
+trap rollback ERR
 docker compose --env-file "$environment_file" \
   -f "$app_dir/docker-compose.prod.yml" up -d --no-deps agent-api
 
