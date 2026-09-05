@@ -17,6 +17,7 @@ from sqlalchemy import (
     Select,
     and_,
     asc,
+    case,
     desc,
     exists,
     distinct,
@@ -360,7 +361,12 @@ class CanonicalV2FieldRegistry:
             V2FieldMapping("product.price", "metric", "PRICE", False, True, False),
             V2FieldMapping("product.market_price", "metric", "MARKET_PRICE", False, True, False),
             V2FieldMapping("product.market_volume", "metric", "VOLUME", False, True, False),
+            V2FieldMapping("product.one_day_return", "metric", "ONE_DAY_RETURN", False, True, False),
+            V2FieldMapping("product.one_month_return", "metric", "ONE_MONTH_RETURN", False, True, False),
+            V2FieldMapping("product.three_month_return", "metric", "THREE_MONTH_RETURN", False, True, False),
+            V2FieldMapping("product.six_month_return", "metric", "SIX_MONTH_RETURN", False, True, False),
             V2FieldMapping("product.one_year_return", "metric", "ONE_YEAR_RETURN", False, True, False),
+            V2FieldMapping("product.year_to_date_return", "metric", "YEAR_TO_DATE_RETURN", False, True, False),
             V2FieldMapping("product.credit_rating", "metric", "CREDIT_RATING_ORDER", True, True, False),
             V2FieldMapping("product.current_sale_available", "bond_purchasable", "ORGANIZER_PURCHASABLE_BOND", True, False, False),
             V2FieldMapping("product.current_bond_purchase_eligible", "bond_purchasable", "BOND_PURCHASE_ELIGIBILITY_V1", True, False, False),
@@ -610,13 +616,30 @@ class CanonicalV2QueryCompiler:
                 raise RDBQueryCompilationError(
                     f"canonical_v2 sorting is semantically disabled for {mapping.canonical_field}"
                 )
-            metric_value = self._metric_value(entity_id, mapping.semantic_key, contract, snapshot)
-            conditions.append(metric_value.is_not(None))
+            if (
+                mapping.kind == "classification"
+                and contract.get("comparison_kind") == "ordered_vocabulary"
+            ):
+                sort_value = self._classification_order_value(
+                    entity_id,
+                    mapping.semantic_key,
+                    contract,
+                    snapshot,
+                )
+            elif mapping.kind == "metric":
+                sort_value = self._metric_value(
+                    entity_id, mapping.semantic_key, contract, snapshot
+                )
+            else:
+                raise RDBQueryCompilationError(
+                    "comparison contract does not match canonical field storage"
+                )
+            conditions.append(sort_value.is_not(None))
             direction = item.get("raw", {}).get("direction")
             if direction not in {"asc", "desc"}:
                 raise RDBQueryCompilationError("unsupported sort direction")
             order_expressions.append(
-                asc(metric_value) if direction == "asc" else desc(metric_value)
+                asc(sort_value) if direction == "asc" else desc(sort_value)
             )
 
         limit = step.inputs.get("limit", self._default_limit)
@@ -906,6 +929,39 @@ class CanonicalV2QueryCompiler:
             )
             .where(*conditions)
             .order_by(metric_observations.c.observed_on.desc(), metric_observations.c.fact_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+
+    def _classification_order_value(
+        self, entity_id, classification_type, contract, snapshot
+    ):
+        ordered_values = contract.get("ordered_values")
+        if not isinstance(ordered_values, (list, tuple)) or not ordered_values:
+            raise RDBQueryCompilationError(
+                "ordered vocabulary contract requires ordered_values"
+            )
+        iri_ranks = {
+            self._fields.concept_iri(classification_type, value): rank
+            for rank, value in enumerate(ordered_values, start=1)
+        }
+        return (
+            select(case(iri_ranks, value=entity_classifications.c.concept_iri))
+            .select_from(
+                entity_classifications.join(
+                    canonical_facts,
+                    canonical_facts.c.fact_id == entity_classifications.c.fact_id,
+                )
+            )
+            .where(
+                entity_classifications.c.entity_id == entity_id,
+                entity_classifications.c.classification_type
+                == classification_type,
+                entity_classifications.c.concept_iri.in_(tuple(iri_ranks)),
+                canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                canonical_facts.c.resolution_status == "RESOLVED",
+            )
+            .order_by(canonical_facts.c.fact_id)
             .limit(1)
             .scalar_subquery()
         )

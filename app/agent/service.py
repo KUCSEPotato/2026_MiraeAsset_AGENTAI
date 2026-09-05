@@ -77,6 +77,7 @@ from app.evidence.validator import QualityAwareEvidenceValidator
 from app.entity.rdb_lookup import RDBEntityLookup
 from app.entity.rdb_v2_lookup import CanonicalV2EntityLookup
 from app.entity.resolver import RegistryEntityResolver
+from app.entity.exceptions import EntityResolutionDependencyError
 from app.execution.config import ExecutionSettings
 from app.execution.executor import QueryExecutor
 from app.execution.transforms import InternalTransformExecutor
@@ -200,17 +201,28 @@ class PipelineAnswerService:
                 trace,
                 parser_summary={
                     "parser": exc.parser,
-                    "status": "rejected",
+                    "status": "failed",
                     "reason": exc.reason,
                     "llm_calls": 0 if exc.reason == "llm_fallback_not_configured" else 1,
                 },
                 total_started=request_started,
+                reason_code=AnswerabilityReasonCode.SEMANTIC_PARSE_FAILED,
             )
         query_latency_ms = _elapsed_ms(query_started)
         trace.append("query_understanding")
 
         resolution_started = perf_counter()
-        resolved_query = await self._entity_resolver.resolve(parsed_query)
+        try:
+            resolved_query = await self._entity_resolver.resolve(parsed_query)
+        except EntityResolutionDependencyError:
+            trace.extend(["entity_resolution", "semantic_safety"])
+            return await self._semantic_safety_result(
+                question,
+                trace,
+                parser_summary=_parser_summary(parsed_query.parse_provenance),
+                total_started=request_started,
+                reason_code=AnswerabilityReasonCode.ENTITY_RESOLUTION_FAILED,
+            )
         resolution_latency_ms = _elapsed_ms(resolution_started)
         trace.append("entity_resolution")
 
@@ -230,6 +242,16 @@ class PipelineAnswerService:
                     item.resolution_status is ResolutionStatus.AMBIGUOUS
                     for item in resolved_query.resolved_entities
                 )
+                else AnswerabilityReasonCode.ENTITY_PARSE_FAILED
+                if any(
+                    item.resolution_reason == "ENTITY_PARSE_FAILED"
+                    for item in resolved_query.resolved_entities
+                )
+                else AnswerabilityReasonCode.ENTITY_UNRESOLVED
+                if any(
+                    item.resolution_reason == "ENTITY_UNRESOLVED"
+                    for item in resolved_query.resolved_entities
+                )
                 else AnswerabilityReasonCode.ENTITY_NOT_FOUND
                 if any(
                     item.resolution_status is ResolutionStatus.UNRESOLVED
@@ -240,7 +262,34 @@ class PipelineAnswerService:
             return await self._semantic_safety_result(
                 question,
                 trace,
-                parser_summary=_parser_summary(parsed_query.parse_provenance),
+                parser_summary={
+                    **_parser_summary(parsed_query.parse_provenance),
+                    "entity_resolutions": [
+                        {
+                            "raw_text": item.raw_text,
+                            "entity_type": item.entity_type,
+                            "status": item.resolution_status.value,
+                            "canonical_id": item.canonical_id,
+                            "normalized_form": item.normalized_form,
+                            "match_method": item.resolution_method,
+                            "resolution_reason": item.resolution_reason,
+                            "candidate_count": len(item.candidate_diagnostics),
+                            "candidates": [
+                                {
+                                    "entity_id": candidate.entity_id,
+                                    "entity_type": candidate.entity_type,
+                                    "canonical_name": candidate.canonical_name,
+                                    "normalized_form": candidate.normalized_form,
+                                    "match_method": candidate.match_method,
+                                    "match_score": candidate.match_score,
+                                    "rejection_reason": candidate.rejection_reason,
+                                }
+                                for candidate in item.candidate_diagnostics
+                            ],
+                        }
+                        for item in resolved_query.resolved_entities
+                    ],
+                },
                 total_started=request_started,
                 ontology_latency_ms=ontology_latency_ms,
                 planning_latency_ms=_elapsed_ms(planning_started),
@@ -359,11 +408,37 @@ class PipelineAnswerService:
                             entity.resolution_status.value
                             for entity in resolved_query.resolved_entities
                         ],
+                        "entity_resolutions": [
+                            {
+                                "raw_text": entity.raw_text,
+                                "entity_type": entity.entity_type,
+                                "status": entity.resolution_status.value,
+                                "canonical_id": entity.canonical_id,
+                                "normalized_form": entity.normalized_form,
+                                "match_method": entity.resolution_method,
+                                "resolution_reason": entity.resolution_reason,
+                                "candidate_count": len(entity.candidate_diagnostics),
+                                "candidates": [
+                                    {
+                                        "entity_id": candidate.entity_id,
+                                        "entity_type": candidate.entity_type,
+                                        "canonical_name": candidate.canonical_name,
+                                        "normalized_form": candidate.normalized_form,
+                                        "match_method": candidate.match_method,
+                                        "match_score": candidate.match_score,
+                                        "rejection_reason": candidate.rejection_reason,
+                                    }
+                                    for candidate in entity.candidate_diagnostics
+                                ],
+                            }
+                            for entity in resolved_query.resolved_entities
+                        ],
                         "canonical_concepts": [
                             concept.value
                             for concept in grounded_query.canonical_concepts
                         ],
                         "canonical_fields": grounded_query.canonical_fields,
+                        "metric_resolutions": _metric_resolutions(plan),
                         "unresolved_concepts": grounded_query.unresolved_concepts,
                         "grounded_relations": [
                             {
@@ -396,6 +471,14 @@ class PipelineAnswerService:
         ),
     ) -> AgentResult:
         details = list(dict.fromkeys(unsupported_details or []))
+        failure_state = {
+            AnswerabilityReasonCode.SEMANTIC_PARSE_FAILED: (
+                "parser_failure", "semantic_parse_failed"
+            ),
+            AnswerabilityReasonCode.ENTITY_RESOLUTION_FAILED: (
+                "entity_resolution_failure", "entity_resolution_failed"
+            ),
+        }.get(reason_code, ("unsupported", "unsupported_constraint"))
         validation = ValidationResult(
             answerable=False,
             reason_codes=[reason_code],
@@ -419,8 +502,8 @@ class PipelineAnswerService:
             think_trace=json.dumps(
                 {
                     "steps": trace,
-                    "status": "unsupported",
-                    "reason": "unsupported_constraint",
+                    "status": failure_state[0],
+                    "reason": failure_state[1],
                     "validation_summary": {
                         "answerable": False,
                         "reason_codes": [
@@ -933,6 +1016,22 @@ def _parser_summary(provenance: ParseProvenance) -> dict[str, object]:
         "model": provenance.model,
         "llm_calls": 1 if provenance.parser_source.value == "llm_fallback" else 0,
     }
+
+
+def _metric_resolutions(plan) -> list[dict[str, object]]:
+    """Expose reviewed metric selection metadata, never parser reasoning."""
+    result: list[dict[str, object]] = []
+    for step in plan.steps:
+        contracts = step.inputs.get("comparison_contracts", [])
+        if not isinstance(contracts, list):
+            continue
+        for contract in contracts:
+            if not isinstance(contract, dict):
+                continue
+            resolution = contract.get("metric_resolution")
+            if isinstance(resolution, dict) and resolution not in result:
+                result.append(dict(resolution))
+    return result
 
 
 def _assert_v2_rdb_ready(

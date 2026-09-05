@@ -151,7 +151,11 @@ def test_held_out_observed_dimensions_ground_without_special_case() -> None:
     }
     assert "인도" not in unsupported_raw
     assert "주식형" not in unsupported_raw
-    assert any("총보수" in value for value in unsupported_raw)
+    # Ontology grounding preserves the known canonical metric.  Dataset-scale
+    # readiness is rejected later by MetricCapabilityRegistry, rather than
+    # being misreported as an unknown ontology expression.
+    assert grounded.grounded_sort[0].canonical_field == "product.expense_ratio"
+    assert "총보수" not in unsupported_raw
 
 
 @pytest.mark.parametrize("raw", ["채권혼합", "주식혼합"])

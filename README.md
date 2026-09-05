@@ -572,7 +572,7 @@ RDB_MAX_LIMIT=10000
 RUNTIME_DATA_VERSION=v2
 CANONICAL_V2_GENERATION=260824
 CANONICAL_V2_ONTOLOGY_VERSION=merged-optical-1.4
-CANONICAL_V2_TRANSFORMER_VERSION=missingness-quality-semantics-1
+CANONICAL_V2_TRANSFORMER_VERSION=return-period-metrics-1
 SEMANTIC_ARTIFACT_ROOT=/srv/financial-semantic-agent/artifacts/260824
 SEMANTIC_INDEX_PATH=/var/lib/financial-semantic-agent/v1/semantic_search.json
 SEMANTIC_INDEX_VERSION=m10.7-strategy-20260829
@@ -789,11 +789,17 @@ unless an authoritative delisted/listing-ended fact exists by the 2026-08-24
 cutoff. The current PRBD source has no such lifecycle field, so it is treated as
 the cutoff Bond universe without inventing a SaleLot availability condition.
 
-`ONE_YEAR_RETURN` is a distinct exact-period metric. PREF01 `du_er_1y` is
-rankable only for the DomesticETF source scope. PREF02 has no 1Y return field,
-and PRFD return is FundShareClass-grain, so cross-product ETF/Public Fund
-ranking fails closed. Validated product-universe unions are planned as one
-global candidate set; arbitrary grouped boolean predicates remain unsupported.
+PREF01 return variants are distinct exact-period metrics: `du_er_1d`,
+`du_er_1m`, `du_er_3m`, `du_er_6m`, `du_er_1y`, and `du_er_ytd` map to
+`RETURN.1D/1M/3M/6M/1Y/YTD`. They retain source percentage points and require
+an actual `du_upt_dt` to enter the rankable DomesticETF set. A standalone
+ranking request that says only `수익률` uses the reviewed domain policy
+`RETURN.default_period=1Y`; the applied default is disclosed in evidence,
+safe trace, and the answer. Explicit periods never fall back to 1Y. PREF02 and
+PRFD remain outside this DomesticETF comparison contract, so incompatible
+cross-source ranking fails closed. Validated product-universe unions are
+planned as one global candidate set; arbitrary grouped boolean predicates
+remain unsupported.
 
 The reviewed `ISHARES_FOREIGN_ETF_ONE_YEAR_RETURN` scope adds official
 2026-07-31 iShares NAV total returns for EWY, IYW, and SOXX. The issuer defines

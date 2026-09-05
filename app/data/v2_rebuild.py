@@ -214,7 +214,12 @@ METRIC_FIELDS = {
         "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "ru_mkt_price": ("MARKET_PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "ru_mkt_volume": ("VOLUME", "COUNT", "SOURCE_RAW", "du_upt_dt"),
+        "du_er_1d": ("ONE_DAY_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_1m": ("ONE_MONTH_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_3m": ("THREE_MONTH_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_6m": ("SIX_MONTH_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
         "du_er_1y": ("ONE_YEAR_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_ytd": ("YEAR_TO_DATE_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
     },
     "PREF02N001": {
         "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "CURRENCY_UNIT", "du_upt_dt"),
@@ -1752,8 +1757,13 @@ class CanonicalV2Rebuilder:
                         and currency in {"KRW", "USD"}
                     )
                     or (
-                        metric_code == "ONE_YEAR_RETURN"
+                        metric_code in {
+                            "ONE_DAY_RETURN", "ONE_MONTH_RETURN",
+                            "THREE_MONTH_RETURN", "SIX_MONTH_RETURN",
+                            "ONE_YEAR_RETURN", "YEAR_TO_DATE_RETURN",
+                        }
                         and prefix in {"PREF01N001", "PRFD01N001"}
+                        and observed is not None
                     )
                     else "NOT_COMPARABLE"
                 ),
@@ -1883,7 +1893,12 @@ class CanonicalV2Rebuilder:
             ("MARKET_PRICE", "product.market_price", "Observed market price"),
             ("VOLUME", "product.market_volume", "Observed market volume"),
             ("BOND_BUY_YIELD", "bond.buy_yield", "Bond buy yield"),
+            ("ONE_DAY_RETURN", "product.one_day_return", "Exact one-day source return"),
+            ("ONE_MONTH_RETURN", "product.one_month_return", "Exact one-month source return"),
+            ("THREE_MONTH_RETURN", "product.three_month_return", "Exact three-month source return"),
+            ("SIX_MONTH_RETURN", "product.six_month_return", "Exact six-month source return"),
             ("ONE_YEAR_RETURN", "product.one_year_return", "Exact one-year source return"),
+            ("YEAR_TO_DATE_RETURN", "product.year_to_date_return", "Exact year-to-date source return"),
             ("CREDIT_RATING_ORDER", "product.credit_rating", "Ordered credit rating"),
         )
         connection.execute(

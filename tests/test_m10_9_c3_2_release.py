@@ -85,7 +85,7 @@ def _deployment_release(tmp_path: Path) -> tuple[Path, dict[str, str]]:
                 "snapshot": "2026-08-24",
                 "ontology_version": "merged-optical-1.4",
                 "canonical_schema_version": "m10.9-c2.6-canonical-v2",
-                "transformer_version": "missingness-quality-semantics-1",
+                "transformer_version": "return-period-metrics-1",
                 "projection_version": "m10.9-c2-canonical-v2-semantic-1",
                 "document_count": 0,
             },
@@ -126,7 +126,7 @@ def _deployment_release(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "CANONICAL_V2_GENERATION": "260824",
         "DATA_SNAPSHOT_DATE": "2026-08-24",
         "CANONICAL_V2_ONTOLOGY_VERSION": "merged-optical-1.4",
-        "CANONICAL_V2_TRANSFORMER_VERSION": "missingness-quality-semantics-1",
+        "CANONICAL_V2_TRANSFORMER_VERSION": "return-period-metrics-1",
         "CANONICAL_V2_GRAPH_PROJECTION_VERSION": VERSIONS["graph_version"],
         "CANONICAL_V2_SEMANTIC_INDEX_VERSION": VERSIONS[
             "semantic_artifact_version"

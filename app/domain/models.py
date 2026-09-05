@@ -87,6 +87,22 @@ class ResolutionStatus(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+class EntityMatchMethod(str, Enum):
+    EXACT_CANONICAL = "EXACT_CANONICAL"
+    EXACT_ALIAS = "EXACT_ALIAS"
+    NORMALIZED_EXACT = "NORMALIZED_EXACT"
+    IDENTIFIER_MATCH = "IDENTIFIER_MATCH"
+    FUZZY_MATCH = "FUZZY_MATCH"
+
+
+class EntityCandidateRejectionReason(str, Enum):
+    TYPE_MISMATCH = "TYPE_MISMATCH"
+    AMBIGUOUS = "AMBIGUOUS"
+    BELOW_THRESHOLD = "BELOW_THRESHOLD"
+    CONSTRAINT_MISMATCH = "CONSTRAINT_MISMATCH"
+    NO_CANONICAL_ENTITY = "NO_CANONICAL_ENTITY"
+
+
 class GroundingStatus(str, Enum):
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
@@ -236,8 +252,12 @@ class AnswerabilityReasonCode(str, Enum):
     NO_EVIDENCE = "NO_EVIDENCE"
     ZERO_MATCH = "ZERO_MATCH"
     ENTITY_NOT_FOUND = "ENTITY_NOT_FOUND"
+    ENTITY_UNRESOLVED = "ENTITY_UNRESOLVED"
+    ENTITY_PARSE_FAILED = "ENTITY_PARSE_FAILED"
+    ENTITY_RESOLUTION_FAILED = "ENTITY_RESOLUTION_FAILED"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     UNSUPPORTED_CONSTRAINT = "UNSUPPORTED_CONSTRAINT"
+    SEMANTIC_PARSE_FAILED = "SEMANTIC_PARSE_FAILED"
     MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
     INVALID_SENTINEL = "INVALID_SENTINEL"
     CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"
@@ -256,6 +276,17 @@ class AnswerabilityReasonCode(str, Enum):
     RANKING_NOT_APPLIED = "RANKING_NOT_APPLIED"
 
 
+class EntityResolutionCandidate(BaseModel):
+    entity_id: str
+    entity_type: str
+    canonical_name: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    normalized_form: str
+    match_method: EntityMatchMethod
+    match_score: float = Field(ge=0.0, le=1.0)
+    rejection_reason: EntityCandidateRejectionReason | None = None
+
+
 class EntityMention(BaseModel):
     raw_text: str
     entity_type: str
@@ -264,7 +295,13 @@ class EntityMention(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     matched_alias: str | None = None
     identifier_type: str | None = None
+    resolution_method: EntityMatchMethod | None = None
+    normalized_form: str | None = None
+    resolution_reason: str | None = None
     candidate_ids: list[str] = Field(default_factory=list)
+    candidate_diagnostics: list[EntityResolutionCandidate] = Field(
+        default_factory=list
+    )
     constraint_id: str | None = None
 
 
@@ -304,7 +341,7 @@ class UnparsedMaterialSpan(BaseModel):
 
 class ParseProvenance(BaseModel):
     parser_source: ParserSource = ParserSource.RULE
-    semantic_schema_version: str = "m10.6-semantic-v1"
+    semantic_schema_version: str = "m10.9-semantic-v2"
     prompt_version: str | None = None
     model: str | None = None
     rule_latency_ms: float = Field(default=0.0, ge=0.0)
@@ -412,6 +449,10 @@ class ProductUniverseUnion(BaseModel):
 
 class RelationMention(BaseModel):
     raw_text: str
+    # A syntax-derived ontology alias may differ from the literal surface
+    # text.  Keeping both prevents an implicit relation from overwriting the
+    # user's wording while still giving grounding a controlled lookup key.
+    semantic_key: str | None = None
     direction: RelationDirection = RelationDirection.OUTGOING
     constraint_id: str | None = None
     subject_type: str | None = None
@@ -559,6 +600,14 @@ class EntityLookupMatch(BaseModel):
     entity: CanonicalEntity
     matched_alias: str
     identifier_type: str
+    match_method: EntityMatchMethod = EntityMatchMethod.NORMALIZED_EXACT
+    normalized_form: str | None = None
+    match_score: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class EntityLookupOutcome(BaseModel):
+    matches: list[EntityLookupMatch] = Field(default_factory=list)
+    candidates: list[EntityResolutionCandidate] = Field(default_factory=list)
 
 
 class RoutingDecision(BaseModel):

@@ -357,6 +357,39 @@ def test_one_year_return_ties_use_canonical_id_order(runtime) -> None:
     assert result.ranked_candidate_ids == expected
 
 
+@pytest.mark.parametrize(
+    ("question", "field", "period"),
+    [
+        ("국내 ETF 중 1D 수익률 상위 3개 알려줘", "product.one_day_return", "1D"),
+        ("국내 ETF 중 1개월 수익률 상위 3개 알려줘", "product.one_month_return", "1M"),
+        ("국내 ETF 중 3개월 수익률 상위 3개 알려줘", "product.three_month_return", "3M"),
+        ("국내 ETF 중 6개월 수익률 상위 3개 알려줘", "product.six_month_return", "6M"),
+        ("국내 ETF 중 1년 수익률 상위 3개 알려줘", "product.one_year_return", "1Y"),
+        ("국내 ETF 중 YTD 수익률 상위 3개 알려줘", "product.year_to_date_return", "YTD"),
+    ],
+)
+def test_full_data_domestic_return_period_top3(
+    runtime, question: str, field: str, period: str
+) -> None:
+    plan, result = asyncio.run(_execute(runtime, question))
+    contract = plan.steps[0].inputs["comparison_contracts"][0]
+    assert contract["exact_period"] == period
+    assert contract["metric_resolution"]["period_source"] == "EXPLICIT_QUERY"
+    assert result.filtered_total > result.returned_count == 3
+    assert 0 < result.rankable_total <= result.filtered_total
+    assert result.missing_metric_total == (
+        result.filtered_total - result.rankable_total
+    )
+    metrics = [record for record in result.records if record.payload["field"] == field]
+    assert len(metrics) == 3
+    assert [record.payload["value"] for record in metrics] == sorted(
+        [record.payload["value"] for record in metrics], reverse=True
+    )
+    assert all(record.metadata["metric_dataset"] == "PREF01N001" for record in metrics)
+    assert all(record.metadata["field_fact_id"] for record in metrics)
+    assert all(record.metadata["field_evidence_assertion_ids"] for record in metrics)
+
+
 def test_one_year_return_remains_at_authoritative_entity_grain(engine) -> None:
     with engine.connect() as connection:
         fund_level = int(connection.scalar(
@@ -400,7 +433,15 @@ def test_metric_observations_respect_evaluation_cutoff(engine) -> None:
 
 def test_new_metric_facts_have_field_evidence(engine) -> None:
     with engine.connect() as connection:
-        for metric_code in ("CREDIT_RATING_ORDER", "ONE_YEAR_RETURN"):
+        for metric_code in (
+            "CREDIT_RATING_ORDER",
+            "ONE_DAY_RETURN",
+            "ONE_MONTH_RETURN",
+            "THREE_MONTH_RETURN",
+            "SIX_MONTH_RETURN",
+            "ONE_YEAR_RETURN",
+            "YEAR_TO_DATE_RETURN",
+        ):
             facts = int(connection.scalar(
                 select(func.count()).select_from(metric_observations).where(
                     metric_observations.c.metric_code == metric_code

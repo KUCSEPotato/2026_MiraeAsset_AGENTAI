@@ -103,7 +103,7 @@ class SemanticParserCoordinator:
             )
         except SemanticParserError as exc:
             raise SemanticParseSafetyError(
-                "llm_dependency_failure",
+                exc.failure_reason,
                 rule_latency_ms=rule_latency,
                 llm_latency_ms=_milliseconds(llm_started),
             ) from exc

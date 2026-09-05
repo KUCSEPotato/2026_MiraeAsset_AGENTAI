@@ -42,6 +42,30 @@ class RoutingMetadataRegistry:
                 (RetrievalSource.RDB,),
                 all_capabilities,
             ),
+            "product.one_year_return": CanonicalFieldMetadata(
+                "product.one_year_return",
+                (RetrievalSource.RDB,),
+                all_capabilities,
+            ),
+            **{
+                field: CanonicalFieldMetadata(
+                    field,
+                    (RetrievalSource.RDB,),
+                    all_capabilities,
+                )
+                for field in (
+                    "product.one_day_return",
+                    "product.one_month_return",
+                    "product.three_month_return",
+                    "product.six_month_return",
+                    "product.year_to_date_return",
+                )
+            },
+            "product.risk_grade": CanonicalFieldMetadata(
+                "product.risk_grade",
+                (RetrievalSource.RDB,),
+                all_capabilities,
+            ),
             "product.region": CanonicalFieldMetadata(
                 "product.region",
                 (RetrievalSource.RDB,),
