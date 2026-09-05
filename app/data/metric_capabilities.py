@@ -180,33 +180,28 @@ PRBD_PURCHASABLE_BOND = ComparisonContract(
     ),
 )
 
+RISK_GRADE_UNVERIFIED_REASON = "risk_grade_ordering_and_comparability_unverified"
+
+# Source schemas name product risk grades and ZeroIn fund risk grades, but do
+# not establish equivalent assessment methods or a shared comparison scale.
+# Ontology aliases alone are not an ordering/comparability authorization.
 RISK_GRADE_ORDER = ComparisonContract(
     "RISK_GRADE_ORDER",
     "product.risk_grade",
     "PRBD01N001+PREF01N001+PRFD01N001",
     "FinancialProduct",
-    "ORDINAL",
-    "TEAM_ONTOLOGY_RISK_GRADE_V1",
+    None,
+    None,
     None,
     "READY canonical_v2 snapshot classification",
     False,
-    True,
-    True,
+    False,
+    False,
+    disabled_reason=RISK_GRADE_UNVERIFIED_REASON,
     source_field=(
         "PRBD/PREF01 pd_risk_nm; PRFD zrin_fd_ivst_risk_grd_nm"
     ),
-    comparison_kind="ordered_vocabulary",
-    # Ascending means lower risk first.  RiskGrade.6 is the ontology's
-    # lowest-risk grade, while RiskGrade.1 is the highest-risk grade.
-    ordered_values=(
-        "RiskGrade.6",
-        "RiskGrade.5",
-        "RiskGrade.4",
-        "RiskGrade.3",
-        "RiskGrade.2",
-        "RiskGrade.1",
-    ),
-    answer_disclosure="제공 데이터의 온톨로지 위험등급(낮은 위험 우선) 기준",
+    comparison_kind="source_classification",
 )
 
 
@@ -311,7 +306,7 @@ class MetricCapabilityRegistry:
         if canonical_field == "product.expense_ratio":
             return None, "expense_ratio_scale_unverified"
         if canonical_field == "product.risk_grade":
-            return RISK_GRADE_ORDER, None
+            return None, RISK_GRADE_UNVERIFIED_REASON
         if canonical_field in PREF01_RETURN_CONTRACTS:
             if universe == ("DomesticETF",) or provider_union:
                 return PREF01_RETURN_CONTRACTS[canonical_field], None
@@ -445,25 +440,60 @@ class MetricCapabilityRegistry:
                 unsupported.append(str(prepared["limit_constraint_id"]))
             unsupported_reasons.append("top_n_requires_explicit_sort")
 
+        comparison = prepared.get("comparison")
+        if comparison is not None:
+            if (
+                not isinstance(comparison, dict)
+                or comparison.get("mode") != "fieldwise"
+                or not isinstance(comparison.get("fields"), list)
+                or not comparison["fields"]
+                or not all(isinstance(field, str) for field in comparison["fields"])
+            ):
+                unsupported_reasons.append("invalid_comparison_specification")
+            else:
+                for field in dict.fromkeys(comparison["fields"]):
+                    contract, reason = self.comparison_contract(field, prepared)
+                    if contract is None:
+                        unsupported_reasons.append(reason or f"comparison_unsupported:{field}")
+                    else:
+                        contracts.append(contract.as_plan_input())
+
         filter_constraint_ids = prepared.get("filter_constraint_ids", [])
         for index, item in enumerate(prepared.get("filters", [])):
             if not isinstance(item, dict):
                 continue
             field = item.get("canonical_field")
+            if field == "product.risk_grade":
+                if index < len(filter_constraint_ids) and filter_constraint_ids[index]:
+                    unsupported.append(str(filter_constraint_ids[index]))
+                unsupported_reasons.append(RISK_GRADE_UNVERIFIED_REASON)
+                continue
             if field == "product.current_sale_available":
                 contracts.append(PRBD_PURCHASABLE_BOND.as_plan_input())
                 continue
             if field != "product.credit_rating":
                 continue
             value = item.get("canonical_value")
-            if str(value).upper() not in self.credit_rating_order:
+            values = value if isinstance(value, list) else [value]
+            if not values or any(str(item).upper() not in self.credit_rating_order for item in values):
                 if index < len(filter_constraint_ids) and filter_constraint_ids[index]:
                     unsupported.append(str(filter_constraint_ids[index]))
                 unsupported_reasons.append("invalid_credit_rating")
             else:
                 contracts.append(PRBD_CREDIT_RATING.as_plan_input())
 
-        contracts = list({str(item["canonical_field"]): item for item in contracts}.values())
+        # Multiple operators can consume one field.  Preserve the first
+        # contract (including period disclosure), reject semantic disagreement.
+        by_field: dict[str, dict[str, Any]] = {}
+        for contract in contracts:
+            field = str(contract["canonical_field"])
+            previous = by_field.get(field)
+            if previous is not None:
+                if _contract_semantics(previous) != _contract_semantics(contract):
+                    unsupported_reasons.append(f"conflicting_comparison_contracts:{field}")
+            else:
+                by_field[field] = contract
+        contracts = list(by_field.values())
         prepared["comparison_contracts"] = contracts
         prepared["cross_product_comparison_contracts"] = cross_product_contracts
         prepared["comparison_unsupported_reasons"] = list(dict.fromkeys(unsupported_reasons))
@@ -526,12 +556,75 @@ class MetricCapabilityRegistry:
             return ("DomesticETF",)
         return ()
 
+    def verified_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Recompute authorization at execution, independent of plan ledgers."""
+        prepared, unsupported = self.prepare(inputs)
+        reasons = prepared["comparison_unsupported_reasons"]
+        if unsupported or reasons:
+            raise ValueError("unsupported comparison: " + ",".join([*reasons, *unsupported]))
+        supplied = inputs.get("comparison_contracts", [])
+        if not isinstance(supplied, list):
+            raise ValueError("comparison contracts must be a list")
+        expected = {item["canonical_field"]: item for item in prepared["comparison_contracts"]}
+        seen: set[str] = set()
+        for contract in supplied:
+            if not isinstance(contract, dict):
+                raise ValueError("comparison contract must be structured")
+            field = contract.get("canonical_field")
+            if not isinstance(field, str) or field in seen or field not in expected:
+                raise ValueError("unknown or duplicate comparison contract")
+            seen.add(field)
+            canonical = expected[field]
+            # Metadata disclosures do not authorize a unit, scale or source.
+            if _contract_semantics(contract) != _contract_semantics(canonical):
+                raise ValueError(f"unverified comparison contract:{field}")
+        return prepared
+
     @staticmethod
     def _eq_filter(inputs: dict[str, Any], canonical_field: str) -> Any:
-        for item in inputs.get("filters", []):
+        expression = inputs.get("boolean_expression")
+        represented: set[str] = set()
+
+        def guaranteed(node) -> set[str]:
+            if not isinstance(node, dict):
+                return set()
+            if node.get("node_type") == "predicate":
+                identifier = node.get("constraint_id")
+                if isinstance(identifier, str):
+                    represented.add(identifier)
+                    return {identifier}
+                return set()
+            children = [guaranteed(child) for child in node.get("children", [])]
+            if not children:
+                return set()
+            if node.get("node_type") == "and":
+                return set.union(*children)
+            if node.get("node_type") == "or":
+                return set.intersection(*children)
+            return set()
+
+        unconditional = guaranteed(expression)
+        identifiers = inputs.get("filter_constraint_ids", [])
+        for index, item in enumerate(inputs.get("filters", [])):
             if not isinstance(item, dict) or item.get("canonical_field") != canonical_field:
+                continue
+            identifier = identifiers[index] if index < len(identifiers) else None
+            if identifier in represented and identifier not in unconditional:
                 continue
             raw = item.get("raw", {})
             if raw.get("operator") == "eq":
                 return item.get("canonical_value", raw.get("value"))
         return None
+
+
+def _contract_semantics(value: Any) -> Any:
+    """JSON and in-process plans carry the same tuple/list contract values."""
+    if isinstance(value, dict):
+        return {
+            key: _contract_semantics(item)
+            for key, item in value.items()
+            if key != "metric_resolution"
+        }
+    if isinstance(value, (list, tuple)):
+        return [_contract_semantics(item) for item in value]
+    return value

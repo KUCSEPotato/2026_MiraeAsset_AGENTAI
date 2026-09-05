@@ -38,7 +38,7 @@ FIELD_STORAGE_REGISTRY = {
         FieldStorageSpec("product.year_to_date_return", "hasObservation", "YEAR_TO_DATE_RETURN", (Storage.RDB,), frozenset({"sort_contract", "latest"}), "PERCENT", "actual_observation_date", True),
         FieldStorageSpec("product.yield", "hasObservation", "YieldObservation", (Storage.RDB,), frozenset({"range", "sort", "latest"}), "PERCENT", "actual_observation_date", True),
         FieldStorageSpec("product.expense_ratio", "hasObservation", "FeeObservation", (Storage.RDB,), frozenset({"latest"}), None, "source_date_only", True),
-        FieldStorageSpec("product.risk_grade", "hasRiskGrade", "canonical_v2.entity_classifications:RISK_GRADE", (Storage.RDB, Storage.GRAPH), frozenset({"equality", "relation_traversal", "sort_contract"}), "ORDINAL", "snapshot", True),
+        FieldStorageSpec("product.risk_grade", "hasRiskGrade", "canonical_v2.entity_classifications:RISK_GRADE", (Storage.RDB,), frozenset({"project"}), None, "snapshot", True),
         FieldStorageSpec("product.credit_rating", "hasCreditRating", "CreditRatingObservation", (Storage.RDB,), frozenset({"equality", "latest"}), None, "actual_observation_date", True),
         FieldStorageSpec("product.maturity", "maturityOrFirstCallDate", "bond_attributes.maturity_date", (Storage.RDB,), frozenset({"range", "sort"}), "DATE", "fixed_or_first_call", True),
         FieldStorageSpec("product.base_index", "tracks", "canonical_products.base_index", (Storage.RDB, Storage.GRAPH), frozenset({"equality", "relation_traversal"}), None, "snapshot", True),

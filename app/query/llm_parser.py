@@ -21,8 +21,8 @@ from app.query.semantic_models import (
 )
 
 
-PROMPT_VERSION = "m10.9-hcx-semantic-v2"
-SEMANTIC_SCHEMA_VERSION = "m10.9-semantic-v2"
+PROMPT_VERSION = "composition-hcx-semantic-v1"
+SEMANTIC_SCHEMA_VERSION = "composition-semantic-v1"
 logger = logging.getLogger(__name__)
 
 
@@ -194,6 +194,9 @@ def _request_content(request: SemanticParserRequest) -> str:
                 "Do not turn subjective phrases into objective fields.",
                 "Use only keys declared in candidate_schema.",
                 "Omit unused optional keys instead of emitting null values.",
+                "Represent coordinated products as separate entities and all requested fields as separate projections.",
+                "Preserve explicit return periods in raw field aliases; the application resolves metrics and default periods.",
+                "Use group_by for explicit grouping; do not convert historical change into a current snapshot field.",
             ],
             "candidate_schema": hyperclova_candidate_schema(),
             "semantic_schema_version": request.semantic_schema_version,
@@ -245,7 +248,7 @@ def hyperclova_candidate_schema() -> dict[str, object]:
             "field": {"type": "string"},
             "operator": {
                 "type": "string",
-                "enum": ["eq", "ne", "lt", "lte", "gt", "gte", "in", "between"],
+                "enum": ["eq", "ne", "lt", "lte", "gt", "gte", "in", "between", "contains"],
             },
             "value": {
                 "anyOf": [
@@ -346,6 +349,7 @@ def hyperclova_candidate_schema() -> dict[str, object]:
                 "maxItems": 8,
             },
             "requested_fields": {"type": "array", "items": term, "maxItems": 12},
+            "group_by": {"type": "array", "items": term, "maxItems": 8},
             "semantic_texts": {"type": "array", "items": term, "maxItems": 12},
             "subjective_conditions": {"type": "array", "items": term, "maxItems": 8},
             "relations": {"type": "array", "items": relation, "maxItems": 8},

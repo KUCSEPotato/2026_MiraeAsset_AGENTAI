@@ -14,6 +14,7 @@ from app.domain.models import (
     EntityMention,
     FilterOperator,
     FilterSpec,
+    GroupBySpec,
     ParseProvenance,
     ParsedQuery,
     ParserSource,
@@ -31,6 +32,7 @@ from app.domain.models import (
 )
 from app.ontology.index import normalize_ontology_text
 from app.query.exceptions import SemanticCandidateValidationError
+from app.query.normalization import normalize_query_semantics
 from app.query.semantic_models import (
     LLMCandidateSpan,
     LLMBooleanExpressionCandidate,
@@ -124,6 +126,10 @@ class LLMSemanticCandidateValidator:
             if normalize_ontology_text(item.value) not in self._allowed_fields:
                 reasons.append("unknown_requested_field")
             self._require_value_in_span(item.value, item.source_span, reasons)
+        for item in candidate.group_by:
+            if normalize_ontology_text(item.value) not in self._allowed_fields:
+                reasons.append("unknown_group_by_field")
+            self._require_value_in_span(item.value, item.source_span, reasons)
         for item in candidate.sorts:
             if normalize_ontology_text(item.field) not in self._allowed_fields:
                 reasons.append("unknown_sort_field")
@@ -132,6 +138,10 @@ class LLMSemanticCandidateValidator:
             if normalize_ontology_text(item.field) not in self._allowed_fields:
                 reasons.append("unknown_filter_field")
             self._validate_filter_value(item, reasons)
+            if item.operator is FilterOperator.CONTAINS and (
+                not isinstance(item.value, str) or not item.value
+            ):
+                reasons.append("invalid_contains_operand")
         for item in candidate.semantic_texts:
             self._require_value_in_span(item.value, item.source_span, reasons)
         for item in candidate.subjective_conditions:
@@ -151,6 +161,12 @@ class LLMSemanticCandidateValidator:
 
         if not self._covers_rule_material(rule_result, candidate):
             reasons.append("candidate_omits_rule_material")
+        if candidate.boolean_expression:
+            allowed_spans = {(item.source_span.start, item.source_span.end)
+                             for item in (*candidate.filters, *candidate.product_types)}
+            if any((span.start, span.end) not in allowed_spans
+                   for span in _boolean_predicate_spans(candidate.boolean_expression)):
+                reasons.append("boolean_predicate_not_grounded")
         return list(dict.fromkeys(reasons))
 
     @staticmethod
@@ -222,6 +238,9 @@ class LLMSemanticCandidateValidator:
             ],
             ConstraintSemanticType.REQUESTED_FIELD: [
                 item.source_span for item in candidate.requested_fields
+            ],
+            ConstraintSemanticType.GROUP_BY: [
+                item.source_span for item in candidate.group_by
             ],
             ConstraintSemanticType.RELATION: [
                 item.source_span for item in candidate.relations
@@ -362,6 +381,12 @@ class LLMSemanticCandidateValidator:
             for index, item in enumerate(candidate.requested_fields)
         )
         drafts.extend(
+            _Draft(item.source_span, ConstraintSemanticType.GROUP_BY,
+                   {"field": item.value}, ("group_by", index),
+                   ConstraintStatus.UNSUPPORTED, "group_by_execution_unsupported")
+            for index, item in enumerate(candidate.group_by)
+        )
+        drafts.extend(
             _Draft(item.source_span, ConstraintSemanticType.SEMANTIC,
                    {"text": item.value}, ("semantic", index))
             for index, item in enumerate(candidate.semantic_texts)
@@ -416,7 +441,7 @@ class LLMSemanticCandidateValidator:
             }
             or (
                 candidate.intent is QueryIntent.COMPARE_PRODUCTS
-                and not candidate.sorts
+                and not candidate.sorts and not candidate.requested_fields
             )
         )
         if unsupported_intent:
@@ -437,9 +462,7 @@ class LLMSemanticCandidateValidator:
                     else "intent_execution_unsupported"
                 ),
             ))
-        if candidate.boolean_expression and _unsupported_boolean(
-            candidate.boolean_expression, len(candidate.semantic_texts)
-        ):
+        if candidate.boolean_expression and _unsupported_boolean(candidate):
             drafts.append(_Draft(
                 _boolean_span(question, candidate.boolean_expression),
                 ConstraintSemanticType.BOOLEAN,
@@ -521,7 +544,7 @@ class LLMSemanticCandidateValidator:
             )
             for span in candidate.unresolved_material_phrases
         ]
-        return ParsedQuery(
+        return normalize_query_semantics(ParsedQuery(
             original_question=question,
             intent=candidate.intent,
             product_types=products,
@@ -536,6 +559,9 @@ class LLMSemanticCandidateValidator:
             result_limit=result_limit,
             aggregation=aggregation,
             temporal_constraint=temporal,
+            group_by=(GroupBySpec(fields=[item.value for item in candidate.group_by],
+                                  constraint_id=ref_ids[("group_by", 0)])
+                      if candidate.group_by else None),
             semantic_constraints=constraints,
             semantic_coverage=(
                 SemanticCoverageStatus.INCOMPLETE
@@ -543,7 +569,7 @@ class LLMSemanticCandidateValidator:
             ),
             unparsed_material_spans=unresolved,
             unsupported_constraint_ids=unsupported,
-        )
+        ))
 
     @staticmethod
     def _all_spans(candidate: LLMSemanticParseCandidate) -> list[LLMCandidateSpan]:
@@ -551,7 +577,7 @@ class LLMSemanticCandidateValidator:
             item.source_span
             for collection in (
                 candidate.product_types, candidate.entities, candidate.filters,
-                candidate.sorts, candidate.requested_fields,
+                candidate.sorts, candidate.requested_fields, candidate.group_by,
                 candidate.semantic_texts, candidate.subjective_conditions,
                 candidate.relations,
             )
@@ -615,16 +641,16 @@ def _boolean_span(
     return LLMCandidateSpan(start=start, end=end, raw_text=question[start:end])
 
 
-def _unsupported_boolean(
-    expression: LLMBooleanExpressionCandidate,
-    semantic_term_count: int,
-) -> bool:
-    if expression.node_type is BooleanNodeType.OR:
-        return True
-    if semantic_term_count > 1 and expression.node_type is BooleanNodeType.AND:
-        return True
-    return any(_unsupported_boolean(child, semantic_term_count)
-               for child in expression.children)
+def _unsupported_boolean(candidate: LLMSemanticParseCandidate) -> bool:
+    """An executable boolean tree must account for every structured filter."""
+    expression = candidate.boolean_expression
+    assert expression is not None
+    leaves = {(span.start, span.end) for span in _boolean_predicate_spans(expression)}
+    filters = {(item.source_span.start, item.source_span.end) for item in candidate.filters}
+    # Product-type and semantic predicates may not be pushed outside OR/NOT.
+    # Keeping those shapes unsupported preserves their exact meaning.
+    return bool(candidate.semantic_texts or candidate.subjective_conditions
+                or not filters or leaves != filters)
 
 
 def _convert_boolean(

@@ -34,7 +34,7 @@ class DeterministicEvidenceAnswerGenerator:
         del question, validation
         lines: list[str] = []
         disclosures: list[str] = []
-        for item in evidence.evidence[:10]:
+        for item in evidence.evidence:
             for contract in item.metadata.get("comparison_contracts", []):
                 if not isinstance(contract, dict):
                     continue

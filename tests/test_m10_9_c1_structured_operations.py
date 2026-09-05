@@ -180,12 +180,6 @@ def test_credit_rating_is_an_explicit_non_lexical_order() -> None:
             "desc",
             3,
         ),
-        (
-            "위험이 낮은 채권형 상품을 비교해줘",
-            "product.risk_grade",
-            "asc",
-            None,
-        ),
     ],
 )
 def test_comparative_phrases_use_one_generic_structured_pipeline(
@@ -326,26 +320,11 @@ def test_unsupported_explicit_return_period_is_not_replaced_by_default() -> None
     assert "unparsed_material_clause" in caught.value.reasons
 
 
-def test_risk_order_compiles_ontology_sequence_and_stable_ties() -> None:
-    _, _, plan = asyncio.run(
-        _plan("위험이 낮은 채권형 상품을 비교해줘")
-    )
-    snapshot = V2SnapshotSelection(
-        snapshot_date=date(2026, 8, 24), generation="260824",
-        ontology_version="merged-optical-1.4",
-        snapshot_ids=("PRBD", "PREF01", "PREF02", "PRFD"),
-        dataset_ids=("PRBD", "PREF01", "PREF02", "PRFD"),
-    )
-    compiled = CanonicalV2QueryCompiler(
-        CanonicalV2FieldRegistry(), default_limit=10
-    ).compile(plan.steps[0], snapshot)
-    sql = str(compiled.statement.compile(
-        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
-    ))
-    assert compiled.ranking_applied
-    assert "RISK_GRADE_6' THEN 1" in sql
-    assert "RISK_GRADE_1' THEN 6" in sql
-    assert 'entity_id COLLATE "C" ASC' in sql
+def test_risk_order_fails_closed_without_source_comparability_proof() -> None:
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan("위험이 낮은 채권형 상품을 비교해줘"))
+    assert any("risk_grade_ordering_and_comparability_unverified" in reason
+               for reason in caught.value.reasons)
 
 
 def test_default_metric_disclosure_is_rendered_from_evidence() -> None:
@@ -1258,7 +1237,7 @@ def test_bond_market_presence_is_distinct_from_exposure_region() -> None:
     }
 
 
-def test_allowlisted_cross_product_shape_compiles_one_global_ranking() -> None:
+def test_cross_product_ranking_requires_registry_authorization_at_compilation() -> None:
     step = QueryStep(
         step_id="cross-product",
         source=RetrievalSource.RDB,
@@ -1296,15 +1275,27 @@ def test_allowlisted_cross_product_shape_compiles_one_global_ranking() -> None:
         snapshot_ids=("pref01", "pref02"),
         dataset_ids=("PREF01N001", "PREF02N001"),
     )
-    compiled = CanonicalV2QueryCompiler(
+    compiler = CanonicalV2QueryCompiler(
         CanonicalV2FieldRegistry(), default_limit=100
-    ).compile(step, snapshot)
+    )
+    from app.retrieval.exceptions import RDBQueryCompilationError
+
+    # A caller-supplied flag cannot authorize the currently incompatible
+    # domestic/foreign return basis, even when bypassing the planner.
+    with pytest.raises(RDBQueryCompilationError, match="foreign_etf_return"):
+        compiler.compile(step, snapshot)
+    approved = step.model_copy(update={"inputs": {
+        **step.inputs,
+        "product_universe": {"operation": "UNION", "operands": ["DomesticETF"]},
+        "comparison_contracts": [PREF01_ONE_YEAR_RETURN.as_plan_input()],
+    }})
+    compiled = compiler.compile(approved, snapshot)
     sql = str(compiled.statement.compile(
         dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
     ))
     assert sql.count("ORDER BY") >= 2  # metric scalar observation + global rank
     assert sql.count("LIMIT 10") == 1
-    assert "PREF01N001" in sql and "PREF02N001" in sql
+    assert "PREF01N001" in sql and "PREF02N001" not in sql
 
 
 def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() -> None:
@@ -1350,6 +1341,7 @@ def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() ->
             source_id=f"rdb:{entity_id}:{field}",
             entity_id=entity_id,
             payload={"field": field, "value": value},
+            metadata={"dataset_snapshot": "2026-08-24"},
         )
         for entity_id, name, metric in (
             ("etf:1", "first", "20.0"),
@@ -1367,6 +1359,7 @@ def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() ->
             source_id=f"graph:{entity_id}",
             entity_id=entity_id,
             payload={"field": "relation.holds", "value": "security:samsung"},
+            metadata={"dataset_snapshot": "2026-08-24"},
         )
         for entity_id in ("etf:1", "etf:2", "etf:3")
     ]
@@ -1382,17 +1375,23 @@ def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() ->
                     "ranked_candidate_ids": ["etf:1", "etf:2", "etf:3"],
                 },
             ),
-            "graph": result(graph_step, graph_records),
+            "graph": result(graph_step, graph_records, {
+                "counts": {"candidate_set_complete": 1},
+                "returned_count": 3,
+                "total_matches": 3,
+            }),
         },
     )
 
     records = asyncio.run(InternalTransformExecutor().execute(rank_step, context))
 
     assert [record.entity_id for record in records] == [
-        "etf:1", "etf:1", "etf:2", "etf:2"
+        "etf:1", "etf:1", "etf:1", "etf:2", "etf:2", "etf:2"
     ]
     assert [record.payload["field"] for record in records] == [
         "product.name", "product.one_year_return",
+        "relation.holds",
         "product.name", "product.one_year_return",
+        "relation.holds",
     ]
     assert all(record.metadata["ranking_applied"] for record in records)

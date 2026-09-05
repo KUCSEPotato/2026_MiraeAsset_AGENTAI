@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import Engine, Select, asc, case, desc, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.data.metric_capabilities import RISK_GRADE_UNVERIFIED_REASON
 from app.data.schema import canonical_products, fund_classes
 from app.domain.models import (
     ExecutionContext,
@@ -92,6 +93,12 @@ class RDBQueryCompiler:
         self._max_limit = max_limit or default_limit
 
     def compile(self, step: QueryStep) -> CompiledRDBQuery:
+        comparison = step.inputs.get("comparison")
+        if (
+            isinstance(comparison, dict)
+            and "product.risk_grade" in comparison.get("fields", [])
+        ):
+            raise RDBQueryCompilationError(RISK_GRADE_UNVERIFIED_REASON)
         if step.source is not RetrievalSource.RDB:
             raise RDBQueryCompilationError("RDB compiler requires an RDB step")
         if step.operation is not QueryOperation.SEARCH_PRODUCTS:
@@ -151,6 +158,8 @@ class RDBQueryCompiler:
             if not isinstance(item, dict):
                 raise RDBQueryCompilationError("sort item must be structured")
             field = item.get("canonical_field")
+            if field == "product.risk_grade":
+                raise RDBQueryCompilationError(RISK_GRADE_UNVERIFIED_REASON)
             raw = item.get("raw", {})
             direction = raw.get("direction") if isinstance(raw, dict) else None
             mapping = self._fields.get(field)
@@ -178,6 +187,8 @@ class RDBQueryCompiler:
         if not isinstance(item, dict):
             raise RDBQueryCompilationError("filter item must be structured")
         field = item.get("canonical_field")
+        if field == "product.risk_grade":
+            raise RDBQueryCompilationError(RISK_GRADE_UNVERIFIED_REASON)
         mapping = self._fields.get(field)
         raw = item.get("raw")
         if not isinstance(raw, dict):

@@ -9,7 +9,9 @@ from app.domain.models import (
     OrderedComparison,
     SortOperation,
     TopN,
+    QueryIntent,
 )
+from app.planning.predicates import structured_predicate
 
 
 BASIC_PRODUCT_PROJECTION = "BASIC_PRODUCT"
@@ -22,6 +24,11 @@ BASIC_PRODUCT_FIELDS = (
 
 
 def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
+    predicate = structured_predicate(query)
+    comparison_fields = list(dict.fromkeys(
+        item.canonical_field for item in query.grounded_requested_fields
+        if item.canonical_field is not None
+    ))
     product_concepts = [
         concept.canonical_concept
         for concept in query.grounded_concepts
@@ -61,6 +68,14 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
         else _result_grain(resolved_entities)
     )
     return {
+        "boolean_expression": predicate.model_dump(mode="json") if predicate else None,
+        "comparison": (
+            {"mode": "fieldwise", "fields": comparison_fields or [item.canonical_field for item in query.grounded_sort if item.canonical_field]}
+            if query.parsed_query.comparison is not None
+            or query.parsed_query.intent is QueryIntent.COMPARE_PRODUCTS
+            else None
+        ),
+        "metrics": [metric.model_dump(mode="json") for metric in query.parsed_query.metrics],
         # Physical compatibility keys are isolated at this planner/compiler
         # boundary. Ontology identity remains available alongside them.
         "product_types": [concept.value for concept in product_concepts],

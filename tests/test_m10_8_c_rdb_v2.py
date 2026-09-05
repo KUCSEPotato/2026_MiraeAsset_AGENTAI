@@ -303,16 +303,16 @@ def test_negation_requires_a_known_canonical_classification(retriever) -> None:
     assert all(item.payload["value"] != "ExposureRegion.UnitedStates" for item in records)
 
 
-def test_risk_grade_one_etf_is_structured_rdb_query(retriever) -> None:
-    records = _run(
-        retriever,
-        _step(
-            product_types=["FinancialProduct.ETF"],
-            filters=[_filter("product.risk_grade", "RiskGrade.1")],
-            limit=1_000,
-        ),
-    )
-    assert _ids(records)
+def test_risk_grade_filter_is_disabled_without_source_contract(retriever) -> None:
+    with pytest.raises(RDBQueryCompilationError, match="risk_grade_ordering_and_comparability_unverified"):
+        _run(
+            retriever,
+            _step(
+                product_types=["FinancialProduct.ETF"],
+                filters=[_filter("product.risk_grade", "RiskGrade.1")],
+                limit=1_000,
+            ),
+        )
 
 
 @pytest.mark.parametrize(

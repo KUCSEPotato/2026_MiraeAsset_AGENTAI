@@ -133,6 +133,7 @@ class LLMSemanticParseCandidate(UntrustedCandidateModel):
     filters: list[LLMFilterCandidate] = Field(default_factory=list)
     sorts: list[LLMSortCandidate] = Field(default_factory=list)
     requested_fields: list[LLMSemanticTermCandidate] = Field(default_factory=list)
+    group_by: list[LLMSemanticTermCandidate] = Field(default_factory=list)
     semantic_texts: list[LLMSemanticTermCandidate] = Field(default_factory=list)
     subjective_conditions: list[LLMSemanticTermCandidate] = Field(
         default_factory=list

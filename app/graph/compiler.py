@@ -6,6 +6,7 @@ from app.domain.models import QueryOperation, QueryStep, RetrievalSource
 from app.graph.mapping import GraphMappingRegistry
 from app.graph.models import CompiledGraphQuery
 from app.retrieval.exceptions import GraphQueryCompilationError
+from app.data.metric_capabilities import RISK_GRADE_UNVERIFIED_REASON
 
 
 class GraphQueryCompiler:
@@ -88,6 +89,11 @@ class GraphQueryCompiler:
         except ValueError as exc:
             raise GraphQueryCompilationError(str(exc)) from exc
 
+        if any(mapping.edge_type == "HAS_RISK_GRADE" for mapping in mappings):
+            # Projection stays in RDB; no graph path may bypass the disabled
+            # risk-grade candidate-selection/comparison contract.
+            raise GraphQueryCompilationError(RISK_GRADE_UNVERIFIED_REASON)
+
         pattern = f"(n0:{self._node_label})"
         for index, (mapping, direction) in enumerate(
             zip(mappings, directions, strict=True)
@@ -113,28 +119,33 @@ class GraphQueryCompiler:
         for index, (direction, target_value, target_type) in enumerate(
             zip(directions, target_values, target_types, strict=True)
         ):
-            if target_value is None:
-                continue
             target_node = f"n{index + 1}" if direction == "outgoing" else f"n{index}"
-            value_parameter = f"target_value_{index}"
-            conditions.append(
-                f"({target_node}.entity_id = ${value_parameter} OR "
-                f"{target_node}.canonical_value = ${value_parameter} OR "
-                f"{target_node}.display_name = ${value_parameter} OR "
-                f"{target_node}.identifier_value = ${value_parameter})"
-            )
-            target_parameters[value_parameter] = str(target_value)
+            if target_value is not None:
+                value_parameter = f"target_value_{index}"
+                conditions.append(
+                    f"({target_node}.entity_id = ${value_parameter} OR "
+                    f"{target_node}.canonical_value = ${value_parameter} OR "
+                    f"{target_node}.display_name = ${value_parameter} OR "
+                    f"{target_node}.identifier_value = ${value_parameter})"
+                )
+                target_parameters[value_parameter] = str(target_value)
             if target_type is not None:
                 type_parameter = f"target_type_{index}"
                 conditions.append(f"{target_node}.node_type = ${type_parameter}")
                 target_parameters[type_parameter] = str(target_type)
         source_node_ids = step.inputs.get("source_node_ids", [])
-        if not isinstance(source_node_ids, list):
+        if not isinstance(source_node_ids, list) or not all(
+            isinstance(item, str) and item for item in source_node_ids
+        ):
             raise GraphQueryCompilationError("source_node_ids must be a list")
         if source_node_ids:
             conditions.append("n0.entity_id IN $source_node_ids")
         candidates = candidate_ids or []
-        if candidates:
+        if candidate_ids is not None:
+            if not isinstance(candidate_ids, list) or not all(
+                isinstance(item, str) and item for item in candidate_ids
+            ):
+                raise GraphQueryCompilationError("candidate_ids must be canonical string IDs")
             node_names = ", ".join(
                 f"n{index}" for index in range(len(relations) + 1)
             )
@@ -142,7 +153,9 @@ class GraphQueryCompiler:
                 f"any(candidate IN [{node_names}] "
                 "WHERE candidate.entity_id IN $candidate_ids)"
             )
-        if not source_node_ids and not candidates and not target_parameters:
+        if not source_node_ids and candidate_ids is None and not any(
+            value is not None for value in target_values
+        ):
             raise GraphQueryCompilationError(
                 "graph traversal requires resolved source nodes or RDB candidates"
             )
