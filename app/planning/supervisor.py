@@ -325,7 +325,7 @@ def _graph_paths(query: GroundedQuery, *, allow_holdings: bool = True) -> list[d
     chained: dict[str, list] = {}
     for relation in resolved:
         if relation.chain_id is None:
-            paths.extend(_allow_listed_paths(relation))
+            paths.extend(_allow_listed_paths(query, relation))
         else:
             chained.setdefault(relation.chain_id, []).append(relation)
     for chain_id in sorted(chained):
@@ -333,17 +333,18 @@ def _graph_paths(query: GroundedQuery, *, allow_holdings: bool = True) -> list[d
             chained[chain_id],
             key=lambda item: item.path_position if item.path_position is not None else 0,
         )
-        paths.append(_path(relations))
+        paths.append(_path(relations, query))
     return paths
 
 
-def _allow_listed_paths(relation) -> list[dict]:
+def _allow_listed_paths(query: GroundedQuery, relation) -> list[dict]:
     """Expand only reviewed bounded semantic paths; never infer arbitrary hops."""
 
     if (
         relation.canonical_relation == "holds"
         and relation.target_value is not None
     ):
+        target_value = _resolved_target_value(query, relation)
         common = {
             "raw_relations": [relation.raw_text],
             "constraint_ids": [relation.constraint_id] if relation.constraint_id else [],
@@ -357,7 +358,7 @@ def _allow_listed_paths(relation) -> list[dict]:
                     RelationDirection.OUTGOING.value,
                 ],
                 "raw_relations": [relation.raw_text, "증권 발행사"],
-                "target_values": [None, relation.target_value],
+                "target_values": [None, target_value],
                 "target_types": ["EquitySecurity", "Organization"],
             }]
         if relation.target_type in {"Security", "EquitySecurity"}:
@@ -365,19 +366,21 @@ def _allow_listed_paths(relation) -> list[dict]:
                 **common,
                 "relations": ["holds"],
                 "directions": [RelationDirection.OUTGOING.value],
-                "target_values": [relation.target_value],
+                "target_values": [target_value],
                 "target_types": ["EquitySecurity"],
             }]
         return []
-    return [_path([relation])]
+    return [_path([relation], query)]
 
 
-def _path(relations: list) -> dict:
+def _path(relations: list, query: GroundedQuery) -> dict:
     return {
         "relations": [item.canonical_relation for item in relations],
         "directions": [item.direction.value for item in relations],
         "raw_relations": [item.raw_text for item in relations],
-        "target_values": [item.target_value for item in relations],
+        "target_values": [
+            _resolved_target_value(query, item) for item in relations
+        ],
         "target_types": [item.target_type for item in relations],
         "constraint_ids": [
             item.constraint_id
@@ -385,6 +388,27 @@ def _path(relations: list) -> dict:
             if item.constraint_id is not None
         ],
     }
+
+
+def _resolved_target_value(query: GroundedQuery, relation) -> str | None:
+    """Prefer a validated canonical relation target over a raw graph label."""
+
+    target = relation.target_value
+    if target is None:
+        return None
+    raw_values = {
+        str(value).casefold()
+        for value in (relation.target_value, relation.target_raw_text)
+        if value is not None
+    }
+    for entity in query.resolved_entities:
+        if (
+            entity.resolution_status is ResolutionStatus.RESOLVED
+            and entity.canonical_id is not None
+            and entity.raw_text.casefold() in raw_values
+        ):
+            return entity.canonical_id
+    return target
 
 
 def _relation_domain_covers_product_type(query: GroundedQuery) -> bool:

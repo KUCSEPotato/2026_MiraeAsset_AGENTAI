@@ -92,7 +92,7 @@ def test_generic_foreign_return_ranking_fails_closed() -> None:
     with pytest.raises(UnsupportedQuerySemanticsError) as raised:
         asyncio.run(_plan("해외 ETF 중 1년 수익률 TOP10"))
     assert any(
-        "foreign_etf_one_year_return_unavailable" in item
+        "foreign_etf_return_1Y_unavailable_or_incompatible" in item
         for item in raised.value.reasons
     )
 

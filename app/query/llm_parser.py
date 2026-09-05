@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Protocol
 from urllib.parse import quote
 from uuid import uuid4
@@ -8,6 +9,7 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from app.hyperclova import log_hyperclova_http_error
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParserError
 from app.query.semantic_models import (
@@ -17,7 +19,8 @@ from app.query.semantic_models import (
 
 
 PROMPT_VERSION = "m10.6-hcx-semantic-v1"
-SEMANTIC_SCHEMA_VERSION = "m10.6-semantic-v1"
+SEMANTIC_SCHEMA_VERSION = "m10.9-semantic-v2"
+logger = logging.getLogger(__name__)
 
 
 class SemanticParserLLM(Protocol):
@@ -76,12 +79,13 @@ class HyperCLOVASemanticParserClient:
                 "schema": hyperclova_candidate_schema(),
             },
         }
+        request_id = str(uuid4())
         try:
             response = await self._client.post(
                 endpoint,
                 headers={
                     "Authorization": f"Bearer {self._settings.api_key}",
-                    "X-NCP-CLOVASTUDIO-REQUEST-ID": str(uuid4()),
+                    "X-NCP-CLOVASTUDIO-REQUEST-ID": request_id,
                     "Content-Type": "application/json",
                 },
                 json=payload,
@@ -91,15 +95,46 @@ class HyperCLOVASemanticParserClient:
             content = envelope["result"]["message"]["content"]
             raw_candidate = json.loads(content)
             return LLMSemanticParseCandidate.model_validate(raw_candidate)
+        except httpx.HTTPStatusError as exc:
+            details = log_hyperclova_http_error(
+                logger,
+                exc.response,
+                request_purpose="semantic_parse",
+                request_id=request_id,
+            )
+            raise SemanticParserError(
+                http_status=exc.response.status_code,
+                provider_code=details.code,
+                request_id=request_id,
+            ) from exc
+        except httpx.HTTPError as exc:
+            logger.error(
+                "HyperCLOVA request failed",
+                extra={
+                    "request_purpose": "semantic_parse",
+                    "request_id": request_id,
+                    "error_class": type(exc).__name__,
+                },
+            )
+            raise SemanticParserError(request_id=request_id) from exc
         except (
-            httpx.HTTPError,
             json.JSONDecodeError,
             KeyError,
             TypeError,
             ValidationError,
         ) as exc:
-            # Never include response bodies, prompts, or credentials in the error.
-            raise SemanticParserError("HyperCLOVA semantic parse failed") from exc
+            logger.error(
+                "HyperCLOVA semantic response validation failed",
+                extra={
+                    "request_purpose": "semantic_parse",
+                    "request_id": request_id,
+                    "error_class": type(exc).__name__,
+                },
+            )
+            raise SemanticParserError(
+                failure_reason="semantic_parse_response_invalid",
+                request_id=request_id,
+            ) from exc
 
 
 def _system_prompt() -> str:
@@ -238,7 +273,14 @@ def hyperclova_candidate_schema() -> dict[str, object]:
                         "source_span": span,
                         "entity_type": {
                             "type": "string",
-                            "enum": ["product", "management_company", "issuer", "index", "fund"],
+                            "enum": [
+                                "product", "financial_product", "fund",
+                                "fund_share_class", "sale_lot",
+                                "management_company", "asset_manager",
+                                "organization", "company", "issuer",
+                                "portfolio_company", "subsidiary",
+                                "institution", "index", "security", "holding",
+                            ],
                         },
                     },
                     "required": ["source_span", "entity_type"],

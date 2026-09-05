@@ -8,12 +8,14 @@ import pytest
 from openpyxl import load_workbook
 from sqlalchemy.dialects import postgresql
 
+from app.agent.service import _metric_resolutions
 from app.data.cleaning import (
     canonical_mirae_sale_flag,
     canonical_subscription_status,
 )
 from app.data.database import DatabaseSettings
 from app.data.v2_rebuild import (
+    METRIC_FIELDS,
     _atomic_index,
     _date,
     _decimal,
@@ -32,13 +34,19 @@ from app.data.metric_capabilities import (
     PREF02_EXPENSE,
     PRBD_CREDIT_RATING,
     PRBD_PURCHASABLE_BOND,
+    PREF01_ONE_DAY_RETURN,
+    PREF01_ONE_MONTH_RETURN,
+    PREF01_THREE_MONTH_RETURN,
+    PREF01_SIX_MONTH_RETURN,
     PREF01_ONE_YEAR_RETURN,
+    PREF01_YEAR_TO_DATE_RETURN,
     PREF02_ONE_YEAR_RETURN,
     ISHARES_SCOPED_ONE_YEAR_RETURN,
     PRFD_SHARE_CLASS_ONE_YEAR_RETURN,
     CROSS_PRODUCT_RETURN_CONTRACTS,
 )
 from app.domain.models import (
+    CanonicalEntity,
     ExecutionContext,
     QueryPlan,
     QueryOperation,
@@ -48,11 +56,17 @@ from app.domain.models import (
     RetrievalSource,
     StepExecutionResult,
     StepExecutionStatus,
+    ValidationResult,
 )
+from app.entity.lookup import StaticEntityLookup
+from app.entity.resolver import RegistryEntityResolver
+from app.evidence.answer import DeterministicEvidenceAnswerGenerator
+from app.evidence.serializer import serialize_evidence_bundle
 from app.execution.transforms import InternalTransformExecutor
 from app.graph.config import GraphSettings
 from app.ontology.loader import OntologyLoader
 from app.ontology.rdf_service import RDFOntologyService
+from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
 from app.planning.coordinator import QueryPlanner
 from app.planning.exceptions import UnsupportedQuerySemanticsError
 from app.planning.metadata import RoutingMetadataRegistry
@@ -68,6 +82,7 @@ from app.retrieval.rdb_v2 import (
     V2SnapshotSelection,
 )
 from app.search.config import SearchSettings
+from tests.evidence_helpers import make_bundle, make_evidence
 
 
 def test_canonical_v2_transformer_version_defaults_and_overrides(
@@ -152,6 +167,306 @@ def test_credit_rating_is_an_explicit_non_lexical_order() -> None:
     assert order["AAA"] > order["AA+"] > order["AA0"] > order["AA-"]
     assert order["AA-"] > order["A+"]
     assert "AAAA" not in order
+
+
+@pytest.mark.parametrize(
+    ("question", "field", "direction", "top_n"),
+    [
+        ("국내 ETF 중 순자산이 높은 상위 7개", "product.aum", "desc", 7),
+        ("국내 ETF 중 순자산이 낮은 하위 4개", "product.aum", "asc", 4),
+        (
+            "국내 ETF 중 수익률이 높은 상위 3개 알려줘",
+            "product.one_year_return",
+            "desc",
+            3,
+        ),
+        (
+            "위험이 낮은 채권형 상품을 비교해줘",
+            "product.risk_grade",
+            "asc",
+            None,
+        ),
+    ],
+)
+def test_comparative_phrases_use_one_generic_structured_pipeline(
+    question: str, field: str, direction: str, top_n: int | None
+) -> None:
+    parsed, grounded, plan = asyncio.run(_plan(question))
+    assert parsed.sort[0].direction == direction
+    assert grounded.grounded_sort[0].canonical_field == field
+    assert (
+        parsed.result_limit.value if parsed.result_limit is not None else None
+    ) == top_n
+    inputs = plan.steps[0].inputs
+    assert inputs["sort_operations"] == [
+        {"semantic_metric_key": field, "direction": direction}
+    ]
+    assert inputs["comparison_contracts"][0]["sort_capability"] is True
+
+
+def test_generic_return_is_resolvable_underspecification_with_disclosure() -> None:
+    _, _, plan = asyncio.run(
+        _plan("국내 ETF 중 수익률이 높은 상위 3개 알려줘")
+    )
+    resolution = plan.steps[0].inputs["comparison_contracts"][0][
+        "metric_resolution"
+    ]
+    assert resolution == {
+        "status": "RESOLVABLE_UNDERSPECIFICATION",
+        "policy": "RETURN.default_period=1Y",
+        "requested_phrase": "수익률",
+        "resolved_metric": "product.one_year_return",
+        "metric": "RETURN",
+        "period": "1Y",
+        "period_source": "DEFAULT_POLICY",
+        "disclosure": (
+            "기간이 별도로 지정되지 않아 1년 수익률을 기준으로 비교했습니다."
+        ),
+    }
+    assert _metric_resolutions(plan) == [resolution]
+
+    evidence = make_evidence(
+        field="product.one_year_return",
+        value="12.4",
+        metadata={
+            "real_rdb": True,
+            "comparison_contracts": plan.steps[0].inputs[
+                "comparison_contracts"
+            ],
+        },
+    )
+    serialized = serialize_evidence_bundle(make_bundle([evidence]))
+    assert '"metric":"RETURN"' in serialized
+    assert '"period":"1Y"' in serialized
+    assert '"period_source":"DEFAULT_POLICY"' in serialized
+
+
+def test_comparison_without_metric_remains_true_unresolved_semantics() -> None:
+    question = "ETF를 비교해줘"
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze(question))
+    intent_constraint = next(
+        item for item in parsed.semantic_constraints
+        if item.semantic_type.value == "intent"
+    )
+    assert intent_constraint.payload["ambiguity_class"] == "TRUE_AMBIGUITY"
+    assert intent_constraint.unsupported_reason == (
+        "true_ambiguity:comparison_metric_missing"
+    )
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan(question))
+    assert any(
+        reason.startswith("unsupported_constraint:")
+        for reason in caught.value.reasons
+    )
+
+
+def test_manager_product_context_creates_a_grounded_manager_relation() -> None:
+    async def run():
+        parsed = await RuleBasedQueryAnalyzer().analyze(
+            "미래에셋 상품 중 순자산이 낮은 국내 ETF는?"
+        )
+        resolved = await RegistryEntityResolver(
+            StaticEntityLookup([
+                CanonicalEntity(
+                    canonical_id="ORG:MIRAE-ASSET",
+                    entity_type="management_company",
+                    official_name="미래에셋자산운용",
+                    aliases=["미래에셋"],
+                )
+            ])
+        ).resolve(parsed)
+        grounded = await _ontology().ground(resolved)
+        return parsed, resolved, grounded
+
+    parsed, resolved, grounded = asyncio.run(run())
+    assert parsed.entities[0].entity_type == "management_company"
+    assert resolved.resolved_entities[0].canonical_id == "ORG:MIRAE-ASSET"
+    relation = grounded.grounded_relations[0]
+    assert relation.raw_text == "상품 중"
+    assert relation.canonical_relation == "managedBy"
+    assert relation.target_value == "ORG:MIRAE-ASSET"
+
+
+def test_expense_ranking_is_grounded_then_rejected_by_metric_contract() -> None:
+    parsed = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze(
+            "미래에셋 상품 중 운용보수가 낮은 국내 ETF는?"
+        )
+    )
+    grounded = asyncio.run(_ontology().ground(ResolvedQuery(parsed_query=parsed)))
+    assert grounded.grounded_sort[0].canonical_field == "product.expense_ratio"
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan("국내 ETF 중 운용보수가 낮은 상품을 알려줘"))
+    assert "unsupported_comparison:expense_ratio_scale_unverified" in (
+        caught.value.reasons
+    )
+
+
+def test_explicit_threshold_is_a_filter_not_a_ranking_adjective() -> None:
+    parsed = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze(
+            "국내 ETF 중 운용보수가 0.2% 이하인 상품"
+        )
+    )
+    assert parsed.sort == []
+    assert len(parsed.filters) == 1
+    assert parsed.filters[0].field == "expense_ratio"
+    assert parsed.filters[0].operator.value == "lte"
+
+
+def test_unsupported_explicit_return_period_is_not_replaced_by_default() -> None:
+    parsed = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze(
+            "국내 ETF 중 2년 수익률이 높은 상품을 알려줘"
+        )
+    )
+    assert parsed.unparsed_material_spans
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan(parsed.original_question))
+    assert "unparsed_material_clause" in caught.value.reasons
+
+
+def test_risk_order_compiles_ontology_sequence_and_stable_ties() -> None:
+    _, _, plan = asyncio.run(
+        _plan("위험이 낮은 채권형 상품을 비교해줘")
+    )
+    snapshot = V2SnapshotSelection(
+        snapshot_date=date(2026, 8, 24), generation="260824",
+        ontology_version="merged-optical-1.4",
+        snapshot_ids=("PRBD", "PREF01", "PREF02", "PRFD"),
+        dataset_ids=("PRBD", "PREF01", "PREF02", "PRFD"),
+    )
+    compiled = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=10
+    ).compile(plan.steps[0], snapshot)
+    sql = str(compiled.statement.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+    assert compiled.ranking_applied
+    assert "RISK_GRADE_6' THEN 1" in sql
+    assert "RISK_GRADE_1' THEN 6" in sql
+    assert 'entity_id COLLATE "C" ASC' in sql
+
+
+def test_default_metric_disclosure_is_rendered_from_evidence() -> None:
+    evidence = make_evidence(
+        field="product.one_year_return",
+        value="12.4",
+        metadata={
+            "real_rdb": True,
+            "comparison_contracts": [{
+                "metric_resolution": {
+                    "disclosure": (
+                        "기간이 별도로 지정되지 않아 1년 수익률을 "
+                        "기준으로 비교했습니다."
+                    )
+                }
+            }],
+        },
+    )
+    answer = asyncio.run(
+        DeterministicEvidenceAnswerGenerator().generate(
+            "수익률이 높은 ETF",
+            make_bundle([evidence]),
+            ValidationResult(answerable=True),
+        )
+    )
+    assert answer.startswith(
+        "기간이 별도로 지정되지 않아 1년 수익률을 기준으로 비교했습니다."
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "canonical_field", "metric_code", "period"),
+    [
+        ("국내 ETF 중 1D 수익률 상위 3개 알려줘", "product.one_day_return", "ONE_DAY_RETURN", "1D"),
+        ("국내 ETF 중 1개월 수익률 상위 3개 알려줘", "product.one_month_return", "ONE_MONTH_RETURN", "1M"),
+        ("국내 ETF 중 3개월 수익률 상위 3개 알려줘", "product.three_month_return", "THREE_MONTH_RETURN", "3M"),
+        ("국내 ETF 중 6개월 수익률 상위 3개 알려줘", "product.six_month_return", "SIX_MONTH_RETURN", "6M"),
+        ("국내 ETF 중 1년 수익률 상위 3개 알려줘", "product.one_year_return", "ONE_YEAR_RETURN", "1Y"),
+        ("국내 ETF 중 YTD 수익률 상위 3개 알려줘", "product.year_to_date_return", "YEAR_TO_DATE_RETURN", "YTD"),
+        ("국내 ETF 중 연초 이후 수익률 상위 3개 알려줘", "product.year_to_date_return", "YEAR_TO_DATE_RETURN", "YTD"),
+    ],
+)
+def test_domestic_return_periods_use_one_structured_pipeline(
+    question: str,
+    canonical_field: str,
+    metric_code: str,
+    period: str,
+) -> None:
+    parsed, grounded, plan = asyncio.run(_plan(question))
+    assert parsed.semantic_coverage == "complete"
+    assert parsed.result_limit.value == 3
+    assert grounded.grounded_sort[0].canonical_field == canonical_field
+    inputs = plan.steps[0].inputs
+    assert inputs["sort_operations"] == [{
+        "semantic_metric_key": canonical_field,
+        "direction": "desc",
+    }]
+    contract = inputs["comparison_contracts"][0]
+    assert contract["metric"] == metric_code
+    assert contract["dataset"] == "PREF01N001"
+    assert contract["exact_period"] == period
+    assert contract["metric_resolution"]["period"] == period
+    assert contract["metric_resolution"]["period_source"] == "EXPLICIT_QUERY"
+
+
+def test_pref01_return_contracts_are_independent_and_comparison_ready() -> None:
+    contracts = (
+        PREF01_ONE_DAY_RETURN,
+        PREF01_ONE_MONTH_RETURN,
+        PREF01_THREE_MONTH_RETURN,
+        PREF01_SIX_MONTH_RETURN,
+        PREF01_ONE_YEAR_RETURN,
+        PREF01_YEAR_TO_DATE_RETURN,
+    )
+    assert [item.source_field for item in contracts] == [
+        "du_er_1d", "du_er_1m", "du_er_3m", "du_er_6m", "du_er_1y",
+        "du_er_ytd",
+    ]
+    assert [item.exact_period for item in contracts] == [
+        "1D", "1M", "3M", "6M", "1Y", "YTD",
+    ]
+    assert all(item.sort_capability for item in contracts)
+    assert all(item.unit == "PERCENT" for item in contracts)
+    assert all(item.scale == "SOURCE_PERCENT" for item in contracts)
+    assert all(not item.cross_dataset_comparability for item in contracts)
+
+    runtime_mapping = TeamOntologyRuntimeMapping()
+    rdb_fields = CanonicalV2FieldRegistry()
+    for contract in contracts:
+        source_metric = METRIC_FIELDS["PREF01N001"][contract.source_field]
+        assert source_metric[:3] == (
+            contract.metric, contract.unit, contract.scale
+        )
+        ontology_metric = runtime_mapping.metric(
+            f"return.{contract.exact_period}"
+        )
+        assert ontology_metric is not None
+        assert ontology_metric.canonical_field == contract.canonical_field
+        assert rdb_fields.field(contract.canonical_field).semantic_key == (
+            contract.metric
+        )
+
+
+def test_period_specific_return_compiles_allowlisted_metric_code() -> None:
+    _, _, plan = asyncio.run(
+        _plan("국내 ETF 중 3개월 수익률 상위 3개 알려줘")
+    )
+    snapshot = V2SnapshotSelection(
+        snapshot_date=date(2026, 8, 24), generation="260824",
+        ontology_version="merged-optical-1.4",
+        snapshot_ids=("PREF01",), dataset_ids=("PREF01",),
+    )
+    compiled = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=10
+    ).compile(plan.steps[0], snapshot)
+    sql = str(compiled.statement.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+    assert "THREE_MONTH_RETURN" in sql
+    assert "du_er_3m" not in sql
+    assert "ORDER BY" in sql
 
 
 @pytest.mark.parametrize(
@@ -269,11 +584,11 @@ def test_etp_insufficient_reasons_only_cover_core_availability_inputs() -> None:
 
 
 def test_etp_source_metric_and_insufficient_counts_preserve_missingness() -> None:
-    material = Path("material/1.금융상품")
+    material = Path("material")
     # This validation intentionally runs only where both authoritative source
     # workbooks are provisioned; repository-only CI does not contain material/.
     source_workbooks = {
-        prefix: sorted(material.glob(f"{prefix}_*_datarows.xlsx"))
+        prefix: sorted(material.glob(f"**/{prefix.casefold()}_data.xlsx"))
         for prefix in ("PREF01N001", "PREF02N001")
     }
     missing_sources = [
@@ -282,7 +597,7 @@ def test_etp_source_metric_and_insufficient_counts_preserve_missingness() -> Non
     if missing_sources:
         pytest.skip(
             "authoritative ETP source workbook(s) are not provisioned under "
-            "material/1.금융상품: "
+            "material/**/<source>_data.xlsx: "
             + ", ".join(missing_sources)
         )
 
@@ -312,6 +627,60 @@ def test_etp_source_metric_and_insufficient_counts_preserve_missingness() -> Non
     }
     # Domestic raw has four core-invalid rows; one is quarantined during rebuild.
     assert insufficient == {"PREF01N001": 4, "PREF02N001": 14}
+
+
+def test_pref01_return_source_contract_profile() -> None:
+    candidates = sorted(
+        Path("material").glob("**/pref01n001_data.xlsx")
+    )
+    schema_candidates = sorted(
+        Path("material").glob("**/pref01n001_schema.xlsx")
+    )
+    if not candidates or not schema_candidates:
+        pytest.skip("authoritative PREF01 source/schema workbooks are not provisioned")
+
+    expected = {
+        "du_er_1d": (1_585, 1_544),
+        "du_er_1m": (1_584, 1_543),
+        "du_er_3m": (1_553, 1_512),
+        "du_er_6m": (1_486, 1_434),
+        "du_er_1y": (1_416, 1_321),
+        "du_er_ytd": (1_477, 1_422),
+    }
+    schema = load_workbook(schema_candidates[0], read_only=True, data_only=True)
+    schema_rows = list(schema.active.iter_rows(values_only=True))
+    schema_by_field = {
+        str(row[1]).strip(): row for row in schema_rows[1:] if row[1] is not None
+    }
+    assert {
+        field: (schema_by_field[field][2], schema_by_field[field][4])
+        for field in expected
+    } == {
+        "du_er_1d": ("numeric(28,2)", "수익률_1D"),
+        "du_er_1m": ("numeric(28,2)", "수익률_1M"),
+        "du_er_3m": ("numeric(28,2)", "수익률_3M"),
+        "du_er_6m": ("numeric(28,2)", "수익률_6M"),
+        "du_er_1y": ("numeric(28,2)", "수익률_1Y"),
+        "du_er_ytd": ("numeric(28,2)", "수익률_YTD"),
+    }
+    assert schema_by_field["du_upt_dt"][4] == "일간갱신일자"
+    schema.close()
+
+    workbook = load_workbook(candidates[0], read_only=True, data_only=True)
+    rows = workbook.active.iter_rows(values_only=True)
+    header = [str(value).strip() for value in next(rows)]
+    counts = {field: [0, 0] for field in expected}
+    for values in rows:
+        row = dict(zip(header, values, strict=False))
+        observed_on = _date(row.get("du_upt_dt"))
+        assert observed_on is None or observed_on <= EVALUATION_DATA_CUTOFF
+        for field in expected:
+            if _decimal(row.get(field)) is None:
+                continue
+            counts[field][0] += 1
+            counts[field][1] += observed_on is not None
+    workbook.close()
+    assert {field: tuple(value) for field, value in counts.items()} == expected
 
 
 @pytest.mark.parametrize(
@@ -508,7 +877,7 @@ def test_public_fund_return_is_not_silently_promoted_or_dropped() -> None:
     with pytest.raises(UnsupportedQuerySemanticsError) as caught:
         asyncio.run(_plan(question))
     assert (
-        "unsupported_comparison:public_fund_one_year_return_is_share_class_grain_only"
+        "unsupported_comparison:public_fund_return_1Y_not_comparable_at_fund_grain"
         in caught.value.reasons
     )
 

@@ -40,7 +40,22 @@ class LLMSemanticTermCandidate(UntrustedCandidateModel):
 class LLMEntityCandidate(UntrustedCandidateModel):
     source_span: LLMCandidateSpan
     entity_type: Literal[
-        "product", "management_company", "issuer", "index", "fund"
+        "product",
+        "financial_product",
+        "fund",
+        "fund_share_class",
+        "sale_lot",
+        "management_company",
+        "asset_manager",
+        "organization",
+        "company",
+        "issuer",
+        "portfolio_company",
+        "subsidiary",
+        "institution",
+        "index",
+        "security",
+        "holding",
     ]
 
 

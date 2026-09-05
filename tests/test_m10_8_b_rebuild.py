@@ -557,17 +557,23 @@ def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
 def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
     # M10.9-C1 enables comparability only for observations backed by an
-    # explicit source/grain-scoped contract (AUM, rating order, and exact 1Y
-    # returns). Organizer purchasability is a lifecycle rule, not a metric.
+    # explicit source/grain-scoped contract (AUM, rating order, and exact
+    # period returns). Organizer purchasability is a lifecycle rule, not a metric.
     assert first.metric_status == {
-        "COMPARABLE": 33_397,
+        "COMPARABLE": 40_757,
         # Fourteen foreign rows have neither source price nor source volume;
         # absence is preserved instead of fabricating metric observations.
-        "NOT_COMPARABLE": 89_862,
+        # Return observations lacking du_upt_dt are retained but not rankable.
+        "NOT_COMPARABLE": 90_167,
     }
     assert first.metric_counts["MARKET_PRICE"] == 7_799
     assert first.metric_counts["VOLUME"] == 7_799
     assert first.metric_counts["ONE_YEAR_RETURN"] == 8_417
+    assert first.metric_counts["ONE_DAY_RETURN"] == 1_585
+    assert first.metric_counts["ONE_MONTH_RETURN"] == 1_584
+    assert first.metric_counts["THREE_MONTH_RETURN"] == 1_553
+    assert first.metric_counts["SIX_MONTH_RETURN"] == 1_486
+    assert first.metric_counts["YEAR_TO_DATE_RETURN"] == 1_477
     assert "CURRENT_SALE_AVAILABILITY" not in first.metric_counts
     assert "BUYABLE_QUANTITY" not in first.metric_counts
     assert sum(first.metric_status.values()) == sum(first.metric_counts.values())

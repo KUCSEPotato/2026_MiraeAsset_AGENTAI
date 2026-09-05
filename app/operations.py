@@ -45,6 +45,9 @@ class JsonLogFormatter(logging.Formatter):
         "answerability_reason",
         "error_class",
         "http_status",
+        "hcx_error_code",
+        "hcx_error_message",
+        "request_purpose",
     )
 
     def format(self, record: logging.LogRecord) -> str:

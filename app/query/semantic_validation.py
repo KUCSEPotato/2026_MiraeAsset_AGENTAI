@@ -409,15 +409,33 @@ class LLMSemanticCandidateValidator:
                 ("temporal", 0), ConstraintStatus.UNSUPPORTED,
                 "temporal_snapshot_unsupported",
             ))
-        if candidate.intent in {
-            QueryIntent.COMPARE_PRODUCTS,
-            QueryIntent.RECOMMEND_PRODUCT,
-            QueryIntent.UNKNOWN,
-        }:
+        unsupported_intent = (
+            candidate.intent in {
+                QueryIntent.RECOMMEND_PRODUCT,
+                QueryIntent.UNKNOWN,
+            }
+            or (
+                candidate.intent is QueryIntent.COMPARE_PRODUCTS
+                and not candidate.sorts
+            )
+        )
+        if unsupported_intent:
             drafts.append(_Draft(
                 _intent_span(question, candidate), ConstraintSemanticType.INTENT,
-                {"intent": candidate.intent.value}, status=ConstraintStatus.UNSUPPORTED,
-                reason="intent_execution_unsupported",
+                {
+                    "intent": candidate.intent.value,
+                    **(
+                        {"ambiguity_class": "TRUE_AMBIGUITY"}
+                        if candidate.intent is QueryIntent.COMPARE_PRODUCTS
+                        else {}
+                    ),
+                },
+                status=ConstraintStatus.UNSUPPORTED,
+                reason=(
+                    "true_ambiguity:comparison_metric_missing"
+                    if candidate.intent is QueryIntent.COMPARE_PRODUCTS
+                    else "intent_execution_unsupported"
+                ),
             ))
         if candidate.boolean_expression and _unsupported_boolean(
             candidate.boolean_expression, len(candidate.semantic_texts)

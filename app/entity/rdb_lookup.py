@@ -6,6 +6,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.data.cleaning import normalize_lookup_value
 from app.data.schema import canonical_products, funds, product_identifiers
 from app.domain.models import CanonicalEntity, EntityLookupMatch
+from app.entity.normalization import entity_lookup_keys, normalized_entity_form
+from app.entity.exceptions import EntityResolutionDependencyError
 from app.graph.identity import explicit_source_id, source_scoped_name_id
 
 
@@ -21,70 +23,72 @@ class RDBEntityLookup:
         raw_text: str,
         entity_type: str,
     ) -> list[EntityLookupMatch]:
-        if entity_type == "product":
-            return await asyncio.to_thread(self._lookup_product_sync, raw_text)
-        if entity_type == "fund":
-            return await asyncio.to_thread(self._lookup_fund_sync, raw_text)
-        if entity_type == "management_company":
-            return await asyncio.to_thread(self._lookup_manager_sync, raw_text)
-        return []
+        try:
+            if entity_type == "product":
+                return await asyncio.to_thread(self._lookup_product_sync, raw_text)
+            if entity_type == "fund":
+                return await asyncio.to_thread(self._lookup_fund_sync, raw_text)
+            if entity_type == "management_company":
+                return await asyncio.to_thread(self._lookup_manager_sync, raw_text)
+            return []
+        except SQLAlchemyError as exc:
+            raise EntityResolutionDependencyError(
+                "canonical entity lookup failed"
+            ) from exc
 
     def _lookup_product_sync(self, raw_text: str) -> list[EntityLookupMatch]:
         normalized = normalize_lookup_value(raw_text)
-        try:
-            with self._engine.connect() as connection:
-                name_rows = connection.execute(
+        lookup_keys = set(entity_lookup_keys(raw_text, "product"))
+        with self._engine.connect() as connection:
+            name_rows = connection.execute(
+                select(canonical_products).where(
+                    canonical_products.c.dataset_snapshot
+                    == self._snapshot_date,
+                    or_(
+                        canonical_products.c.normalized_product_name
+                        .in_(lookup_keys),
+                        canonical_products.c.normalized_short_name
+                        .in_(lookup_keys),
+                    ),
+                )
+            ).mappings().all()
+            identifier_rows = connection.execute(
+                select(
+                    product_identifiers.c.canonical_product_id,
+                    product_identifiers.c.identifier_type,
+                    product_identifiers.c.identifier_value,
+                ).where(
+                    product_identifiers.c.dataset_snapshot
+                    == self._snapshot_date,
+                    product_identifiers.c.normalized_value == normalized,
+                )
+            ).mappings().all()
+            identifier_by_id = {
+                row["canonical_product_id"]: row for row in identifier_rows
+            }
+            name_by_id = {
+                row["canonical_product_id"]: row for row in name_rows
+            }
+            missing_ids = set(identifier_by_id) - set(name_by_id)
+            if missing_ids:
+                extra_rows = connection.execute(
                     select(canonical_products).where(
                         canonical_products.c.dataset_snapshot
                         == self._snapshot_date,
-                        or_(
-                            canonical_products.c.normalized_product_name
-                            == normalized,
-                            canonical_products.c.normalized_short_name
-                            == normalized,
+                        canonical_products.c.canonical_product_id.in_(
+                            missing_ids
                         ),
                     )
-                ).mappings().all()
-                identifier_rows = connection.execute(
-                    select(
-                        product_identifiers.c.canonical_product_id,
-                        product_identifiers.c.identifier_type,
-                        product_identifiers.c.identifier_value,
-                    ).where(
-                        product_identifiers.c.dataset_snapshot
-                        == self._snapshot_date,
-                        product_identifiers.c.normalized_value == normalized,
-                    )
-                ).mappings().all()
-                identifier_by_id = {
-                    row["canonical_product_id"]: row for row in identifier_rows
-                }
-                name_by_id = {
-                    row["canonical_product_id"]: row for row in name_rows
-                }
-                missing_ids = set(identifier_by_id) - set(name_by_id)
-                if missing_ids:
-                    extra_rows = connection.execute(
-                        select(canonical_products).where(
-                            canonical_products.c.dataset_snapshot
-                            == self._snapshot_date,
-                            canonical_products.c.canonical_product_id.in_(
-                                missing_ids
-                            ),
-                        )
-                    ).mappings()
-                    name_by_id.update(
-                        {row["canonical_product_id"]: row for row in extra_rows}
-                    )
-        except SQLAlchemyError:
-            raise
-
+                ).mappings()
+                name_by_id.update(
+                    {row["canonical_product_id"]: row for row in extra_rows}
+                )
         matches: list[EntityLookupMatch] = []
         for canonical_id in sorted(name_by_id):
             row = name_by_id[canonical_id]
             identifier = identifier_by_id.get(canonical_id)
-            official_match = row["normalized_product_name"] == normalized
-            short_match = row["normalized_short_name"] == normalized
+            official_match = row["normalized_product_name"] in lookup_keys
+            short_match = row["normalized_short_name"] in lookup_keys
             if official_match:
                 matched_alias = row["product_name"]
                 identifier_type = "official_name"
@@ -117,12 +121,23 @@ class RDBEntityLookup:
                     ),
                     matched_alias=matched_alias,
                     identifier_type=identifier_type,
+                    match_method=(
+                        "IDENTIFIER_MATCH"
+                        if identifier is not None and not official_match and not short_match
+                        else "EXACT_CANONICAL"
+                        if official_match and row["normalized_product_name"] == normalized
+                        else "EXACT_ALIAS"
+                        if short_match and row["normalized_short_name"] == normalized
+                        else "NORMALIZED_EXACT"
+                    ),
+                    normalized_form=normalized_entity_form(raw_text, "product"),
                 )
             )
         return matches
 
     def _lookup_fund_sync(self, raw_text: str) -> list[EntityLookupMatch]:
         normalized = normalize_lookup_value(raw_text)
+        lookup_keys = set(entity_lookup_keys(raw_text, "fund"))
         with self._engine.connect() as connection:
             rows = connection.execute(
                 select(
@@ -134,9 +149,9 @@ class RDBEntityLookup:
             matches = [
                 row
                 for row in rows
-                if normalize_lookup_value(str(row["fund_name"])) == normalized
+                if normalize_lookup_value(str(row["fund_name"])) in lookup_keys
                 or normalize_lookup_value(str(row["source_fund_id"]))
-                == normalized
+                in lookup_keys
             ]
         return [
             EntityLookupMatch(
@@ -148,20 +163,29 @@ class RDBEntityLookup:
                 ),
                 matched_alias=(
                     row["fund_name"]
-                    if normalize_lookup_value(str(row["fund_name"])) == normalized
+                    if normalize_lookup_value(str(row["fund_name"])) in lookup_keys
                     else row["source_fund_id"]
                 ),
                 identifier_type=(
                     "official_name"
-                    if normalize_lookup_value(str(row["fund_name"])) == normalized
+                    if normalize_lookup_value(str(row["fund_name"])) in lookup_keys
                     else "source_fund_id"
                 ),
+                match_method=(
+                    "EXACT_CANONICAL"
+                    if normalize_lookup_value(str(row["fund_name"])) == normalized
+                    else "NORMALIZED_EXACT"
+                    if normalize_lookup_value(str(row["fund_name"])) in lookup_keys
+                    else "IDENTIFIER_MATCH"
+                ),
+                normalized_form=normalized_entity_form(raw_text, "fund"),
             )
             for row in sorted(matches, key=lambda item: item["fund_id"])
         ]
 
     def _lookup_manager_sync(self, raw_text: str) -> list[EntityLookupMatch]:
         normalized = normalize_lookup_value(raw_text)
+        lookup_keys = set(entity_lookup_keys(raw_text, "management_company"))
         with self._engine.connect() as connection:
             exchange_rows = connection.execute(
                 select(
@@ -182,7 +206,7 @@ class RDBEntityLookup:
             candidates: dict[str, EntityLookupMatch] = {}
             for row in exchange_rows:
                 label = str(row["label"])
-                if normalize_lookup_value(label) != normalized:
+                if normalize_lookup_value(label) not in lookup_keys:
                     continue
                 source = str(row["source_dataset"])
                 canonical_id = source_scoped_name_id(
@@ -196,10 +220,18 @@ class RDBEntityLookup:
                     ),
                     matched_alias=label,
                     identifier_type="source_scoped_exact_name",
+                    match_method=(
+                        "EXACT_CANONICAL"
+                        if normalize_lookup_value(label) == normalized
+                        else "NORMALIZED_EXACT"
+                    ),
+                    normalized_form=normalized_entity_form(
+                        raw_text, "management_company"
+                    ),
                 )
             for row in fund_rows:
                 code = str(row["code"])
-                if normalize_lookup_value(code) != normalized:
+                if normalize_lookup_value(code) not in lookup_keys:
                     continue
                 canonical_id = explicit_source_id(
                     "asset_manager", "public_fund", code
@@ -213,5 +245,9 @@ class RDBEntityLookup:
                     ),
                     matched_alias=code,
                     identifier_type="external_institution_code",
+                    match_method="IDENTIFIER_MATCH",
+                    normalized_form=normalized_entity_form(
+                        raw_text, "management_company"
+                    ),
                 )
         return [candidates[key] for key in sorted(candidates)]

@@ -283,14 +283,34 @@ class QualityAwareEvidenceValidator:
             if entity.resolution_status is ResolutionStatus.UNRESOLVED
         ]
         if unresolved:
-            findings.append(
-                ValidationFinding(
-                    code=AnswerabilityReasonCode.ENTITY_NOT_FOUND,
+            unresolved_alias = [
+                item
+                for item in unresolved
+                if item.resolution_reason == "ENTITY_UNRESOLVED"
+            ]
+            parse_failed = [
+                item
+                for item in unresolved
+                if item.resolution_reason == "ENTITY_PARSE_FAILED"
+            ]
+            not_found = [
+                item
+                for item in unresolved
+                if item not in unresolved_alias and item not in parse_failed
+            ]
+            for code, mentions in (
+                (AnswerabilityReasonCode.ENTITY_PARSE_FAILED, parse_failed),
+                (AnswerabilityReasonCode.ENTITY_UNRESOLVED, unresolved_alias),
+                (AnswerabilityReasonCode.ENTITY_NOT_FOUND, not_found),
+            ):
+                if not mentions:
+                    continue
+                findings.append(ValidationFinding(
+                    code=code,
                     severity=FindingSeverity.BLOCKING,
                     message="The requested entity could not be resolved.",
-                    metadata={"raw_mentions": [item.raw_text for item in unresolved]},
-                )
-            )
+                    metadata={"raw_mentions": [item.raw_text for item in mentions]},
+                ))
         ambiguous = [
             entity
             for entity in query.resolved_entities

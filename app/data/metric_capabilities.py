@@ -30,6 +30,9 @@ class ComparisonContract:
     value_basis: str | None = None
     adjustment_semantics: str | None = None
     missing_value_semantics: str = "preserve NULL; never coerce to zero"
+    comparison_kind: str = "numeric_metric"
+    ordered_values: tuple[str, ...] = ()
+    answer_disclosure: str | None = None
 
     def as_plan_input(self) -> dict[str, Any]:
         return asdict(self)
@@ -73,15 +76,67 @@ PREF02_EXPENSE = ComparisonContract(
     "PREF02 expense-ratio scale is not defined by the source contract",
     source_field="cu_charge_rt",
 )
-PREF01_ONE_YEAR_RETURN = ComparisonContract(
-    "ONE_YEAR_RETURN", "product.one_year_return", "PREF01N001",
-    "ExchangeTradedProduct", "PERCENT", "SOURCE_PERCENT", None,
-    "du_upt_dt daily source update date in READY snapshot", False, True, False,
-    source_field="du_er_1y", exact_period="1Y",
-    percentage_representation="percentage points as supplied; no rescaling",
-    value_basis="source-defined ETP return basis",
-    adjustment_semantics="not stated; comparison restricted to PREF01N001",
+
+
+def _pref01_return_contract(
+    metric: str,
+    canonical_field: str,
+    source_field: str,
+    period: str,
+) -> ComparisonContract:
+    return ComparisonContract(
+        metric,
+        canonical_field,
+        "PREF01N001",
+        "ExchangeTradedProduct",
+        "PERCENT",
+        "SOURCE_PERCENT",
+        None,
+        (
+            "du_upt_dt daily source update date in READY snapshot; "
+            "undated observations are not rankable"
+        ),
+        False,
+        True,
+        False,
+        source_field=source_field,
+        exact_period=period,
+        percentage_representation="percentage points as supplied; no rescaling",
+        value_basis="source-defined ETP return basis",
+        adjustment_semantics="not stated; comparison restricted to PREF01N001",
+    )
+
+
+PREF01_ONE_DAY_RETURN = _pref01_return_contract(
+    "ONE_DAY_RETURN", "product.one_day_return", "du_er_1d", "1D"
 )
+PREF01_ONE_MONTH_RETURN = _pref01_return_contract(
+    "ONE_MONTH_RETURN", "product.one_month_return", "du_er_1m", "1M"
+)
+PREF01_THREE_MONTH_RETURN = _pref01_return_contract(
+    "THREE_MONTH_RETURN", "product.three_month_return", "du_er_3m", "3M"
+)
+PREF01_SIX_MONTH_RETURN = _pref01_return_contract(
+    "SIX_MONTH_RETURN", "product.six_month_return", "du_er_6m", "6M"
+)
+PREF01_ONE_YEAR_RETURN = _pref01_return_contract(
+    "ONE_YEAR_RETURN", "product.one_year_return", "du_er_1y", "1Y"
+)
+PREF01_YEAR_TO_DATE_RETURN = _pref01_return_contract(
+    "YEAR_TO_DATE_RETURN", "product.year_to_date_return", "du_er_ytd", "YTD"
+)
+
+PREF01_RETURN_CONTRACTS = {
+    item.canonical_field: item
+    for item in (
+        PREF01_ONE_DAY_RETURN,
+        PREF01_ONE_MONTH_RETURN,
+        PREF01_THREE_MONTH_RETURN,
+        PREF01_SIX_MONTH_RETURN,
+        PREF01_ONE_YEAR_RETURN,
+        PREF01_YEAR_TO_DATE_RETURN,
+    )
+}
 PREF02_ONE_YEAR_RETURN = ComparisonContract(
     "ONE_YEAR_RETURN", "product.one_year_return", "PREF02N001",
     "ExchangeTradedProduct", None, None, None,
@@ -125,6 +180,35 @@ PRBD_PURCHASABLE_BOND = ComparisonContract(
     ),
 )
 
+RISK_GRADE_ORDER = ComparisonContract(
+    "RISK_GRADE_ORDER",
+    "product.risk_grade",
+    "PRBD01N001+PREF01N001+PRFD01N001",
+    "FinancialProduct",
+    "ORDINAL",
+    "TEAM_ONTOLOGY_RISK_GRADE_V1",
+    None,
+    "READY canonical_v2 snapshot classification",
+    False,
+    True,
+    True,
+    source_field=(
+        "PRBD/PREF01 pd_risk_nm; PRFD zrin_fd_ivst_risk_grd_nm"
+    ),
+    comparison_kind="ordered_vocabulary",
+    # Ascending means lower risk first.  RiskGrade.6 is the ontology's
+    # lowest-risk grade, while RiskGrade.1 is the highest-risk grade.
+    ordered_values=(
+        "RiskGrade.6",
+        "RiskGrade.5",
+        "RiskGrade.4",
+        "RiskGrade.3",
+        "RiskGrade.2",
+        "RiskGrade.1",
+    ),
+    answer_disclosure="제공 데이터의 온톨로지 위험등급(낮은 위험 우선) 기준",
+)
+
 
 CROSS_PRODUCT_RETURN_CONTRACTS = (
     CrossProductComparisonContract(
@@ -156,11 +240,47 @@ class MetricCapabilityRegistry:
 
     contracts = (
         PREF01_AUM, PREF02_AUM, PREF01_EXPENSE, PREF02_EXPENSE,
-        PREF01_ONE_YEAR_RETURN, PREF02_ONE_YEAR_RETURN,
+        *PREF01_RETURN_CONTRACTS.values(), PREF02_ONE_YEAR_RETURN,
         ISHARES_SCOPED_ONE_YEAR_RETURN, PRFD_SHARE_CLASS_ONE_YEAR_RETURN,
         PRBD_CREDIT_RATING,
         PRBD_PURCHASABLE_BOND,
+        RISK_GRADE_ORDER,
     )
+
+    # A default is a reviewed domain policy, not an LLM guess.  Explicit
+    # periods always bypass this map because they already ground directly to
+    # their concrete canonical field.
+    default_comparable_metrics = {
+        "product.return": "product.one_year_return",
+    }
+    return_default_period = "1Y"
+    natural_metric_aliases = {
+        "수익률": "product.return",
+        "return": "product.return",
+        "1d 수익률": "product.one_day_return",
+        "1일 수익률": "product.one_day_return",
+        "1m 수익률": "product.one_month_return",
+        "1개월 수익률": "product.one_month_return",
+        "3m 수익률": "product.three_month_return",
+        "3개월 수익률": "product.three_month_return",
+        "6m 수익률": "product.six_month_return",
+        "6개월 수익률": "product.six_month_return",
+        "1y 수익률": "product.one_year_return",
+        "1년 수익률": "product.one_year_return",
+        "연 수익률": "product.one_year_return",
+        "ytd 수익률": "product.year_to_date_return",
+        "연초 이후 수익률": "product.year_to_date_return",
+    }
+
+    @classmethod
+    def canonical_metric_alias(cls, raw: str) -> str | None:
+        return cls.natural_metric_aliases.get(raw.strip().casefold())
+
+    @classmethod
+    def default_metric(cls, canonical_field: str | None) -> str | None:
+        if canonical_field is None:
+            return None
+        return cls.default_comparable_metrics.get(canonical_field, canonical_field)
 
     credit_rating_order = {
         value: rank
@@ -186,10 +306,15 @@ class MetricCapabilityRegistry:
         )
         if canonical_field == "product.expense_ratio":
             return None, "expense_ratio_scale_unverified"
-        if canonical_field == "product.one_year_return":
+        if canonical_field == "product.risk_grade":
+            return RISK_GRADE_ORDER, None
+        if canonical_field in PREF01_RETURN_CONTRACTS:
             if universe == ("DomesticETF",) or provider_union:
-                return PREF01_ONE_YEAR_RETURN, None
-            if universe == ("ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",):
+                return PREF01_RETURN_CONTRACTS[canonical_field], None
+            if (
+                canonical_field == "product.one_year_return"
+                and universe == ("ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",)
+            ):
                 return ISHARES_SCOPED_ONE_YEAR_RETURN, None
             if set(universe) == {
                 "KODEX_LONG_ONLY_COMPATIBLE",
@@ -197,11 +322,12 @@ class MetricCapabilityRegistry:
                 "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",
             }:
                 return None, "domestic_vs_ishares_return_basis_not_comparable"
+            period = PREF01_RETURN_CONTRACTS[canonical_field].exact_period
             if "PublicFund" in universe or "Fund" in universe:
-                return None, "public_fund_one_year_return_is_share_class_grain_only"
+                return None, f"public_fund_return_{period}_not_comparable_at_fund_grain"
             if "ForeignETF" in universe or "ETF" in universe:
-                return None, "foreign_etf_one_year_return_unavailable"
-            return None, "one_year_return_product_scope_not_verified"
+                return None, f"foreign_etf_return_{period}_unavailable_or_incompatible"
+            return None, f"return_{period}_product_scope_not_verified"
         if canonical_field != "product.aum":
             return None, f"ordered_comparison_not_supported:{canonical_field}"
 
@@ -229,6 +355,31 @@ class MetricCapabilityRegistry:
             "연수익률": "product.one_year_return",
             "1년 수익률": "product.one_year_return",
             "1년수익률": "product.one_year_return",
+            "1y 수익률": "product.one_year_return",
+            "1y수익률": "product.one_year_return",
+            "1d 수익률": "product.one_day_return",
+            "1d수익률": "product.one_day_return",
+            "1일 수익률": "product.one_day_return",
+            "1일수익률": "product.one_day_return",
+            "1m 수익률": "product.one_month_return",
+            "1m수익률": "product.one_month_return",
+            "1개월 수익률": "product.one_month_return",
+            "1개월수익률": "product.one_month_return",
+            "3m 수익률": "product.three_month_return",
+            "3m수익률": "product.three_month_return",
+            "3개월 수익률": "product.three_month_return",
+            "3개월수익률": "product.three_month_return",
+            "6m 수익률": "product.six_month_return",
+            "6m수익률": "product.six_month_return",
+            "6개월 수익률": "product.six_month_return",
+            "6개월수익률": "product.six_month_return",
+            "ytd 수익률": "product.year_to_date_return",
+            "ytd수익률": "product.year_to_date_return",
+            "연초 이후 수익률": "product.year_to_date_return",
+            "연초이후수익률": "product.year_to_date_return",
+            "수익률": "product.one_year_return",
+            "위험": "product.risk_grade",
+            "위험등급": "product.risk_grade",
         }
         for index, item in enumerate(sort_items):
             field = item.get("canonical_field") if isinstance(item, dict) else None
@@ -255,7 +406,42 @@ class MetricCapabilityRegistry:
                 if reason:
                     unsupported_reasons.append(reason)
             else:
-                contracts.append(contract.as_plan_input())
+                plan_contract = contract.as_plan_input()
+                raw_field = str(item.get("raw", {}).get("field", ""))
+                if field in PREF01_RETURN_CONTRACTS or (
+                    field == "product.one_year_return"
+                    and contract is ISHARES_SCOPED_ONE_YEAR_RETURN
+                ):
+                    default_applied = raw_field.strip().casefold() in {
+                        "수익률", "return"
+                    }
+                    plan_contract["metric_resolution"] = {
+                        "status": (
+                            "RESOLVABLE_UNDERSPECIFICATION"
+                            if default_applied else "EXPLICIT_PERIOD"
+                        ),
+                        "policy": (
+                            f"RETURN.default_period={self.return_default_period}"
+                            if default_applied else "query_explicit_period"
+                        ),
+                        "requested_phrase": raw_field,
+                        "resolved_metric": field,
+                        "metric": "RETURN",
+                        "period": contract.exact_period,
+                        "period_source": (
+                            "DEFAULT_POLICY" if default_applied else "EXPLICIT_QUERY"
+                        ),
+                        **(
+                            {
+                                "disclosure": (
+                                    "기간이 별도로 지정되지 않아 1년 수익률을 "
+                                    "기준으로 비교했습니다."
+                                )
+                            }
+                            if default_applied else {}
+                        ),
+                    }
+                contracts.append(plan_contract)
 
         if prepared.get("top_n") is not None and not sort_items:
             if prepared.get("limit_constraint_id"):
