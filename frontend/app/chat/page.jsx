@@ -253,6 +253,14 @@ export default function ChatPage() {
     }
   }
 
+  function handleQuestionKeyDown(event) {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key !== "Enter" || event.shiftKey) return;
+
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+
   const isIntro = messages.length === 1;
   const recentChats = messages
     .filter((message) => message.role === "user")
@@ -328,6 +336,7 @@ export default function ChatPage() {
               rows={1}
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
+              onKeyDown={handleQuestionKeyDown}
               placeholder="Finory에게 금융 상품에 대해 물어보세요"
               autoComplete="off"
               className="h-[50px] max-h-[180px] w-full resize-none overflow-hidden border-0 px-0 py-[13px] text-base leading-6 text-finory-text outline-none placeholder:text-[#878e88] max-[560px]:h-11 max-[560px]:py-2.5 max-[560px]:text-[15px]"
