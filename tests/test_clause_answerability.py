@@ -35,7 +35,7 @@ def _record(field, value, *, entity_id=_TIGER_SP500.canonical_id):
         })
 
 
-def _answer(question, records, *, entities=None):
+def _answer(question, records, *, entities=None, answer_generator=None):
     calls = []
     class Executor:
         async def execute(self, plan):
@@ -49,7 +49,7 @@ def _answer(question, records, *, entities=None):
     service._planner = _planner()
     service._evidence_builder = GenericEvidenceBuilder()
     service._evidence_validator = QualityAwareEvidenceValidator(StaticFieldQualityProvider())
-    service._answer_generator = DeterministicEvidenceAnswerGenerator()
+    service._answer_generator = answer_generator or DeterministicEvidenceAnswerGenerator()
     result = asyncio.run(service.answer(question))
     return result, json.loads(result.think_trace), calls, llm
 
@@ -75,6 +75,126 @@ def test_three_output_lookup_provides_two_facts_and_discloses_missing_risk():
     assert "PARTIALLY_ANSWERABLE" in result.retrieved_context
 
 
+@pytest.mark.parametrize("outputs, expected_state, expected_cells", [
+    ("AUM과 최근 6개월 수익률", "FULLY_ANSWERABLE", {
+        "product.aum": "SATISFIED", "product.six_month_return": "SATISFIED",
+    }),
+    ("위험등급", "UNANSWERABLE", {"product.risk_grade": "MISSING"}),
+    ("AUM과 최근 6개월 수익률과 위험등급", "PARTIALLY_ANSWERABLE", {
+        "product.aum": "SATISFIED", "product.six_month_return": "SATISFIED", "product.risk_grade": "MISSING",
+    }),
+    ("AUM, 최근 6개월 수익률, 위험등급", "PARTIALLY_ANSWERABLE", {
+        "product.aum": "SATISFIED", "product.six_month_return": "SATISFIED", "product.risk_grade": "MISSING",
+    }),
+])
+def test_production_risk_projection_wording_preserves_verified_outputs(outputs, expected_state, expected_cells):
+    class RejectGeneratedAnswer:
+        async def generate(self, *args):
+            raise AssertionError("missing/partial risk output must bypass the configured generator")
+
+    question = f"TIGER 미국S&P500 ETF의 {outputs}을 알려줘"
+    records = [] if outputs == "위험등급" else [
+        _record("product.aum", "20158825743000"),
+        _record("product.six_month_return", "6.46"),
+    ]
+    result, trace, calls, llm = _answer(
+        question, records,
+        answer_generator=RejectGeneratedAnswer() if expected_state != "FULLY_ANSWERABLE" else None,
+    )
+    assert len(calls) == 1 and llm.calls == 0
+    step = calls[0].steps[0]
+    assert step.source == "rdb"
+    assert step.inputs["entity_ids"] == [_TIGER_SP500.canonical_id]
+    assert set(step.inputs["requested_fields"]) == set(expected_cells)
+    assert not step.inputs.get("sort") and not step.inputs.get("comparison")
+    validation = trace["validation_summary"]
+    assert validation["answerability"] == expected_state
+    assert validation["answerable"] is (expected_state != "UNANSWERABLE")
+    assert validation["comparison_completed"] is False
+    cells = validation["clauses"]
+    assert {cell["field"]: cell["status"] for cell in cells} == expected_cells
+    for cell in cells:
+        assert cell["entity_id"] == _TIGER_SP500.canonical_id
+        if cell["status"] == "SATISFIED":
+            assert cell["evidence_indices"]
+            assert all(records[index].payload["field"] == cell["field"] for index in cell["evidence_indices"])
+        else:
+            assert cell["evidence_indices"] == []
+    assert trace["llm_call_summary"]["semantic_parser_calls"] == 0
+    if expected_state != "FULLY_ANSWERABLE":
+        assert trace["llm_call_summary"]["answer_generation_calls"] == 0
+    if records:
+        assert "20158825743000" in result.answer and "6.46%" in result.answer
+    if expected_state == "PARTIALLY_ANSWERABLE":
+        assert "확인 가능한 정보" in result.answer
+        assert "위험등급: 현재 데이터에서 확인할 수 없음" in result.answer
+    assert all(text not in result.answer for text in ["RiskGrade.2", "중간 위험", "낮은 위험", "높은 위험", "1~5", "1~6"])
+
+
+def test_risk_grade_literal_is_an_output_not_an_implicit_graph_relation():
+    from app.planning.output_requirements import prepare_outputs
+    parsed, _, grounded, plan = asyncio.run(_tiger_plan(
+        "TIGER 미국S&P500 ETF의 AUM, 최근 6개월 수익률, 위험등급을 알려줘",
+    ))
+    assert parsed.requested_fields == ["AUM", "6개월 수익률", "위험등급"]
+    assert not parsed.relations and not grounded.grounded_relations
+    assert not parsed.filters and not parsed.sort
+    before = grounded.model_dump(mode="json")
+    prepared = prepare_outputs(grounded)
+    StructuredQueryPlanValidator(RoutingMetadataRegistry()).validate(plan, grounded)
+    assert grounded.model_dump(mode="json") == before
+    assert prepared.query is not grounded and not prepared.disclosures
+    assert not plan.output_disclosures  # Absence of a value is decided by evidence after execution.
+    plan.steps[0].inputs["requested_fields"].remove("product.risk_grade")
+    with pytest.raises(QueryPlanValidationError):
+        StructuredQueryPlanValidator(RoutingMetadataRegistry()).validate(plan, grounded)
+
+
+def test_risk_grade_literal_with_a_value_remains_value_only():
+    result, trace, calls, _ = _answer("TIGER 미국S&P500 ETF의 위험등급을 알려줘",
+                                    [_record("product.risk_grade", "RiskGrade.2")])
+    assert len(calls) == 1
+    assert trace["validation_summary"]["answerability"] == "FULLY_ANSWERABLE"
+    assert "RiskGrade.2" in result.answer
+    assert all(text not in result.answer for text in ["중간 위험", "낮은 위험", "높은 위험", "1~5", "1~6"])
+
+
+@pytest.mark.parametrize("question", [
+    "위험등급 1등급인 ETF를 알려줘",
+    "국내 ETF 중 위험등급이 낮은 상위 3개를 알려줘",
+    "TIGER 미국S&P500 ETF의 위험등급과 비밀지표를 알려줘",
+])
+def test_risk_projection_fix_cannot_drop_selection_or_unknown_material(question):
+    result, trace, calls, _ = _answer(question, [_record("product.risk_grade", "RiskGrade.2")])
+    assert not calls and "RiskGrade.2" not in result.answer
+    assert trace["validation_summary"]["answerability"] == "UNANSWERABLE"
+
+
+def test_partial_risk_projection_keeps_five_string_api_response():
+    from fastapi.testclient import TestClient
+    from app.agent.service import get_answer_service
+    from app.main import create_app
+
+    question = "TIGER 미국S&P500 ETF의 AUM, 최근 6개월 수익률, 위험등급을 알려줘"
+    result, trace, _, _ = _answer(question, [
+        _record("product.aum", "20158825743000"), _record("product.six_month_return", "6.46"),
+    ])
+    assert trace["validation_summary"]["answerability"] == "PARTIALLY_ANSWERABLE"
+    class CompletedPipeline:
+        async def answer(self, question):
+            return result
+
+    application = create_app()
+    application.dependency_overrides[get_answer_service] = CompletedPipeline
+    with TestClient(application) as client:
+        response = client.get("/answer", params={"question_id": "risk-partial", "question": question})
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"question_id", "question", "retrieved_context", "think_trace", "answer"}
+    assert all(isinstance(value, str) for value in body.values())
+    assert body["answer"] == result.answer
+
+
 @pytest.mark.parametrize("missing", ["XYZ ETF", "다른 미국 S&P500 ETF"])
 def test_partial_comparison_never_invents_entity_or_winner(missing):
     result, trace, calls, llm = _answer(
@@ -88,6 +208,10 @@ def test_partial_comparison_never_invents_entity_or_winner(missing):
     assert "비교는 완료하지 못" in result.answer
     assert trace["validation_summary"]["comparison_completed"] is False
     assert trace["validation_summary"]["answerability"] == "PARTIALLY_ANSWERABLE"
+    assert trace["llm_call_summary"]["answer_generation_calls"] == 0
+    if missing.startswith("다른"):
+        assert any(item["reason"] == "peer_selector_unverified"
+                   for item in trace["validation_summary"]["clauses"])
 
 
 def test_peer_is_a_selector_and_never_reaches_entity_lookup():

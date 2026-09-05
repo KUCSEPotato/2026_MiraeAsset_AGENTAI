@@ -1199,8 +1199,10 @@ class RuleBasedQueryAnalyzer:
             ("운용사", RelationDirection.OUTGOING),
             ("발행사", RelationDirection.OUTGOING),
             ("표시통화", RelationDirection.OUTGOING),
-            ("위험등급", RelationDirection.OUTGOING),
         )
+        # Bare risk-grade mentions are requested fields, not implicit Graph
+        # traversals. Explicit grade targets are preserved by target_patterns
+        # above and remain subject to the risk selection capability gate.
         results = [(start, item) for start, _, item in target_results]
         occupied = [span for _, span, _ in target_results]
         for alias, direction in aliases:
