@@ -80,7 +80,7 @@ class RuleBasedQueryAnalyzer:
         "운용규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
         "위험 정보", "위험정보", "위험등급", "위험도", "리스크", "위험",
         "기준가격", "NAV", "가격", "티커",
-        "ticker", "ISIN", "신용등급",
+        "ticker", "ISIN", "신용등급", "편입 비중", "보유 비중",
     )
     _ranking_field_aliases = (*_field_aliases, "수익률", "위험")
     _semantic_markers = (
@@ -97,7 +97,7 @@ class RuleBasedQueryAnalyzer:
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "설명해줘", "설명해주세요", "대해", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
-        "종목", "종목을", "순으로",
+        "종목", "종목을", "순으로", "찾고", "각각의", "각각", "도",
         "TOP", "top",
     }
 
@@ -230,8 +230,13 @@ class RuleBasedQueryAnalyzer:
 
         for index, value in enumerate(requested_fields):
             start, end = self._requested_field_span(question, value)
+            path_weight = value in {"편입 비중", "보유 비중"}
             add(start, end, ConstraintSemanticType.REQUESTED_FIELD,
-                payload={"field": value}, ref=("requested_field", index))
+                payload={"field": value, **({"projection_scope": "path", "relation": "holds",
+                                            "property": "weight"} if path_weight else {})},
+                ref=("requested_field", index),
+                status=ConstraintStatus.UNSUPPORTED if path_weight else ConstraintStatus.PARSED,
+                reason="holdings_weight_projection_unavailable" if path_weight else None)
 
         for index, item in enumerate(entities):
             start, end = _find_span(question, item.raw_text)
@@ -759,6 +764,18 @@ class RuleBasedQueryAnalyzer:
 
     def _extract_sort(self, question: str) -> tuple[list[SortSpec], list[range]]:
         found: list[tuple[int, SortSpec, range]] = []
+        # Preserve historical change as metric semantics, never as a current
+        # snapshot AUM ranking. Normalization marks the series unavailable.
+        historical = re.compile(
+            r"(?:최근\s*)?(?:\d+\s*(?:일|개월|년)|[136]M|1Y)\s*(?:동안\s*)?"
+            r"(AUM|순자산|운용규모)(?:이|가|은|는)?\s*"
+            r"(?:가장\s*)?(많이|크게|적게)\s*(?:증가한|감소한|변화한|늘어난|줄어든)",
+            re.IGNORECASE,
+        )
+        for match in historical.finditer(question):
+            found.append((match.start(), SortSpec(
+                field=match.group(1), direction="asc" if match.group(2) == "적게" else "desc",
+            ), range(match.start(), match.end())))
         adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
         for alias in sorted(self._ranking_field_aliases, key=len, reverse=True):
             # In return comparisons, ``최근`` qualifies the trailing-period
@@ -879,6 +896,9 @@ class RuleBasedQueryAnalyzer:
         if coordinated:
             return coordinated
         candidates: list[tuple[int, int, str, str]] = []
+        manager = self._management_collection_match(question)
+        if manager is not None:
+            candidates.append((manager.start(), manager.end(), manager.group(1).strip(), "management_company"))
         patterns = (
             (
                 r"^(.+?)\s+(?:펀드\s*)?클래스\s+정보(?:를)?\s*(?:알려줘|보여줘|조회)",
@@ -948,6 +968,23 @@ class RuleBasedQueryAnalyzer:
                               entity_type=entity_type)
                 for _, _, raw_text, entity_type in accepted]
 
+    def _management_collection_match(self, question: str):
+        """A collection prefix proposes a manager identity; resolver proves it."""
+        match = re.search(
+            r"^(.+?)\s+((?:(?:국내|해외)\s*)?(?:ETF|ETN|펀드|채권))\s*중(?:에서)?",
+            question, re.IGNORECASE,
+        )
+        if match is None:
+            return None
+        prefix = match.group(1).strip()
+        if self._is_structured_product_expression(prefix + " ETF"):
+            return None
+        # Existing provider scopes already have their own identity contract.
+        universe, scope_span = self._extract_product_universe(match.group())
+        if universe and scope_span and scope_span.start == match.start():
+            return None
+        return match
+
     @staticmethod
     def _coordinated_entity_mentions(question: str) -> list[EntityMention]:
         """Separate explicit entity lists; resolution still owns their identity."""
@@ -967,7 +1004,7 @@ class RuleBasedQueryAnalyzer:
     def _is_structured_product_expression(self, raw_text: str) -> bool:
         """Distinguish collection constraints from a named product prefix."""
         if self._find_aliases(raw_text, self._field_aliases) or re.search(
-            r"(?:편입한|편입된|보유한|추종하는|운용하는|발행한|\s중(?:에서)?\b)",
+            r"(?:편입한|편입된|보유한|추종하는|운용하는|발행한|상장된|상장한|\s중(?:에서)?\b)",
             raw_text,
             re.IGNORECASE,
         ):
@@ -1000,6 +1037,7 @@ class RuleBasedQueryAnalyzer:
         return not remainder
 
     def _extract_relations(self, question: str) -> list[RelationMention]:
+        manager = self._management_collection_match(question)
         chain = re.search(
             r"^(.+?)(?:이|가)\s*운용하는\s+(ETF|ETN).*?의\s*(기초지수|추종지수)",
             question, re.IGNORECASE,
@@ -1075,6 +1113,13 @@ class RuleBasedQueryAnalyzer:
              lambda value: value.removesuffix("등급")),
         )
         target_results: list[tuple[int, range, RelationMention]] = []
+        if manager is not None:
+            target = manager.group(1).strip()
+            target_results.append((manager.start(), range(manager.start(), manager.end()), RelationMention(
+                raw_text=question[manager.start(2):manager.end()], semantic_key="운용사",
+                direction=RelationDirection.OUTGOING, subject_type="FinancialProduct",
+                target_raw_text=target, target_type="AssetManager", target_value=target,
+            )))
         for pattern, alias, subject_type, target_type, normalize in target_patterns:
             for match in pattern.finditer(question):
                 if any(
@@ -1334,7 +1379,7 @@ class RuleBasedQueryAnalyzer:
             field_alias = {"aum": r"(?:순자산|AUM|운용규모)",
                            "expense_ratio": r"(?:총보수|보수율|운용보수)"}[item.field]
             match = re.search(field_alias + r".*?" + re.escape(item.value.raw)
-                              + r"\s*(?:이상|이하|초과|미만)",
+                              + r"\s*(?:이상|이하|초과|미만)(?:인)?",
                               question, re.IGNORECASE)
             if match is not None:
                 return match.start(), match.end()

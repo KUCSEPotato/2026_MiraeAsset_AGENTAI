@@ -51,7 +51,7 @@ class SemanticParserCoordinator:
             and rule_result.requires_semantic_search
             and bool(rule_result.semantic_terms)
         )
-        if _is_complete(rule_result) and not descriptive_fallback:
+        if (_is_complete(rule_result) or _is_understood_unsupported(rule_result)) and not descriptive_fallback:
             parsed = rule_result.model_copy(
                 update={
                     "parser_source": ParserSource.RULE,
@@ -134,6 +134,17 @@ def _is_complete(parsed: ParsedQuery) -> bool:
         and not parsed.unparsed_material_spans
         and not parsed.unsupported_constraint_ids
     )
+
+
+def _is_understood_unsupported(parsed: ParsedQuery) -> bool:
+    """Known material semantics belong to capability validation, not re-parsing."""
+    reasons = {item.unsupported_reason for item in parsed.semantic_constraints
+               if item.status.value == "unsupported"}
+    return bool(reasons) and not parsed.unparsed_material_spans and reasons <= {
+        "dataset_unit_mapping_unverified",
+        "historical_metric_series_unavailable",
+        "holdings_weight_projection_unavailable",
+    }
 
 
 def _rule_hint(parsed: ParsedQuery) -> dict[str, object]:

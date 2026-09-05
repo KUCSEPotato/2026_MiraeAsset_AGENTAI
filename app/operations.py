@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.hyperclova import sanitize_hyperclova_diagnostic
+
 
 @dataclass(frozen=True)
 class OperationalSettings:
@@ -61,6 +63,20 @@ class JsonLogFormatter(logging.Formatter):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = _redact(value) if isinstance(value, str) else value
+        # These diagnostics used to exist only on LogRecord and disappear from
+        # production JSON. Reconstruct the nested allowlist; never emit input,
+        # ctx, exception bodies, response bodies or request headers.
+        errors = getattr(record, "validation_errors", None)
+        if isinstance(errors, list):
+            payload["validation_errors"] = [
+                {"loc": [sanitize_hyperclova_diagnostic(part) for part in item.get("loc", [])[:20]],
+                 "type": sanitize_hyperclova_diagnostic(item.get("type")),
+                 "msg": sanitize_hyperclova_diagnostic(item.get("msg"))}
+                for item in errors[:20] if isinstance(item, dict)
+            ]
+        keys = getattr(record, "parsed_top_level_keys", None)
+        if isinstance(keys, list):
+            payload["parsed_top_level_keys"] = [sanitize_hyperclova_diagnostic(key) for key in keys[:50]]
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 

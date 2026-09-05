@@ -12,6 +12,9 @@ from uuid import uuid4
 import httpx
 
 from app.domain.models import EvidenceBundle, ValidationResult
+from app.evidence.answer import (
+    DeterministicEvidenceAnswerGenerator, answer_contract, satisfies_answer_contract,
+)
 from app.hyperclova import log_hyperclova_http_error
 
 
@@ -132,6 +135,9 @@ class HyperCLOVAEvidenceAnswerGenerator:
                         "있으면 자동 선택된 비교 기준을 답변에 명시하세요. "
                         "unit이 PERCENT인 관측값은 % 또는 퍼센트로 표현하세요. 퍼센티지 포인트는 "
                         "두 퍼센트 값의 차이를 설명할 때만 사용하세요."
+                        " answer_contract의 value_only_fields는 raw/display 값을 그대로 제시하세요. "
+                        "product.risk_grade의 숫자나 명칭에서 순서, 높음/중간/낮음의 상대 위험, "
+                        "1~5 또는 1~6 같은 등급 체계, 다른 위험등급과의 비교를 추론하지 마세요."
                     ),
                 },
                 {
@@ -164,7 +170,14 @@ class HyperCLOVAEvidenceAnswerGenerator:
             content = response.json()["result"]["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("empty answer")
-            return content.strip()
+            candidate = content.strip()
+            if answer_contract(evidence)["value_only_fields"]:
+                reference = await DeterministicEvidenceAnswerGenerator().generate(
+                    question, evidence, validation,
+                )
+                if not satisfies_answer_contract(candidate, reference, evidence):
+                    return reference
+            return candidate
         except httpx.HTTPStatusError as exc:
             log_hyperclova_http_error(
                 logger,
@@ -224,7 +237,7 @@ def _evidence_payload(evidence: EvidenceBundle) -> str:
             **({"text": item.text} if item.text and item.text != item.value else {}),
         })
     return json.dumps(
-        {"contexts": contexts, "records": records},
+        {"contexts": contexts, "records": records, "answer_contract": answer_contract(evidence)},
         ensure_ascii=False,
         separators=(",", ":"),
     )

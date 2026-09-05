@@ -44,6 +44,8 @@ class SemanticCapabilityValidator:
                 continue
             if hasattr(item, "raw_filter"):
                 raw = item.raw_filter
+                if field == "product.expense_ratio":
+                    errors.append("unsupported_comparison:expense_ratio_scale_unverified")
                 if "filter" not in mapping.operations:
                     errors.append(f"filter_capability_disabled:{field}")
                 if raw.operator.value == "contains" and field not in {
@@ -107,6 +109,9 @@ class SemanticCapabilityValidator:
             errors.append("temporal_snapshot_unsupported")
         if parsed.unparsed_material_spans:
             errors.append("unparsed_material_clause")
+        for constraint in parsed.semantic_constraints:
+            if constraint.unsupported_reason == "holdings_weight_projection_unavailable":
+                errors.append("unsupported_comparison:holdings_weight_projection_unavailable")
         if parsed.comparison and parsed.comparison.fields:
             grounded_raw = {item.raw_text for item in query.grounded_requested_fields}
             grounded_names = {item.canonical_field for item in query.grounded_requested_fields}

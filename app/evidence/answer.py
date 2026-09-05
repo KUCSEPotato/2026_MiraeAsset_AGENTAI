@@ -1,6 +1,27 @@
 from app.domain.models import EvidenceBundle, ValidationResult
 
 
+VALUE_ONLY_FIELDS = frozenset({"product.risk_grade"})
+
+
+def answer_contract(evidence: EvidenceBundle) -> dict:
+    """Field policies are application authority, never model/source metadata."""
+    fields = sorted({item.field for item in evidence.evidence} & VALUE_ONLY_FIELDS)
+    return {
+        "value_only_fields": fields,
+        "risk_grade_interpretation_allowed": False,
+        "risk_grade_ordering_allowed": False,
+        "risk_grade_scale_inference_allowed": False,
+        "risk_grade_comparison_allowed": False,
+    }
+
+
+def satisfies_answer_contract(candidate: str, reference: str, evidence: EvidenceBundle) -> bool:
+    # An unrestricted paraphrase cannot prove absence of an ordinal inference.
+    # For audited value-only facts admit only the evidence-derived rendering;
+    # do not try to enumerate every Korean/English hallucination with a regex.
+    return not answer_contract(evidence)["value_only_fields"] or candidate == reference
+
 _FIELD_LABELS = {
     "product.name": "상품명",
     "product.aum": "순자산",
@@ -35,7 +56,8 @@ class DeterministicEvidenceAnswerGenerator:
         lines: list[str] = []
         disclosures: list[str] = []
         for item in evidence.evidence:
-            for contract in item.metadata.get("comparison_contracts", []):
+            value_only = item.field in VALUE_ONLY_FIELDS
+            for contract in ([] if value_only else item.metadata.get("comparison_contracts", [])):
                 if not isinstance(contract, dict):
                     continue
                 resolution = contract.get("metric_resolution")
@@ -51,12 +73,12 @@ class DeterministicEvidenceAnswerGenerator:
             if value is None:
                 continue
             if (
-                item.metadata.get("metric_unit") == "PERCENT"
+                not value_only and item.metadata.get("metric_unit") == "PERCENT"
                 and item.value is not None
                 and not value.rstrip().endswith("%")
             ):
                 value = f"{value}%"
-            product = (
+            product = (item.entity_id or "상품") if value_only else (
                 item.metadata.get("product_name")
                 if item.field == "product.strategy_description"
                 else item.text
