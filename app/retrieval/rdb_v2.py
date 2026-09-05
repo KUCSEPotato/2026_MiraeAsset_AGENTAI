@@ -68,12 +68,14 @@ from app.domain.models import (
     RetrievalRecord,
     RetrievalResult,
     RetrievalSource,
+    StepExecutionStatus,
 )
 from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
 from app.retrieval.exceptions import (
     RDBQueryCompilationError,
     RetrieverUnavailableError,
     RetrievalError,
+    IncompleteCandidateSetError,
 )
 
 
@@ -85,6 +87,100 @@ class V2ResultGrain(str, Enum):
     FINANCIAL_PRODUCT = "financial_product"
     FUND_SHARE_CLASS = "fund_share_class"
     SALE_LOT = "sale_lot"
+
+
+def _verified_step(step: QueryStep) -> QueryStep:
+    from app.data.metric_capabilities import MetricCapabilityRegistry
+
+    try:
+        inputs = MetricCapabilityRegistry().verified_inputs(step.inputs)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RDBQueryCompilationError(str(exc)) from exc
+    return step.model_copy(update={"inputs": inputs})
+
+
+def _boolean_predicate_ids(expression) -> set[str]:
+    if not isinstance(expression, dict):
+        return set()
+    if expression.get("node_type") == "predicate":
+        return {expression["constraint_id"]}
+    return set().union(*[_boolean_predicate_ids(child) for child in expression.get("children", [])])
+
+
+def _has_boolean_or(expression) -> bool:
+    return isinstance(expression, dict) and (
+        expression.get("node_type") == "or"
+        or any(_has_boolean_or(child) for child in expression.get("children", []))
+    )
+
+
+def _bind_dependency_candidates(step: QueryStep, context: ExecutionContext) -> QueryStep:
+    from app.data.metric_capabilities import MetricCapabilityRegistry
+
+    dependencies = step.inputs.get("candidate_ids_from")
+    if dependencies is None:
+        return step
+    if not isinstance(dependencies, list) or not dependencies or any(
+        not isinstance(value, str) or value not in step.depends_on for value in dependencies
+    ) or len(dependencies) != len(set(dependencies)):
+        raise RDBQueryCompilationError("candidate dependencies must reference unique declared steps")
+    selected: set[str] | None = None
+    snapshots: list[dict[str, Any]] = []
+    for identifier in dependencies:
+        result = context.step_results.get(identifier)
+        if result is None or result.status is not StepExecutionStatus.SUCCESS:
+            raise IncompleteCandidateSetError("candidate dependency did not complete successfully")
+        metadata = result.retrieval_metadata
+        counts = metadata.get("counts", {})
+        complete = counts.get("candidate_set_complete") if isinstance(counts, dict) else None
+        total, returned = metadata.get("total_matches"), metadata.get("returned_count")
+        count_proves_complete = (
+            type(total) is int and type(returned) is int and 0 <= total <= returned
+            and returned <= len(result.records)
+        )
+        if complete not in (1, True) and not (complete is None and count_proves_complete):
+            raise IncompleteCandidateSetError("RDB composition requires a complete candidate set")
+        candidates: set[str] = set()
+        for record in result.records:
+            if not isinstance(record.entity_id, str) or not record.entity_id.strip():
+                raise RDBQueryCompilationError("candidate records require canonical entity IDs")
+            candidates.add(record.entity_id)
+            snapshots.append(record.metadata)
+        selected = candidates if selected is None else selected & candidates
+    explicit = step.inputs.get("entity_ids", [])
+    if not isinstance(explicit, list) or any(not isinstance(value, str) for value in explicit):
+        raise RDBQueryCompilationError("entity_ids must be canonical string IDs")
+    if explicit:
+        selected = (selected or set()) & set(explicit)
+    # Retain the scope proved by the original explicit identities when an
+    # upstream relation yields zero matches.  Empty never broadens the query
+    # and must not erase an already authorized metric contract either.
+    preserved_scope = MetricCapabilityRegistry._resolved_entity_universe(step.inputs)
+    return step.model_copy(update={"inputs": {
+        **step.inputs,
+        **({"product_universe": {"operation": "UNION", "operands": list(preserved_scope)}}
+           if preserved_scope and not step.inputs.get("product_universe") else {}),
+        "entity_ids": sorted(selected or set()),
+        "candidate_scope_bound": True,
+        "candidate_snapshot_metadata": snapshots,
+    }})
+
+
+def _validate_candidate_snapshots(step: QueryStep, snapshot: "V2SnapshotSelection") -> None:
+    for metadata in step.inputs.get("candidate_snapshot_metadata", []):
+        if not isinstance(metadata, dict):
+            raise V2SnapshotUnavailableError("candidate snapshot metadata is invalid")
+        identity = metadata.get("snapshot_identity")
+        observed = metadata.get("dataset_snapshot")
+        generation = metadata.get("generation", metadata.get("canonical_generation"))
+        if identity is not None and identity != snapshot.identity:
+            raise V2SnapshotUnavailableError("candidate and RDB snapshot identities differ")
+        if observed is not None and str(observed) != snapshot.snapshot_date.isoformat():
+            raise V2SnapshotUnavailableError("candidate and RDB snapshot dates differ")
+        if generation is not None and str(generation) != snapshot.generation:
+            raise V2SnapshotUnavailableError("candidate and RDB generations differ")
+        if identity is None and (observed is None or generation is None):
+            raise V2SnapshotUnavailableError("candidate snapshot identity is unavailable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,6 +605,10 @@ class CanonicalV2QueryCompiler:
             raise RDBQueryCompilationError(
                 f"unsupported canonical_v2 operation: {step.operation.value}"
             )
+        step = _verified_step(step)
+        if step.inputs.get("candidate_ids_from") is not None and step.inputs.get("candidate_scope_bound") is not True:
+            raise RDBQueryCompilationError("candidate dependencies must be bound before SQL compilation")
+        _validate_candidate_snapshots(step, snapshot)
         try:
             grain = V2ResultGrain(
                 step.inputs.get("result_grain", V2ResultGrain.FINANCIAL_PRODUCT.value)
@@ -561,13 +661,12 @@ class CanonicalV2QueryCompiler:
                 )
 
         ids = step.inputs.get("entity_ids", [])
-        if ids:
+        if ids or step.inputs.get("candidate_scope_bound") is True:
             if not isinstance(ids, list) or not all(isinstance(value, str) for value in ids):
                 raise RDBQueryCompilationError("entity_ids must be canonical string IDs")
             conditions.append(entity_id.in_(ids))
 
-        for item in step.inputs.get("filters", []):
-            conditions.append(self._compile_filter(item, entity_id, base, snapshot))
+        conditions.extend(self._compile_predicates(step.inputs, entity_id, base, snapshot))
         for item in step.inputs.get("relations", []):
             conditions.append(self._compile_relation(item, entity_id, snapshot))
 
@@ -576,14 +675,15 @@ class CanonicalV2QueryCompiler:
         requested = step.inputs.get("requested_fields", [])
         if not isinstance(requested, list):
             raise RDBQueryCompilationError("requested_fields must be a list")
-        projected = list(dict.fromkeys(requested or ["product.name"]))
+        comparison = step.inputs.get("comparison") or {}
+        projected = list(dict.fromkeys([*requested, *comparison.get("fields", [])] or ["product.name"]))
         for item in step.inputs.get("sort", []):
             if isinstance(item, dict) and item.get("canonical_field"):
                 projected.append(str(item["canonical_field"]))
         for item in step.inputs.get("filters", []):
             if not isinstance(item, dict):
                 continue
-            if item.get("raw", {}).get("operator") in {"gt", "gte", "lt", "lte"}:
+            if item.get("raw", {}).get("operator") in {"gt", "gte", "lt", "lte", "between"}:
                 field = item.get("canonical_field")
                 if field and self._fields.field(field).project_enabled:
                     projected.append(str(field))
@@ -671,6 +771,45 @@ class CanonicalV2QueryCompiler:
             result_grain=grain,
             ranking_applied=bool(order_expressions),
         )
+
+    def _compile_predicates(self, inputs, entity_id, base, snapshot):
+        filters = inputs.get("filters", [])
+        if not isinstance(filters, list):
+            raise RDBQueryCompilationError("filters must be a list")
+        compiled = [self._compile_filter(item, entity_id, base, snapshot) for item in filters]
+        expression = inputs.get("boolean_expression")
+        if expression is None:
+            return compiled
+        identifiers = inputs.get("filter_constraint_ids", [])
+        if not isinstance(identifiers, list) or len(identifiers) != len(filters):
+            raise RDBQueryCompilationError("Boolean predicates require aligned constraint IDs")
+        named = [identifier for identifier in identifiers if identifier is not None]
+        if any(not isinstance(identifier, str) or not identifier for identifier in named) or len(named) != len(set(named)):
+            raise RDBQueryCompilationError("Boolean predicate IDs must be unique strings")
+        by_id = {identifier: compiled[index] for index, identifier in enumerate(identifiers) if identifier is not None}
+        consumed: set[str] = set()
+
+        def visit(node, depth=0):
+            if not isinstance(node, dict) or depth > 32 or set(node) - {"node_type", "constraint_id", "children"}:
+                raise RDBQueryCompilationError("invalid Boolean expression")
+            kind = node.get("node_type")
+            children = node.get("children", [])
+            if not isinstance(children, list):
+                raise RDBQueryCompilationError("Boolean children must be a list")
+            if kind == "predicate":
+                identifier = node.get("constraint_id")
+                if children or not isinstance(identifier, str) or identifier not in by_id or identifier in consumed:
+                    raise RDBQueryCompilationError("unknown, duplicate or missing Boolean predicate")
+                consumed.add(identifier)
+                return by_id[identifier]
+            if kind not in {"and", "or"} or len(children) < 2 or node.get("constraint_id") is not None:
+                raise RDBQueryCompilationError("only structured AND/OR Boolean operators are supported")
+            return (and_ if kind == "and" else or_)(*[visit(child, depth + 1) for child in children])
+
+        tree = visit(expression)
+        # Explicit filters outside the tree are additional conjunctions, never
+        # omitted clauses. Anonymous legacy filters remain conjunctions too.
+        return [tree, *[value for identifier, value in zip(identifiers, compiled) if identifier not in consumed]]
 
     @staticmethod
     def _base(grain: V2ResultGrain, snapshot: V2SnapshotSelection):
@@ -770,11 +909,30 @@ class CanonicalV2QueryCompiler:
         value = item.get("canonical_value")
         if value is None:
             value = raw.get("value")
+        if operator.value == "contains":
+            if not isinstance(value, str) or not normalize_lookup_value(value) or mapping.kind not in {"entity", "alias", "identifier"}:
+                raise RDBQueryCompilationError("CONTAINS requires a verified textual identity field")
+            normalized = normalize_lookup_value(value)
+            if mapping.kind == "entity":
+                return base.c.normalized_preferred_name.contains(normalized, autoescape=True)
+            if mapping.kind == "alias":
+                return exists(select(1).where(
+                    entity_aliases.c.entity_id == entity_id,
+                    entity_aliases.c.normalized_alias.contains(normalized, autoescape=True),
+                ))
+            return exists(select(1).where(
+                entity_identifiers.c.entity_id == entity_id,
+                entity_identifiers.c.scheme_code == mapping.semantic_key,
+                func.lower(entity_identifiers.c.normalized_value).contains(normalized, autoescape=True),
+                entity_identifiers.c.validation_status == "VALIDATED",
+                entity_identifiers.c.resolution_status == "RESOLVED",
+                entity_identifiers.c.conflict_status == "NONE",
+            ))
         values = value if operator is FilterOperator.IN else [value]
         if operator is FilterOperator.IN and not isinstance(value, list):
             raise RDBQueryCompilationError("IN filter requires canonical values")
         ordered = {FilterOperator.GT, FilterOperator.GTE, FilterOperator.LT, FilterOperator.LTE}
-        if operator not in {FilterOperator.EQ, FilterOperator.NE, FilterOperator.IN, *ordered}:
+        if operator not in {FilterOperator.EQ, FilterOperator.NE, FilterOperator.IN, FilterOperator.BETWEEN, *ordered}:
             raise RDBQueryCompilationError(
                 f"operator {operator.value} is unsupported for canonical field {mapping.canonical_field}"
             )
@@ -782,14 +940,25 @@ class CanonicalV2QueryCompiler:
         if mapping.kind == "metric" and mapping.semantic_key == "CREDIT_RATING_ORDER":
             from app.data.metric_capabilities import MetricCapabilityRegistry
 
-            label = str(value).upper()
+            labels = value if isinstance(value, list) else [value]
             try:
-                threshold = MetricCapabilityRegistry.credit_rating_order[label]
+                thresholds = [MetricCapabilityRegistry.credit_rating_order[str(label).upper()] for label in labels]
             except KeyError as exc:
                 raise RDBQueryCompilationError("invalid credit rating") from exc
             metric_value = self._latest_metric_value(
                 entity_id, "CREDIT_RATING_ORDER", snapshot
             )
+            if operator is FilterOperator.IN:
+                if not isinstance(value, list) or not thresholds:
+                    raise RDBQueryCompilationError("credit rating IN requires values")
+                return metric_value.in_(thresholds)
+            if operator is FilterOperator.BETWEEN:
+                if not isinstance(value, list) or len(thresholds) != 2 or thresholds[0] > thresholds[1]:
+                    raise RDBQueryCompilationError("credit rating BETWEEN requires ascending bounds")
+                return metric_value.between(*thresholds)
+            if isinstance(value, list):
+                raise RDBQueryCompilationError("scalar credit rating operator requires one value")
+            threshold = thresholds[0]
             predicate = {
                 FilterOperator.GT: metric_value > threshold,
                 FilterOperator.GTE: metric_value >= threshold,
@@ -840,7 +1009,7 @@ class CanonicalV2QueryCompiler:
             if operator is not FilterOperator.EQ or value is not True:
                 raise RDBQueryCompilationError("latest fund price supports only eq true")
             return self._latest_fund_price_available(entity_id, snapshot)
-        if operator in ordered:
+        if operator in ordered or operator is FilterOperator.BETWEEN:
             raise RDBQueryCompilationError(
                 f"operator {operator.value} is unsupported for canonical field {mapping.canonical_field}"
             )
@@ -906,6 +1075,8 @@ class CanonicalV2QueryCompiler:
             metric_observations.c.subject_entity_id == entity_id,
             metric_observations.c.metric_code == metric_code,
             canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+            canonical_facts.c.resolution_status == "RESOLVED",
+            exists(select(1).where(fact_evidence_links.c.fact_id == canonical_facts.c.fact_id)),
             source_datasets.c.dataset_code.in_(
                 contract.get("datasets", [contract["dataset"]])
             ),
@@ -1553,7 +1724,7 @@ class CanonicalV2RDBRetriever:
     async def retrieve_with_result(
         self, step: QueryStep, context: ExecutionContext
     ) -> RetrievalResult:
-        del context
+        step = _bind_dependency_candidates(step, context)
         try:
             return await asyncio.to_thread(self._retrieve_sync, step)
         except (RDBQueryCompilationError, V2SnapshotUnavailableError):
@@ -1562,6 +1733,7 @@ class CanonicalV2RDBRetriever:
             raise RetrieverUnavailableError("canonical_v2 RDB retrieval failed") from exc
 
     def _retrieve_sync(self, step: QueryStep) -> RetrievalResult:
+        step = _verified_step(step)
         with self._engine.connect() as connection:
             snapshot = self._selector.select(connection)
             compiled = self._compiler.compile(step, snapshot)
@@ -1610,6 +1782,8 @@ class CanonicalV2RDBRetriever:
         # Preserve predicates (including IN/NE/ranges), never turn them into
         # equality facts inferred from a name or from the user's question.
         constraint_ids = step.inputs.get("filter_constraint_ids", [])
+        expression = step.inputs.get("boolean_expression")
+        represented = _boolean_predicate_ids(expression) if _has_boolean_or(expression) else set()
         constraint_matches = [
             {
                 "constraint_id": constraint_ids[index] if index < len(constraint_ids) else None,
@@ -1618,7 +1792,8 @@ class CanonicalV2RDBRetriever:
                 "value": item.get("canonical_value")
                 if item.get("canonical_value") is not None else item["raw"].get("value"),
                 "raw": item["raw"],
-                "satisfied": True,
+                "satisfied": None if (constraint_ids[index] if index < len(constraint_ids) else None) in represented else True,
+                **({"applied_in_expression": True} if (constraint_ids[index] if index < len(constraint_ids) else None) in represented else {}),
             }
             for index, item in enumerate(step.inputs.get("filters", []))
         ]
@@ -1657,11 +1832,16 @@ class CanonicalV2RDBRetriever:
                             "name_status": typed.name_status,
                             "matched_constraints": list(typed.matched_constraints),
                             "structured_constraint_matches": constraint_matches,
+                            **({
+                                "structured_boolean_expression": expression,
+                                "structured_boolean_satisfied": True,
+                            } if expression is not None else {}),
                             "canonical_fact_ids": list(typed.canonical_fact_ids),
                             "evidence_assertion_ids": list(typed.evidence_assertion_ids),
                             "source_record_ids": list(typed.source_record_ids),
                             "source_datasets": list(facts.get("dataset_codes", ())),
                             "snapshot_identity": typed.snapshot_identity,
+                            "generation": snapshot.generation,
                             "snapshot_ids": list(snapshot.snapshot_ids),
                             "dataset_snapshot": snapshot.snapshot_date.isoformat(),
                             "ranking_applied": compiled.ranking_applied,
@@ -1865,7 +2045,11 @@ class CanonicalV2RDBRetriever:
                         metric_observations.c.subject_entity_id.in_(entity_ids),
                         metric_observations.c.metric_code == mapping.semantic_key,
                         canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
+                        canonical_facts.c.resolution_status == "RESOLVED",
+                        exists(select(1).where(fact_evidence_links.c.fact_id == canonical_facts.c.fact_id)),
                         metric_observations.c.quality_status.in_(("VALID", "SOURCE_ZERO")),
+                        or_(metric_observations.c.observed_on.is_(None),
+                            metric_observations.c.observed_on <= snapshot.snapshot_date),
                     )
                 )
                 if contract is not None:
@@ -1898,11 +2082,14 @@ class CanonicalV2RDBRetriever:
                 rows = connection.execute(
                     statement.order_by(
                         metric_observations.c.subject_entity_id,
-                        metric_observations.c.observed_on.desc(),
+                        metric_observations.c.observed_on.desc().nulls_last(),
                         metric_observations.c.fact_id,
                     )
                 ).all()
-                CanonicalV2RDBRetriever._collect_projection(result, field, rows)
+                for entity_id, value in rows:
+                    # Scalar metric projection and ranking use the same latest
+                    # valid evidenced observation, never a list of older values.
+                    result.setdefault((str(entity_id), field), value)
         return result
 
     @staticmethod
@@ -1950,12 +2137,14 @@ class CanonicalV2RDBRetriever:
                 metric_observations.c.metric_code.in_(metric_fields),
                 canonical_facts.c.snapshot_id.in_(snapshot.snapshot_ids),
                 canonical_facts.c.resolution_status == "RESOLVED",
-                metric_observations.c.observed_on <= snapshot.snapshot_date,
+                metric_observations.c.quality_status.in_(("VALID", "SOURCE_ZERO")),
+                or_(metric_observations.c.observed_on.is_(None),
+                    metric_observations.c.observed_on <= snapshot.snapshot_date),
             )
             .order_by(
                 metric_observations.c.subject_entity_id,
                 metric_observations.c.metric_code,
-                metric_observations.c.observed_on.desc(),
+                metric_observations.c.observed_on.desc().nulls_last(),
                 metric_observations.c.fact_id,
                 fact_evidence_links.c.assertion_id,
             )
@@ -1977,6 +2166,7 @@ class CanonicalV2RDBRetriever:
                     and currency != contract["currency"]
                 )
                 or comparability_status != "COMPARABLE"
+                or observed_on is None
             ):
                 continue
             key = (str(entity_id), field)

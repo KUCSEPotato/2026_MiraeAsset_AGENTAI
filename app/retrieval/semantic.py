@@ -5,6 +5,7 @@ from app.domain.models import (
     ExecutionContext,
     QueryStep,
     RetrievalRecord,
+    RetrievalResult,
     RetrievalSource,
     StepExecutionStatus,
 )
@@ -35,24 +36,37 @@ class RealBM25Retriever:
         step: QueryStep,
         context: ExecutionContext,
     ) -> list[RetrievalRecord]:
+        return (await self.retrieve_with_result(step, context)).records
+
+    async def retrieve_with_result(
+        self, step: QueryStep, context: ExecutionContext,
+    ) -> RetrievalResult:
         query = _query_text(step)
         if not query:
-            return []
+            return _search_result([], complete=True)
         candidate_ids = _candidate_ids(step, context)
         if candidate_ids == set():
-            return []
+            return _search_result([], complete=True)
+        limit = _top_k(
+            step, self._settings.candidate_limit
+            if step.inputs.get("require_complete_candidates") else self._settings.bm25_top_k,
+        )
         try:
             await asyncio.to_thread(self._validate_index)
             hits = await asyncio.to_thread(
                 self._store.bm25_search,
                 query,
-                top_k=_top_k(step, self._settings.bm25_top_k),
+                top_k=limit + 1,
                 filters=_metadata_filters(step, self._snapshot, canonical_v2=self._canonical_v2),
                 candidate_ids=candidate_ids,
             )
         except SemanticIndexError as exc:
             raise RetrieverUnavailableError(str(exc)) from exc
-        return [_to_record(hit, RetrievalSource.BM25, step.step_id) for hit in hits]
+        records = [_to_record(
+            hit, RetrievalSource.BM25, step.step_id,
+            generation=self._settings.v2_generation if self._canonical_v2 else None,
+        ) for hit in hits[:limit]]
+        return _search_result(records, complete=len(hits) <= limit, limit=limit)
 
     def _validate_index(self) -> None:
         self._store.validate(
@@ -92,12 +106,17 @@ class RealVectorRetriever:
         step: QueryStep,
         context: ExecutionContext,
     ) -> list[RetrievalRecord]:
+        return (await self.retrieve_with_result(step, context)).records
+
+    async def retrieve_with_result(
+        self, step: QueryStep, context: ExecutionContext,
+    ) -> RetrievalResult:
         query = _query_text(step)
         if not query:
-            return []
+            return _search_result([], complete=True)
         candidate_ids = _candidate_ids(step, context)
         if candidate_ids == set():
-            return []
+            return _search_result([], complete=True)
         try:
             await asyncio.to_thread(self._validate_index)
         except SemanticIndexError as exc:
@@ -118,7 +137,13 @@ class RealVectorRetriever:
             )
         except SemanticIndexError as exc:
             raise RetrieverUnavailableError(str(exc)) from exc
-        return [_to_record(hit, RetrievalSource.VECTOR, step.step_id) for hit in hits]
+        records = [_to_record(
+            hit, RetrievalSource.VECTOR, step.step_id,
+            generation=self._settings.v2_generation if self._canonical_v2 else None,
+        ) for hit in hits]
+        # A relevance window has no reviewed boolean matching threshold. It
+        # cannot claim a complete universe for subsequent financial ranking.
+        return _search_result(records, complete=not hits)
 
     def _validate_index(self) -> None:
         self._store.validate(
@@ -190,23 +215,27 @@ def _candidate_ids(
         raise ValueError("candidate_ids_from must be a list")
     if not dependency_ids:
         return None
-    candidates: set[str] = set()
+    candidates: list[set[str]] = []
     for dependency_id in dependency_ids:
+        if dependency_id not in step.depends_on:
+            raise RetrieverUnavailableError("semantic candidate is not a declared dependency")
         result = context.step_results.get(dependency_id)
         if result is None or result.status is not StepExecutionStatus.SUCCESS:
-            continue
-        candidates.update(
+            raise RetrieverUnavailableError("semantic candidate dependency is incomplete")
+        candidates.append({
             record.entity_id
             for record in result.records
             if record.entity_id is not None
-        )
-    return candidates
+        })
+    return set.intersection(*candidates)
 
 
 def _to_record(
     hit: SemanticSearchHit,
     source: RetrievalSource,
     step_id: str,
+    *,
+    generation: str | None = None,
 ) -> RetrievalRecord:
     document = hit.document
     score_name = "bm25_score" if source is RetrievalSource.BM25 else "cosine_similarity"
@@ -226,10 +255,22 @@ def _to_record(
             "source_record_key": document.source_record_key,
             "source_field": document.source_field,
             "dataset_snapshot": document.dataset_snapshot,
+            **({"generation": generation, "snapshot_identity": f"{generation}:{document.dataset_snapshot}"}
+               if generation is not None else {}),
             "observed_at": document.observed_at,
             "retrieval_source": source.value,
             "retrieval_score": hit.score,
             "retrieval_score_type": score_name,
             "retrieval_rank": hit.rank,
         },
+    )
+
+
+def _search_result(records, *, complete: bool, limit: int | None = None) -> RetrievalResult:
+    return RetrievalResult(
+        records=records,
+        total_matches=len(records) if complete else None,
+        returned_count=len(records),
+        window_limit=limit,
+        counts={"candidate_set_complete": int(complete)},
     )

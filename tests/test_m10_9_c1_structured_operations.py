@@ -1258,7 +1258,7 @@ def test_bond_market_presence_is_distinct_from_exposure_region() -> None:
     }
 
 
-def test_allowlisted_cross_product_shape_compiles_one_global_ranking() -> None:
+def test_cross_product_ranking_requires_registry_authorization_at_compilation() -> None:
     step = QueryStep(
         step_id="cross-product",
         source=RetrievalSource.RDB,
@@ -1296,15 +1296,27 @@ def test_allowlisted_cross_product_shape_compiles_one_global_ranking() -> None:
         snapshot_ids=("pref01", "pref02"),
         dataset_ids=("PREF01N001", "PREF02N001"),
     )
-    compiled = CanonicalV2QueryCompiler(
+    compiler = CanonicalV2QueryCompiler(
         CanonicalV2FieldRegistry(), default_limit=100
-    ).compile(step, snapshot)
+    )
+    from app.retrieval.exceptions import RDBQueryCompilationError
+
+    # A caller-supplied flag cannot authorize the currently incompatible
+    # domestic/foreign return basis, even when bypassing the planner.
+    with pytest.raises(RDBQueryCompilationError, match="foreign_etf_return"):
+        compiler.compile(step, snapshot)
+    approved = step.model_copy(update={"inputs": {
+        **step.inputs,
+        "product_universe": {"operation": "UNION", "operands": ["DomesticETF"]},
+        "comparison_contracts": [PREF01_ONE_YEAR_RETURN.as_plan_input()],
+    }})
+    compiled = compiler.compile(approved, snapshot)
     sql = str(compiled.statement.compile(
         dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
     ))
     assert sql.count("ORDER BY") >= 2  # metric scalar observation + global rank
     assert sql.count("LIMIT 10") == 1
-    assert "PREF01N001" in sql and "PREF02N001" in sql
+    assert "PREF01N001" in sql and "PREF02N001" not in sql
 
 
 def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() -> None:
@@ -1350,6 +1362,7 @@ def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() ->
             source_id=f"rdb:{entity_id}:{field}",
             entity_id=entity_id,
             payload={"field": field, "value": value},
+            metadata={"dataset_snapshot": "2026-08-24"},
         )
         for entity_id, name, metric in (
             ("etf:1", "first", "20.0"),
@@ -1367,6 +1380,7 @@ def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() ->
             source_id=f"graph:{entity_id}",
             entity_id=entity_id,
             payload={"field": "relation.holds", "value": "security:samsung"},
+            metadata={"dataset_snapshot": "2026-08-24"},
         )
         for entity_id in ("etf:1", "etf:2", "etf:3")
     ]
@@ -1382,17 +1396,23 @@ def test_ranked_intersection_preserves_all_metric_evidence_per_top_n_entity() ->
                     "ranked_candidate_ids": ["etf:1", "etf:2", "etf:3"],
                 },
             ),
-            "graph": result(graph_step, graph_records),
+            "graph": result(graph_step, graph_records, {
+                "counts": {"candidate_set_complete": 1},
+                "returned_count": 3,
+                "total_matches": 3,
+            }),
         },
     )
 
     records = asyncio.run(InternalTransformExecutor().execute(rank_step, context))
 
     assert [record.entity_id for record in records] == [
-        "etf:1", "etf:1", "etf:2", "etf:2"
+        "etf:1", "etf:1", "etf:1", "etf:2", "etf:2", "etf:2"
     ]
     assert [record.payload["field"] for record in records] == [
         "product.name", "product.one_year_return",
+        "relation.holds",
         "product.name", "product.one_year_return",
+        "relation.holds",
     ]
     assert all(record.metadata["ranking_applied"] for record in records)
