@@ -51,7 +51,7 @@ services:
       - no-new-privileges:true
 
   agent-api:
-    image: ${AGENT_IMAGE:-financial-semantic-agent}:${AGENT_IMAGE_TAG:-m10.9}
+    image: ${AGENT_IMAGE:?AGENT_IMAGE is required}:${AGENT_IMAGE_TAG:?AGENT_IMAGE_TAG is required}
     build:
       context: .
       dockerfile: Dockerfile
@@ -70,6 +70,7 @@ services:
       TRUSTED_HOLDINGS_RUNTIME_ENABLED: ${TRUSTED_HOLDINGS_RUNTIME_ENABLED:-0}
       PRODUCTION_ARTIFACT_ROOT: /var/lib/financial-semantic-agent
       PRODUCTION_ARTIFACT_MANIFEST: /var/lib/financial-semantic-agent/release.json
+      AGENT_IMAGE_TAG: ${AGENT_IMAGE_TAG:?AGENT_IMAGE_TAG is required}
       APP_GIT_COMMIT: ${APP_GIT_COMMIT:?APP_GIT_COMMIT is required}
       ARTIFACT_RELEASE_ID: ${ARTIFACT_RELEASE_ID:?ARTIFACT_RELEASE_ID is required}
       SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/v1/semantic_search.json
@@ -112,7 +113,7 @@ services:
       - backend
 
   frontend:
-    image: ${FRONTEND_IMAGE:-financial-semantic-frontend}:${FRONTEND_IMAGE_TAG:-m10.9}
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}:${FRONTEND_IMAGE_TAG:?FRONTEND_IMAGE_TAG is required}
     build:
       context: ./frontend
     restart: unless-stopped

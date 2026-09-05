@@ -33,11 +33,10 @@ container config in `frontend/nginx.conf` is authoritative for the UI.
 ## Server prerequisites and stable paths
 
 - Ubuntu 24.04 LTS, Docker Engine, and Docker Compose v2
-- checkout: `/opt/financial-semantic-agent/current`
-- server-local configuration: `/opt/financial-semantic-agent/current/.env`
-- semantic bundle: `/srv/financial-semantic-agent/artifacts/260824`
-- v1 artifact: `.../260824/v1/semantic_search.json`
-- v2 artifact: `.../260824/canonical_v2/semantic_search.json`
+- current code: `/opt/mirae-agent/current/app`
+- server-local configuration: `/opt/mirae-agent/.env`
+- release identity overlay: `/opt/mirae-agent/current/deployment.env`
+- immutable artifact releases: `/opt/mirae-agent/releases/$ARTIFACT_RELEASE_ID`
 - PostgreSQL and Neo4j: named persistent Compose volumes
 
 The `.env` file must be created manually with mode `0600`. Never copy it into
@@ -46,22 +45,33 @@ an acceptance artifact. Start from `.env.example`, replace every placeholder,
 and ensure `DATABASE_URL` uses host `postgres` and `NEO4J_URI` uses host
 `neo4j`.
 
-Copy both approved semantic artifacts to the stable versioned directory and
-record their checksums:
+Extract the approved immutable artifact release and record its canonical-v2
+semantic checksum:
 
 ```bash
-sha256sum /srv/financial-semantic-agent/artifacts/260824/{v1,canonical_v2}/semantic_search.json
+sha256sum "/opt/mirae-agent/releases/${ARTIFACT_RELEASE_ID}/data/semantic_search.json"
 ```
 
 The bind mount is read-only. API startup validates the selected artifact
-manifest and never regenerates it.
+manifest and never regenerates it. Production operators should normally invoke
+`scripts/deploy_naver.sh`. For an isolated lifecycle command, define this helper
+so Compose never falls back to a project-local `.env` or loses release identity:
+
+```bash
+compose_prod() {
+  docker compose \
+    --env-file /opt/mirae-agent/.env \
+    --env-file /opt/mirae-agent/current/deployment.env \
+    -f /opt/mirae-agent/current/app/docker-compose.prod.yml "$@"
+}
+```
 
 ## Build and first deployment
 
 ```bash
-docker compose -f docker-compose.prod.yml build --pull
-docker compose -f docker-compose.prod.yml up -d postgres neo4j
-docker compose -f docker-compose.prod.yml run --rm agent-api alembic upgrade head
+compose_prod build --pull
+compose_prod up -d postgres neo4j
+compose_prod run --rm agent-api alembic upgrade head
 ```
 
 Restore the approved v1 and v2 PostgreSQL data into `postgres-data`. Restore or
@@ -69,16 +79,16 @@ build both approved graph projections in `neo4j-data`. A fresh canonical v2
 rebuild, when explicitly required, may use a read-only source mount:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm \
+compose_prod run --rm \
   --volume /srv/financial-source:/source:ro \
   agent-api python -m app.data.v2_rebuild --material-root /source
 
-docker compose -f docker-compose.prod.yml run --rm \
+compose_prod run --rm \
   agent-api python -m app.graph.ingest_v2
 
 # Initial projection preparation only: override the normal read-only artifact
 # mount for this one command, then restore read-only API operation.
-docker compose -f docker-compose.prod.yml run --rm \
+compose_prod run --rm \
   --volume "${SEMANTIC_ARTIFACT_ROOT}:/var/lib/financial-semantic-agent" \
   agent-api python -m app.search.index_v2
 ```
@@ -92,8 +102,8 @@ Do not perform rebuilds during restart or rollback. Once durable stores and
 both semantic artifacts are present, start the API:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps
+compose_prod up -d
+compose_prod ps
 curl --fail http://127.0.0.1:${API_PORT:-8000}/health
 ```
 
@@ -107,8 +117,8 @@ versions form one coherent READY bundle. Incompatible state fails closed.
 Normal recreation preserves named volumes and the host artifact directory:
 
 ```bash
-docker compose -f docker-compose.prod.yml down
-docker compose -f docker-compose.prod.yml up -d
+compose_prod down
+compose_prod up -d
 ```
 
 Never use `docker compose down --volumes` in production. Before deployment,
@@ -117,8 +127,8 @@ configure and test PostgreSQL/Neo4j backups independently of Compose.
 ## Restart recovery
 
 ```bash
-docker compose -f docker-compose.prod.yml restart agent-api
-docker compose -f docker-compose.prod.yml ps --wait agent-api
+compose_prod restart agent-api
+compose_prod ps --wait agent-api
 curl --fail http://127.0.0.1:${API_PORT:-8000}/health
 ```
 
@@ -136,7 +146,7 @@ RUNTIME_DATA_VERSION=v1
 Compose `restart` alone does not reload an env file, so recreate only the API:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate agent-api
+compose_prod up -d --no-deps --force-recreate agent-api
 curl --fail http://127.0.0.1:${API_PORT:-8000}/health
 ```
 
@@ -161,7 +171,7 @@ Suggested secret checks do not print the resolved Compose environment:
 
 ```bash
 docker history --no-trunc "${AGENT_IMAGE}:${AGENT_IMAGE_TAG}"
-docker compose -f docker-compose.prod.yml logs agent-api
+compose_prod logs agent-api
 git ls-files | grep -E '(^|/)(\.env|.*\.(pem|key))$' && exit 1 || true
 ```
 

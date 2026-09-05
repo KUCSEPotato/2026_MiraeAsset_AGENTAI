@@ -122,10 +122,18 @@ jobs:
           DEPLOY_HOST: ${{ secrets.NAVER_DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.NAVER_DEPLOY_USER }}
           CODE_SHA: ${{ github.sha }}
+          AGENT_IMAGE_TAG: ${{ github.sha }}
+          APP_GIT_COMMIT: ${{ github.sha }}
           ARTIFACT_RELEASE_ID: ${{ vars.ARTIFACT_RELEASE_ID }}
           IMAGE: ${{ needs.image.outputs.image }}
           FRONTEND_IMAGE: ${{ needs.image.outputs.frontend_image }}
         run: |
+          test "$CODE_SHA" = "$AGENT_IMAGE_TAG"
+          test "$CODE_SHA" = "$APP_GIT_COMMIT"
+          test "${IMAGE##*:}" = "$CODE_SHA"
+          case "$ARTIFACT_RELEASE_ID" in
+            *[!A-Za-z0-9._-]*|'') echo "invalid ARTIFACT_RELEASE_ID" >&2; exit 2 ;;
+          esac
           ssh "$DEPLOY_USER@$DEPLOY_HOST" \
             "/opt/mirae-agent/releases/code-$CODE_SHA/app/scripts/deploy_naver.sh '$CODE_SHA' '$IMAGE' '$ARTIFACT_RELEASE_ID' '$FRONTEND_IMAGE'"
       - name: Remove deployment host registry credential

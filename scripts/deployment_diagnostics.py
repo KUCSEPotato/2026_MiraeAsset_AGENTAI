@@ -2,8 +2,13 @@
 import json
 import re
 import subprocess
+import sys
 
-container = "financial-semantic-agent-agent-api-1"
+container = (
+    sys.argv[1]
+    if len(sys.argv) == 2
+    else "financial-semantic-agent-agent-api-1"
+)
 inspection = subprocess.check_output(["docker", "inspect", container], text=True)
 config = json.loads(inspection)[0]
 values = [entry.partition("=")[2] for entry in config["Config"]["Env"]]

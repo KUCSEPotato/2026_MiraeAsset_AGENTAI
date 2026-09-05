@@ -102,17 +102,28 @@ As verified on 2026-09-05, the healthy production runtime uses
 `submission-candidate-20260905-dd331fa-v1`. The repository variable must select
 this release for the current canonical_v2 runtime; the earlier
 `submission-candidate-20260902-v4` index lacks the required derived manifest.
-The deploy script validates application startup in a temporary container before
-replacing the live API, so an incompatible artifact fails before replacement.
 
-The server script accepts `CODE_SHA IMAGE_REF ARTIFACT_RELEASE_ID FRONTEND_IMAGE_REF`. It verifies
-the retained artifact tar checksum without extracting or retransferring it,
-checks that both image tags equal `CODE_SHA`, preserves the database/graph
-volumes, requires `/live`, `/health`, and the exact five-field `/answer`
-contract, and only then changes `current`. Its error trap reads the previous
-code release's deployment state and restores both known-good application images.
-Keep the previous image and code release directory until rollback rehearsal
-succeeds.
+The server script accepts
+`CODE_SHA IMAGE_REF ARTIFACT_RELEASE_ID FRONTEND_IMAGE_REF`. It derives a
+release-specific, secret-free `deployment.env`; therefore both image tags,
+`AGENT_IMAGE_TAG`, and `APP_GIT_COMMIT` equal `CODE_SHA`, while
+`SEMANTIC_ARTIFACT_ROOT` is exactly
+`/opt/mirae-agent/releases/$ARTIFACT_RELEASE_ID`. Every Compose command uses
+both the server-local `/opt/mirae-agent/.env` and that release overlay.
+
+Before starting services, the target image validates `release.json`, all bundle
+checksums and compatibility versions, and the canonical-v2 semantic
+`derived_manifest`. It then exercises the complete application lifespan in a
+temporary target-image container before replacing the live API. After forced
+API recreation, the script verifies the actual container image reference/image
+ID and artifact bind source, then requires the specific READY signals from
+`/health`, the frontend routes, and the exact five-field `/answer` contract.
+Only then does it change `current`. Its error trap prints a bounded, redacted
+container log tail and restores the previous image and artifact selection
+without recreating PostgreSQL or Neo4j. For split frontend releases it restores
+both application images; database services are never rollback targets. Keep the
+previous images, artifact release, and code release directory until rollback
+rehearsal succeeds.
 
 ## First continuous-deployment activation
 
@@ -120,20 +131,40 @@ succeeds.
 2. Install Docker and the Compose plugin and create `/opt/mirae-agent/{incoming,releases}`.
 3. Create `/opt/mirae-agent/.env` manually with production database, Neo4j, and
    HyperCLOVA credentials. Never copy it into a code release.
-4. Verify `submission-candidate-20260902-v4.tar` and its adjacent checksum in
+4. Verify the approved artifact tar and its adjacent checksum in
    `incoming/`, and retain its extracted tree at
-   `releases/submission-candidate-20260902-v4/`.
+   `releases/$ARTIFACT_RELEASE_ID/`.
 5. Complete the one-time PostgreSQL and Neo4j bootstrap against that artifact
    release; the named Compose volumes then survive code releases.
 6. Configure the production environment secrets `NAVER_DEPLOY_HOST`,
    `NAVER_DEPLOY_USER`, `NAVER_DEPLOY_SSH_KEY`, and
    `NAVER_DEPLOY_HOST_KEY`. Configure variables `ARTIFACT_RELEASE_ID` and
    `DEPLOY_ENABLED`.
-7. Set `ARTIFACT_RELEASE_ID=submission-candidate-20260902-v4`, enable deployment,
-   and use `workflow_dispatch` for the first deployment.
+7. Set `ARTIFACT_RELEASE_ID` to the approved release (currently
+   `submission-candidate-20260905-dd331fa-v1`), enable deployment, and use
+   `workflow_dispatch` for the first deployment.
 8. Confirm health, smoke, promotion, and rollback metadata before relying on
    automatic deployments from later pushes to `main`.
 
 At freeze, tag the accepted SHA (recommended `submission-2026-09-06`), deploy
 that exact tag, mirror the same source tree to the organizer repository, compare
 tree hashes, and set `DEPLOY_ENABLED=false`.
+
+## Safe emergency deployment
+
+Do not invoke Compose with an implicit project-local `.env`. Once the exact code
+release has been staged, use the same invariant-enforcing entry point as CI:
+
+```bash
+CODE_SHA=<40-character-deployment-sha>
+IMAGE_REF="ghcr.io/kucsepotato/financial-semantic-agent:${CODE_SHA}"
+FRONTEND_IMAGE_REF="ghcr.io/kucsepotato/financial-semantic-frontend:${CODE_SHA}"
+ARTIFACT_RELEASE_ID=<approved-artifact-release-id>
+
+/opt/mirae-agent/releases/code-${CODE_SHA}/app/scripts/deploy_naver.sh \
+  "${CODE_SHA}" "${IMAGE_REF}" "${ARTIFACT_RELEASE_ID}" \
+  "${FRONTEND_IMAGE_REF}"
+```
+
+The command prints identities and readiness results only. It never prints the
+resolved Compose configuration, the server `.env`, or container environment.
