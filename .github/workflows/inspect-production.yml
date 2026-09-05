@@ -1,0 +1,39 @@
+name: inspect-production-runtime
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.NAVER_DEPLOY_SSH_KEY }}
+      - name: Trust pinned deployment host key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' '${{ secrets.NAVER_DEPLOY_HOST_KEY }}' >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Inspect runtime paths and health without credentials
+        env:
+          DEPLOY_HOST: ${{ secrets.NAVER_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.NAVER_DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" python3 - <<'PY'
+          import json, pathlib, subprocess, urllib.request
+          config = json.loads(subprocess.check_output(['docker', 'inspect', 'financial-semantic-agent-agent-api-1']))[0]
+          print('IMAGE', config['Config']['Image'])
+          allowed = {'SEMANTIC_INDEX_PATH', 'CANONICAL_V2_SEMANTIC_INDEX_PATH', 'PRODUCTION_ARTIFACT_ROOT', 'PRODUCTION_ARTIFACT_MANIFEST', 'RUNTIME_DATA_VERSION', 'ARTIFACT_RELEASE_ID'}
+          print('PATHS', [v for v in config['Config']['Env'] if v.partition('=')[0] in allowed])
+          print('MOUNTS', [{k: m[k] for k in ('Source', 'Destination', 'RW')} for m in config['Mounts']])
+          current = pathlib.Path('/opt/mirae-agent/current')
+          print('CURRENT', str(current.resolve()))
+          for line in (current / 'app/docker-compose.prod.yml').read_text().splitlines():
+              if any(v in line for v in ('SEMANTIC', 'source:', 'target:')):
+                  print('COMPOSE', line)
+          for name in ('live', 'health'):
+              with urllib.request.urlopen('http://127.0.0.1:8000/' + name, timeout=10) as response:
+                  print(name, response.status, response.read().decode())
+          PY
