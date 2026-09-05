@@ -129,7 +129,7 @@ class HyperCLOVASemanticParserClient:
                     ),
                     "msg": sanitize_hyperclova_diagnostic(item.get("msg")),
                 }
-                for item in exc.errors(include_url=False)[:20]
+                for item in exc.errors(include_url=False, include_input=False, include_context=False)[:20]
             ]
             parsed_keys = (
                 [

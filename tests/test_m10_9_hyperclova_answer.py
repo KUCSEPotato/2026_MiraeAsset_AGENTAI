@@ -16,6 +16,7 @@ from app.evidence.llm_answer import (
 from app.evidence.safe_response import ReasonAwareSafeResponseGenerator
 from app.entity.exceptions import EntityResolutionDependencyError
 from app.ontology.vocabulary import DEFAULT_SEMANTIC_VOCABULARY
+from app.operations import JsonLogFormatter
 from app.query.analyzer import RuleBasedQueryAnalyzer
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParseSafetyError, SemanticParserError
@@ -274,6 +275,12 @@ def test_hyperclova_semantic_validation_error_logs_sanitized_shape() -> None:
     assert "nv-must-not-leak" not in rendered
     assert "Bearer must-not-leak" not in rendered
     assert "secret-test-key" not in rendered
+    production_log = json.loads(JsonLogFormatter().format(record))
+    assert production_log["validation_errors"] == record.validation_errors
+    assert production_log["parsed_top_level_keys"] == ["intent", "unexpected"]
+    assert "nv-must-not-leak" not in json.dumps(production_log)
+    assert "Bearer must-not-leak" not in json.dumps(production_log)
+    assert "secret-test-key" not in json.dumps(production_log)
 
 
 @pytest.mark.parametrize(
