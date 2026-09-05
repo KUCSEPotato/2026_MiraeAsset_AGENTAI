@@ -123,6 +123,7 @@ EXPECTED_SOURCE_COUNTS = {
     "PREF02N001": (6_037, 6_037, 0),
     "PRFD01N001": (23_676, 23_676, 0),
 }
+CANONICAL_REBUILD_DATASET_IDS = tuple(EXPECTED_SOURCE_COUNTS)
 EXPECTED_CANONICAL_COUNTS = {
     "financial_products": 35_180,
     "bonds": 20_497,
@@ -163,6 +164,107 @@ PREF01_RETURN_SOURCE_FIELDS = {
     "ONE_YEAR_RETURN": "du_er_1y",
     "YEAR_TO_DATE_RETURN": "du_er_ytd",
 }
+
+
+def _canonical_rebuild_snapshot_ids():
+    """Return the snapshot boundary owned by this four-workbook rebuild."""
+
+    return select(dataset_snapshots.c.snapshot_id).where(
+        dataset_snapshots.c.dataset_id.in_(CANONICAL_REBUILD_DATASET_IDS)
+    )
+
+
+def _canonical_rebuild_provenance_counts(connection) -> dict[str, int]:
+    """Count only organizer-source provenance, excluding external activations."""
+
+    snapshot_ids = _canonical_rebuild_snapshot_ids()
+    owned_source_scope = source_records.c.snapshot_id.in_(snapshot_ids)
+    quarantine_scope = quarantine_records.c.snapshot_id.in_(snapshot_ids)
+
+    return {
+        "source_records": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(source_records)
+                .where(owned_source_scope)
+            )
+            or 0
+        ),
+        "quarantine_records": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(quarantine_records)
+                .where(quarantine_scope)
+            )
+            or 0
+        ),
+        "describes": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    source_record_entities.join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_record_entities.c.source_record_id,
+                    )
+                )
+                .where(
+                    owned_source_scope,
+                    source_record_entities.c.provenance_role == "DESCRIBES",
+                )
+            )
+            or 0
+        ),
+        "supports": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    source_record_entities.join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_record_entities.c.source_record_id,
+                    )
+                )
+                .where(
+                    owned_source_scope,
+                    source_record_entities.c.provenance_role == "SUPPORTS",
+                )
+            )
+            or 0
+        ),
+        "source_field_assertions": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    source_field_assertions.join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_field_assertions.c.source_record_id,
+                    )
+                )
+                .where(owned_source_scope)
+            )
+            or 0
+        ),
+        "fact_evidence_links": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    fact_evidence_links.join(
+                        source_field_assertions,
+                        source_field_assertions.c.assertion_id
+                        == fact_evidence_links.c.assertion_id,
+                    ).join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_field_assertions.c.source_record_id,
+                    )
+                )
+                .where(owned_source_scope)
+            )
+            or 0
+        ),
+    }
 
 TARGET_FIELDS = {
     "PRBD01N001": frozenset(
@@ -898,7 +1000,12 @@ class CanonicalV2Rebuilder:
                     dataset_snapshots.c.semantic_mapping_version,
                     dataset_snapshots.c.transformer_version,
                     dataset_snapshots.c.database_schema_version,
-                ).where(dataset_snapshots.c.snapshot_date == date.fromisoformat(SNAPSHOT))
+                ).where(
+                    dataset_snapshots.c.snapshot_date == date.fromisoformat(SNAPSHOT),
+                    dataset_snapshots.c.dataset_id.in_(
+                        CANONICAL_REBUILD_DATASET_IDS
+                    ),
+                )
             ).all()
         expected = {
             (
@@ -1963,22 +2070,18 @@ class CanonicalV2Rebuilder:
         }
         if counts != expected_counts:
             raise ValueError(f"canonical reconciliation mismatch: {counts}")
-        source_count = connection.scalar(select(func.count()).select_from(source_records))
-        quarantine_count = connection.scalar(select(func.count()).select_from(quarantine_records))
-        described = connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "DESCRIBES"))
-        supports = connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "SUPPORTS"))
+        scoped_provenance = _canonical_rebuild_provenance_counts(connection)
         actual_source_provenance = {
-            "source_records": int(source_count or 0),
-            "quarantine_records": int(quarantine_count or 0),
-            "describes": int(described or 0),
-            "supports": int(supports or 0),
+            key: scoped_provenance[key]
+            for key in EXPECTED_SOURCE_PROVENANCE_COUNTS
         }
         expected_source_provenance = EXPECTED_SOURCE_PROVENANCE_COUNTS
         if actual_source_provenance != expected_source_provenance:
             raise ValueError(
                 "source/provenance reconciliation mismatch: "
                 f"actual={actual_source_provenance}, "
-                f"expected={expected_source_provenance}"
+                f"expected={expected_source_provenance}, "
+                f"scope=dataset_ids:{list(CANONICAL_REBUILD_DATASET_IDS)}"
             )
         self._reconcile_pref01_return_metrics(connection)
         orphan_classes = connection.scalar(select(func.count()).select_from(fund_share_classes).outerjoin(funds, fund_share_classes.c.parent_fund_id == funds.c.fund_id).where(funds.c.fund_id.is_(None)))
@@ -2130,7 +2233,16 @@ class CanonicalV2Rebuilder:
                 *classification_relations.values(),
             ):
                 relation_counts.setdefault(relation, 0)
-            provenance = {"SourceRecords": count(source_records), "DESCRIBES": int(connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "DESCRIBES")) or 0), "SUPPORTS": int(connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "SUPPORTS")) or 0), "SourceFieldAssertions": count(source_field_assertions), "fact_evidence_links": count(fact_evidence_links)}
+            scoped_provenance = _canonical_rebuild_provenance_counts(connection)
+            provenance = {
+                "SourceRecords": scoped_provenance["source_records"],
+                "DESCRIBES": scoped_provenance["describes"],
+                "SUPPORTS": scoped_provenance["supports"],
+                "SourceFieldAssertions": scoped_provenance[
+                    "source_field_assertions"
+                ],
+                "fact_evidence_links": scoped_provenance["fact_evidence_links"],
+            }
             identifiers = {"observations": count(entity_identifiers), "collision_cases": count(identifier_collision_cases), "validated": int(connection.scalar(select(func.count()).select_from(entity_identifiers).where(entity_identifiers.c.validation_status == "VALIDATED")) or 0), "conflicts": int(connection.scalar(select(func.count()).select_from(entity_identifiers).where(entity_identifiers.c.conflict_status == "OPEN")) or 0)}
             crosswalk = {str(key): int(value) for key, value in connection.execute(select(entity_id_crosswalk.c.mapping_status, func.count()).group_by(entity_id_crosswalk.c.mapping_status))}
             conflicts = {"fact_conflict_cases": count(fact_conflict_cases)}
@@ -2153,7 +2265,12 @@ class CanonicalV2Rebuilder:
             if not classification:
                 metadata_json = connection.scalar(
                     select(dataset_snapshots.c.metadata_json)
-                    .where(dataset_snapshots.c.status == "READY")
+                    .where(
+                        dataset_snapshots.c.status == "READY",
+                        dataset_snapshots.c.dataset_id.in_(
+                            CANONICAL_REBUILD_DATASET_IDS
+                        ),
+                    )
                     .limit(1)
                 ) or {}
                 classification = metadata_json.get("classification_accounting", {})

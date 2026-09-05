@@ -15,6 +15,7 @@ from sqlalchemy.engine import Engine, make_url
 from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
 from app.data.v2_rebuild import (
+    CANONICAL_REBUILD_DATASET_IDS,
     CanonicalV2Rebuilder,
     EXPECTED_PREF01_RETURN_METRIC_COUNTS,
     EXPECTED_SOURCE_PROVENANCE_COUNTS,
@@ -34,7 +35,7 @@ from app.data.cleaning import (
     normalized_date,
     source_assertion_semantics,
 )
-from app.data.catalog import DATASET_SPECS
+from app.data.catalog import DATASET_SPECS, discover_dataset_files
 from app.data.mapping import map_product
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
@@ -63,6 +64,7 @@ from app.data.v2_schema import (
     quarantine_records,
     sale_lots,
     source_classification_values,
+    source_datasets,
     source_field_assertions,
     source_record_entities,
     source_records,
@@ -122,6 +124,26 @@ def test_pref01_return_metric_contract_uses_field_evidence_not_entity_support() 
         "describes": 25_024,
         "supports": 38_456,
     }
+
+
+def test_authoritative_organizer_source_baseline_is_unchanged() -> None:
+    rebuilder = object.__new__(CanonicalV2Rebuilder)
+    audit = rebuilder._audit(discover_dataset_files(ROOT / "material"))
+    actual = {
+        item.dataset: (
+            item.source_rows,
+            item.valid_rows,
+            item.quarantined_rows,
+        )
+        for item in audit.datasets
+    }
+    assert actual == {
+        "PRBD01N001": (21_882, 21_882, 0),
+        "PREF01N001": (1_780, 1_779, 1),
+        "PREF02N001": (6_037, 6_037, 0),
+        "PRFD01N001": (23_676, 23_676, 0),
+    }
+    rebuilder._verify_source_baseline(audit)
 
 
 def test_pref01_return_family_materializes_facts_and_field_evidence() -> None:
@@ -602,6 +624,198 @@ def test_final_provenance_and_fact_evidence(rebuilt) -> None:
         ))
         assert no_lot_prbd_sources == 21_248
         assert no_lot_prbd_supports == 21_248
+
+
+def test_external_activation_provenance_does_not_pollute_rebuild_scope(
+    rebuilt,
+) -> None:
+    engine = rebuilt[0]
+    dataset_id = "dataset:test-external-provenance"
+    snapshot_id = "snapshot:test-external-provenance:20260824"
+    described_record = "source:test-external-described"
+    supported_record = "source:test-external-supported"
+
+    with engine.begin() as connection:
+        entity_id = connection.scalar(
+            select(exchange_traded_products.c.etp_id).limit(1)
+        )
+        assert entity_id is not None
+        connection.execute(
+            insert(source_datasets).values(
+                dataset_id=dataset_id,
+                dataset_code="TEST_EXTERNAL_PROVENANCE",
+                display_name="Test external activation provenance",
+                source_system="isolated regression fixture",
+                schema_contract_version="test-external-v1",
+                is_authoritative=True,
+            )
+        )
+        connection.execute(
+            insert(dataset_snapshots).values(
+                snapshot_id=snapshot_id,
+                dataset_id=dataset_id,
+                snapshot_date=date(2026, 8, 24),
+                generation="external",
+                ontology_version="test",
+                semantic_mapping_version="test",
+                transformer_version="test",
+                database_schema_version="test",
+                data_sha256="a" * 64,
+                schema_sha256="b" * 64,
+                source_row_count=2,
+                accepted_row_count=2,
+                quarantined_row_count=0,
+                status="READY",
+                reconciliation_status="PASSED",
+                row_count_reconciled=True,
+                metadata_json={"scope": "external-regression"},
+            )
+        )
+        connection.execute(
+            insert(source_records),
+            [
+                {
+                    "source_record_id": described_record,
+                    "snapshot_id": snapshot_id,
+                    "source_primary_key": "external-1",
+                    "source_row_number": 1,
+                    "raw_payload": {"external": 1},
+                    "normalized_payload": {"external": 1},
+                    "payload_sha256": "c" * 64,
+                    "quality_status": "VALID",
+                },
+                {
+                    "source_record_id": supported_record,
+                    "snapshot_id": snapshot_id,
+                    "source_primary_key": "external-2",
+                    "source_row_number": 2,
+                    "raw_payload": {"external": 2},
+                    "normalized_payload": {"external": 2},
+                    "payload_sha256": "d" * 64,
+                    "quality_status": "VALID",
+                },
+            ],
+        )
+        connection.execute(
+            insert(source_record_entities),
+            [
+                {
+                    "source_record_id": described_record,
+                    "entity_id": entity_id,
+                    "entity_kind": "FINANCIAL_PRODUCT",
+                    "provenance_role": "DESCRIBES",
+                },
+                {
+                    "source_record_id": supported_record,
+                    "entity_id": entity_id,
+                    "entity_kind": "FINANCIAL_PRODUCT",
+                    "provenance_role": "SUPPORTS",
+                },
+            ],
+        )
+
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(select(func.count()).select_from(source_records)) == (
+                EXPECTED_SOURCE_PROVENANCE_COUNTS["source_records"] + 2
+            )
+            assert connection.scalar(
+                select(func.count())
+                .select_from(source_record_entities)
+                .where(source_record_entities.c.provenance_role == "DESCRIBES")
+            ) == EXPECTED_SOURCE_PROVENANCE_COUNTS["describes"] + 1
+            assert CanonicalV2Rebuilder(engine)._reconcile(connection) == {
+                **{
+                    "financial_products": 35_180,
+                    "bonds": 20_497,
+                    "funds": 6_867,
+                    "fund_share_classes": 16_574,
+                    "etf": 7_206,
+                    "etn": 610,
+                    "unresolved_fund_rows": 7_102,
+                },
+                "sale_lots": 634,
+            }
+
+        report = CanonicalV2Rebuilder(engine).rebuild(ROOT / "material")
+        assert report.status == "SKIPPED_UNCHANGED"
+        assert report.skipped is True
+        assert report.provenance_counts["SourceRecords"] == 53_374
+        assert report.provenance_counts["DESCRIBES"] == 25_024
+        assert report.provenance_counts["SUPPORTS"] == 38_456
+        assert set(CANONICAL_REBUILD_DATASET_IDS) == {
+            "PRBD01N001",
+            "PREF01N001",
+            "PREF02N001",
+            "PRFD01N001",
+        }
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                delete(source_record_entities).where(
+                    source_record_entities.c.source_record_id.in_(
+                        (described_record, supported_record)
+                    )
+                )
+            )
+            connection.execute(
+                delete(source_records).where(
+                    source_records.c.snapshot_id == snapshot_id
+                )
+            )
+            connection.execute(
+                delete(dataset_snapshots).where(
+                    dataset_snapshots.c.snapshot_id == snapshot_id
+                )
+            )
+            connection.execute(
+                delete(source_datasets).where(
+                    source_datasets.c.dataset_id == dataset_id
+                )
+            )
+
+
+def test_missing_owned_source_provenance_remains_fail_closed(rebuilt) -> None:
+    engine = rebuilt[0]
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            source_record_id = connection.scalar(
+                select(source_record_entities.c.source_record_id)
+                .join(
+                    source_records,
+                    source_records.c.source_record_id
+                    == source_record_entities.c.source_record_id,
+                )
+                .join(
+                    dataset_snapshots,
+                    dataset_snapshots.c.snapshot_id == source_records.c.snapshot_id,
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id.in_(
+                        CANONICAL_REBUILD_DATASET_IDS
+                    ),
+                    source_record_entities.c.provenance_role == "SUPPORTS",
+                )
+                .limit(1)
+            )
+            assert source_record_id is not None
+            connection.execute(
+                delete(source_record_entities).where(
+                    source_record_entities.c.source_record_id == source_record_id,
+                    source_record_entities.c.provenance_role == "SUPPORTS",
+                )
+            )
+            with pytest.raises(
+                ValueError, match="source/provenance reconciliation mismatch"
+            ) as exc_info:
+                CanonicalV2Rebuilder(engine)._reconcile(connection)
+            message = str(exc_info.value)
+            assert "actual=" in message
+            assert "expected=" in message
+            assert "scope=dataset_ids:" in message
+        finally:
+            transaction.rollback()
 
 
 def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
