@@ -37,3 +37,35 @@ jobs:
               with urllib.request.urlopen('http://127.0.0.1:8000/' + name, timeout=10) as response:
                   print(name, response.status, response.read().decode())
           PY
+      - name: Diagnose answer generation with a fixed public sample
+        env:
+          DEPLOY_HOST: ${{ secrets.NAVER_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.NAVER_DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" docker exec -i financial-semantic-agent-agent-api-1 python - <<'PY'
+          import asyncio
+          from app.agent.service import get_answer_service
+          from app.evidence.llm_answer import AnswerGenerationError
+          async def check():
+              service = get_answer_service()
+              try:
+                  result = await service.answer(question='현재 판매 가능한 원화채권 중 AA- 이상 종목 알려줘')
+                  print('ANSWER_GENERATION_SUCCESS', bool(result.answer))
+              except Exception as exc:
+                  while exc is not None:
+                      print('ERROR_CLASS', type(exc).__name__)
+                      if isinstance(exc, AnswerGenerationError):
+                          print('GENERATION_ERROR', str(exc))
+                      response = getattr(exc, 'response', None)
+                      if response is not None:
+                          print('UPSTREAM_HTTP_STATUS', response.status_code)
+                          try:
+                              status = response.json().get('status', {})
+                              print('UPSTREAM_CODE', status.get('code'))
+                          except ValueError:
+                              pass
+                      exc = exc.__cause__
+              finally:
+                  await service.close()
+          asyncio.run(check())
+          PY
