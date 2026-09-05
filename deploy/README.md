@@ -6,6 +6,23 @@ Only the API port is published; database services are reachable only through
 the Compose `backend` network. The API keeps outbound network access for
 HyperCLOVA X.
 
+The same `agent-api` service serves the Finory frontend at `/` and `/chat`,
+static files at `/assets/`, and answers at `GET /answer`. Open the API origin
+in a browser (locally, `http://127.0.0.1:8000/chat`); no separate frontend
+server or API URL configuration is needed. Opening the HTML directly or
+using a separate static server will not provide the answer API. The Docker
+image includes `frontend/`, and deployment checks the UI and asset paths
+before promotion. Any reverse proxy in front of the service must forward
+these paths as well as `/answer`, `/live`, and `/health`.
+
+For local development, configure the backend data stores and credentials
+described in the main README, then run
+`uv run uvicorn app.main:app --host 127.0.0.1 --port 8000` from the repository
+root. The backend must finish runtime initialization before the UI is served.
+Run the frontend request/state tests with `node --test tests/frontend/*.test.cjs`
+and the UI/API route integration test with
+`uv run python -m pytest -p no:capture -p no:debugging tests/test_frontend.py`.
+
 The older files under `deploy/systemd/` and `deploy/nginx/` are retained as
 reference material from the earlier M10.9 work. They are not the production
 process authority after this decision. A cloud load balancer or reverse proxy

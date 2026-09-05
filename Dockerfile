@@ -26,6 +26,7 @@ RUN groupadd --gid 10001 agent \
 WORKDIR /app
 COPY --from=builder --chown=agent:agent /app/.venv /app/.venv
 COPY --chown=agent:agent app /app/app
+COPY --chown=agent:agent frontend /app/frontend
 COPY --chown=agent:agent ontology /app/ontology
 COPY --chown=agent:agent alembic /app/alembic
 COPY --chown=agent:agent alembic.ini pyproject.toml README.md /app/

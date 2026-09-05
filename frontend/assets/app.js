@@ -1,4 +1,5 @@
 const app = document.querySelector("#app");
+let activeRequest = null;
 
 const examples = [
   { icon: "trend", text: "국내 ETF 중 수익률이 높은 상위 3개 알려줘" },
@@ -180,7 +181,7 @@ function renderChat() {
         <form class="composer" id="composer">
           <div class="composer-box">
             <textarea id="question" rows="1" placeholder="Finory에게 금융 상품에 대해 물어보세요" autocomplete="off"></textarea>
-            <button class="send-button" type="submit" aria-label="보내기">
+            <button class="send-button" type="submit" aria-label="보내기" ${activeRequest ? "disabled" : ""}>
               ${iconSvg("arrowUp")}
             </button>
           </div>
@@ -267,6 +268,8 @@ function bindChat() {
 
   resetButtons.forEach((button) => {
     button?.addEventListener("click", () => {
+      activeRequest?.abort();
+      activeRequest = null;
       messages = messages.slice(0, 1);
       renderChat();
     });
@@ -287,7 +290,7 @@ function bindChat() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const question = textarea.value.trim();
-    if (!question) return;
+    if (!question || activeRequest) return;
     textarea.value = "";
     textarea.style.height = "auto";
     await askFinory(question);
@@ -295,8 +298,12 @@ function bindChat() {
 }
 
 async function askFinory(question) {
+  if (activeRequest) return;
+  const controller = new AbortController();
+  activeRequest = controller;
+  const pendingMessage = { role: "assistant", content: "ORY가 데이터를 살펴보고 있어요..." };
   messages.push({ role: "user", content: question });
-  messages.push({ role: "assistant", content: "ORY가 데이터를 살펴보고 있어요..." });
+  messages.push(pendingMessage);
   renderChat();
 
   try {
@@ -304,23 +311,27 @@ async function askFinory(question) {
       question_id: `finory-${Date.now()}`,
       question,
     });
-    const response = await fetch(`/answer?${params.toString()}`);
+    const response = await fetch(`/answer?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
     const data = await response.json();
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content: data.answer || "답변을 찾지 못했어요.",
-    };
+    if (typeof data.answer !== "string") throw new Error("Invalid answer response");
+    pendingMessage.content = data.answer || "답변을 찾지 못했어요.";
   } catch (error) {
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content:
-        "지금은 백엔드 답변을 불러오지 못했어요. 서버가 실행 중인지 확인한 뒤 다시 질문해 주세요.",
-    };
+    if (controller.signal.aborted) return;
+    pendingMessage.content = error.message === "HTTP 504"
+      ? "답변 시간이 길어져 요청이 종료됐어요. 잠시 후 다시 질문해 주세요."
+      : "지금은 답변을 불러오지 못했어요. 잠시 후 다시 질문해 주세요.";
+  } finally {
+    if (activeRequest === controller) {
+      activeRequest = null;
+      render();
+    }
   }
-  renderChat();
 }
 
 function scrollThread() {

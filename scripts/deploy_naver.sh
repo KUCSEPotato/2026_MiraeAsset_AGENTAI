@@ -85,9 +85,15 @@ for attempt in $(seq 1 40); do
   fi
   if test "$attempt" = 40; then
     echo "deployment health gate failed" >&2
-    exit 1
+    # Explicit exit bypasses ERR traps; fail a command so rollback runs.
+    python3 "$app_dir/scripts/deployment_diagnostics.py" || true
+    false
   fi
   sleep 5
+done
+
+for path in / /chat /assets/app.js /assets/styles.css /assets/logo.png /assets/ory.png; do
+  curl --fail --silent --show-error "http://127.0.0.1:8000$path" >/dev/null
 done
 
 smoke_response="$(curl --fail --silent --show-error --get \

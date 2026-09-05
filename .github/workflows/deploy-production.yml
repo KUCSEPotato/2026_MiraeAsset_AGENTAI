@@ -25,6 +25,10 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - run: uv run python -m pytest -p no:capture -p no:debugging
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/frontend/*.test.cjs
 
   image:
     needs: test
