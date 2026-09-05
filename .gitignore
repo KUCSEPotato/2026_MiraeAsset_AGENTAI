@@ -26,6 +26,7 @@ tests/*
 !tests/test_frontend.py
 !tests/frontend/
 !tests/frontend/*.test.cjs
+!tests/frontend/container_smoke.py
 !tests/test_m7_real_rdb_integration.py
 !tests/test_m10_5_semantic_safety.py
 !tests/test_m10_7_team_ontology_activation.py

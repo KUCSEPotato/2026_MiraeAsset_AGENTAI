@@ -86,8 +86,8 @@ services:
         read_only: true
         bind:
           create_host_path: false
-    ports:
-      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
+    expose:
+      - "8000"
     healthcheck:
       test:
         [
@@ -108,6 +108,28 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 30s
+    networks:
+      - backend
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-financial-semantic-frontend}:${FRONTEND_IMAGE_TAG:-m10.9}
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/frontend-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - backend
 

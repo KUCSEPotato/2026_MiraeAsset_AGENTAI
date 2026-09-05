@@ -197,7 +197,9 @@ def test_deployment_workflow_is_test_gated_immutable_and_kill_switched() -> None
     assert "uv run python -m pytest -p no:capture -p no:debugging" in workflow
     assert "uv run pytest -p no:capture -p no:debugging" not in workflow
     assert "needs: test" in workflow
-    assert "needs: image" in workflow
+    assert "needs: [image, frontend-image]" in workflow
+    assert "financial-semantic-frontend:${GITHUB_SHA}" in workflow
+    assert "bash scripts/test_frontend_container.sh" in workflow
     assert "vars.DEPLOY_ENABLED == 'true'" in workflow
     assert "vars.ARTIFACT_RELEASE_ID" in workflow
     assert "financial-semantic-agent:${GITHUB_SHA}" in workflow

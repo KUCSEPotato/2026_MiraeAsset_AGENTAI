@@ -1,11 +1,9 @@
 from contextlib import asynccontextmanager
 import os
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
 from app.agent.service import get_answer_service
 from app.api.answer import router as answer_router
@@ -13,9 +11,6 @@ from app.data.database import DATABASE_BACKEND, DATABASE_SCHEMA_VERSION
 from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 from app.ontology.runtime_mapping import SEMANTIC_MAPPING_VERSION
 from app.operations import OperationalSettings, configure_logging
-
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 
 
 @asynccontextmanager
@@ -54,13 +49,6 @@ def create_app() -> FastAPI:
     application.state.operational_settings = operational_settings
     application.state.ready = False
     application.include_router(answer_router)
-    if FRONTEND_INDEX.exists():
-        application.mount(
-            "/assets",
-            StaticFiles(directory=FRONTEND_DIR / "assets"),
-            name="frontend-assets",
-        )
-
     @application.exception_handler(Exception)
     async def controlled_internal_error(
         request: Request, exc: Exception
@@ -117,16 +105,6 @@ def create_app() -> FastAPI:
             base["graph_version"] = runtime["graph_projection_version"]
         payload = {**base, **runtime}
         return JSONResponse(status_code=200 if ready else 503, content=payload)
-
-    if FRONTEND_INDEX.exists():
-
-        @application.get("/", include_in_schema=False)
-        async def frontend_landing() -> FileResponse:
-            return FileResponse(FRONTEND_INDEX)
-
-        @application.get("/chat", include_in_schema=False)
-        async def frontend_chat() -> FileResponse:
-            return FileResponse(FRONTEND_INDEX)
 
     return application
 

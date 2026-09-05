@@ -91,8 +91,8 @@ No fixture is permitted in these gates.
 
 ## CI/CD and promotion
 
-The workflow `.github/workflows/deploy-production.yml` runs tests, publishes an
-image tagged with the exact Git SHA, and deploys only when the protected
+The workflow `.github/workflows/deploy-production.yml` runs tests, publishes API and frontend
+images tagged with the exact Git SHA, and deploys only when the protected
 repository/environment variable `DEPLOY_ENABLED` equals `true`. Deployment
 uses `NAVER_DEPLOY_HOST`, `NAVER_DEPLOY_USER`, `NAVER_DEPLOY_SSH_KEY`, and a
 pinned `NAVER_DEPLOY_HOST_KEY`; application credentials stay on the server.
@@ -105,12 +105,12 @@ this release for the current canonical_v2 runtime; the earlier
 The deploy script validates application startup in a temporary container before
 replacing the live API, so an incompatible artifact fails before replacement.
 
-The server script accepts `CODE_SHA IMAGE_REF ARTIFACT_RELEASE_ID`. It verifies
+The server script accepts `CODE_SHA IMAGE_REF ARTIFACT_RELEASE_ID FRONTEND_IMAGE_REF`. It verifies
 the retained artifact tar checksum without extracting or retransferring it,
-checks that the image tag equals `CODE_SHA`, preserves the database/graph
+checks that both image tags equal `CODE_SHA`, preserves the database/graph
 volumes, requires `/live`, `/health`, and the exact five-field `/answer`
 contract, and only then changes `current`. Its error trap reads the previous
-code release's deployment state and restores that known-good application image.
+code release's deployment state and restores both known-good application images.
 Keep the previous image and code release directory until rollback rehearsal
 succeeds.
 

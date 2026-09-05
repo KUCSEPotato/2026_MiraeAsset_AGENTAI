@@ -1,32 +1,34 @@
 # Naver Cloud Docker Compose Deployment Runbook
 
 Docker Compose is the authoritative production deployment mechanism. The
-stack contains one `agent-api`, PostgreSQL 16, and Neo4j Community service.
-Only the API port is published; database services are reachable only through
-the Compose `backend` network. The API keeps outbound network access for
-HyperCLOVA X.
+stack contains independent `frontend` (Nginx), `agent-api` (FastAPI),
+PostgreSQL and Neo4j services. Only `frontend` publishes the existing public
+port (`API_PORT`, default 8000); the API and databases are on the internal
+Compose network. Application credentials are loaded only by `agent-api`.
 
-The same `agent-api` service serves the Finory frontend at `/` and `/chat`,
-static files at `/assets/`, and answers at `GET /answer`. Open the API origin
-in a browser (locally, `http://127.0.0.1:8000/chat`); no separate frontend
-server or API URL configuration is needed. Opening the HTML directly or
-using a separate static server will not provide the answer API. The Docker
-image includes `frontend/`, and deployment checks the UI and asset paths
-before promotion. Any reverse proxy in front of the service must forward
-these paths as well as `/answer`, `/live`, and `/health`.
+Open `http://SERVER:8000/chat`. Nginx serves `/`, `/chat`, `/chat/` and
+`/assets/` from its own image and proxies `/answer`, `/live`, `/health`,
+`/docs` and `/openapi.json` to `agent-api:8000`. UI routes remain available
+while the API restarts; Docker DNS is re-resolved when its address changes.
+The backend image contains no frontend files and provides no UI routes.
 
-For local development, configure the backend data stores and credentials
-described in the main README, then run
-`uv run uvicorn app.main:app --host 127.0.0.1 --port 8000` from the repository
-root. The backend must finish runtime initialization before the UI is served.
-Run the frontend request/state tests with `node --test tests/frontend/*.test.cjs`
-and the UI/API route integration test with
-`uv run python -m pytest -p no:capture -p no:debugging tests/test_frontend.py`.
+CI builds and tags two images with the same Git SHA, tests the frontend
+container including API replacement, and deploys both. The deployment state
+records both image references so rollback restores both. The deploy script
+also supports rollback to an earlier combined image during migration.
+`/frontend-health` checks Nginx; `/health` checks backend readiness.
 
-The older files under `deploy/systemd/` and `deploy/nginx/` are retained as
-reference material from the earlier M10.9 work. They are not the production
-process authority after this decision. A cloud load balancer or reverse proxy
-may terminate TLS in front of the Compose API port.
+For local frontend container validation run
+`docker build -t financial-semantic-frontend:test frontend` followed by
+`bash scripts/test_frontend_container.sh financial-semantic-frontend:test`.
+The latter uses an isolated disposable API stub; production deployment gates
+always use the real API. Run JS tests with
+`node --test tests/frontend/*.test.cjs`.
+
+For API-only development, configure data stores as documented in the main
+README and run `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000`.
+The older host Nginx and systemd examples are historical references; the
+container config in `frontend/nginx.conf` is authoritative for the UI.
 
 ## Server prerequisites and stable paths
 
