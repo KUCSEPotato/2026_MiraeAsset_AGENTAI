@@ -9,13 +9,16 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import create_engine, distinct, func, insert, inspect, select, text
+from sqlalchemy import create_engine, delete, distinct, func, insert, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 
 from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
 from app.data.v2_rebuild import (
     CanonicalV2Rebuilder,
+    EXPECTED_PREF01_RETURN_METRIC_COUNTS,
+    EXPECTED_SOURCE_PROVENANCE_COUNTS,
+    PREF01_RETURN_SOURCE_FIELDS,
     PRFD_MISSING_ASSERTION_FIELDS,
     TARGET_FIELDS,
     _Rows,
@@ -93,6 +96,69 @@ def test_prbd_sale_lot_evidence_predicate_ignores_buyable_quantity() -> None:
 
 def test_trade_price_is_preserved_as_sale_lot_source_assertion() -> None:
     assert "trade_price" in TARGET_FIELDS["PRBD01N001"]
+
+
+def test_pref01_return_metric_contract_uses_field_evidence_not_entity_support() -> None:
+    assert set(PREF01_RETURN_SOURCE_FIELDS.values()).issubset(
+        TARGET_FIELDS["PREF01N001"]
+    )
+    assert EXPECTED_PREF01_RETURN_METRIC_COUNTS == {
+        "ONE_DAY_RETURN": 1_585,
+        "ONE_MONTH_RETURN": 1_584,
+        "THREE_MONTH_RETURN": 1_553,
+        "SIX_MONTH_RETURN": 1_486,
+        "ONE_YEAR_RETURN": 1_416,
+        "YEAR_TO_DATE_RETURN": 1_477,
+    }
+    newly_added_assertions = sum(
+        count
+        for metric_code, count in EXPECTED_PREF01_RETURN_METRIC_COUNTS.items()
+        if metric_code != "ONE_YEAR_RETURN"
+    )
+    assert newly_added_assertions == 7_685
+    assert EXPECTED_SOURCE_PROVENANCE_COUNTS == {
+        "source_records": 53_374,
+        "quarantine_records": 1,
+        "describes": 25_024,
+        "supports": 38_456,
+    }
+
+
+def test_pref01_return_family_materializes_facts_and_field_evidence() -> None:
+    rows = _Rows()
+    assertions = {
+        field_name: f"assertion:{field_name}"
+        for field_name in PREF01_RETURN_SOURCE_FIELDS.values()
+    }
+    cleaned = {
+        field_name: str(index)
+        for index, field_name in enumerate(
+            PREF01_RETURN_SOURCE_FIELDS.values(), start=1
+        )
+    }
+    cleaned.update({"du_upt_dt": "20260824", "pd_curr_cd": "KRW"})
+
+    rebuilder = object.__new__(CanonicalV2Rebuilder)
+    rebuilder._metrics(
+        rows,
+        "PREF01N001",
+        "etf:test",
+        None,
+        "snapshot:test",
+        cleaned,
+        assertions,
+    )
+
+    observations = rows._rows[metric_observations]
+    facts = rows._rows[canonical_facts]
+    evidence = rows._rows[fact_evidence_links]
+    assert {row["metric_code"] for row in observations} == set(
+        EXPECTED_PREF01_RETURN_METRIC_COUNTS
+    )
+    assert len(observations) == len(facts) == len(evidence) == 6
+    assert {row["assertion_id"] for row in evidence} == set(assertions.values())
+    assert all(row["evidence_role"] == "SUPPORTS" for row in evidence)
+    assert rows._rows[source_record_entities] == []
 
 
 @pytest.mark.parametrize("raw", [None, "", "   ", float("nan")])
@@ -489,9 +555,15 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
 
 def test_final_provenance_and_fact_evidence(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
-    assert first.provenance_counts["SourceRecords"] == 53_374
-    assert first.provenance_counts["DESCRIBES"] == 25_024
-    assert first.provenance_counts["SUPPORTS"] == 38_456
+    assert first.provenance_counts["SourceRecords"] == (
+        EXPECTED_SOURCE_PROVENANCE_COUNTS["source_records"]
+    )
+    assert first.provenance_counts["DESCRIBES"] == (
+        EXPECTED_SOURCE_PROVENANCE_COUNTS["describes"]
+    )
+    assert first.provenance_counts["SUPPORTS"] == (
+        EXPECTED_SOURCE_PROVENANCE_COUNTS["supports"]
+    )
     with engine.connect() as connection:
         duplicate_describes = connection.scalar(text(
             "SELECT count(*) FROM (SELECT source_record_id FROM canonical_v2.source_record_entities "
@@ -578,9 +650,117 @@ def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     assert "BUYABLE_QUANTITY" not in first.metric_counts
     assert sum(first.metric_status.values()) == sum(first.metric_counts.values())
     with engine.connect() as connection:
+        return_metric_codes = tuple(EXPECTED_PREF01_RETURN_METRIC_COUNTS)
+        pref01_return_counts = dict(
+            connection.execute(
+                select(metric_observations.c.metric_code, func.count())
+                .select_from(
+                    metric_observations
+                    .join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code.in_(return_metric_codes),
+                )
+                .group_by(metric_observations.c.metric_code)
+            )
+        )
+        assert pref01_return_counts == EXPECTED_PREF01_RETURN_METRIC_COUNTS
+
+        evidence_counts = {
+            (metric_code, source_column): count
+            for metric_code, source_column, count in connection.execute(
+                select(
+                    metric_observations.c.metric_code,
+                    source_field_assertions.c.source_column,
+                    func.count(func.distinct(metric_observations.c.fact_id)),
+                )
+                .select_from(
+                    metric_observations
+                    .join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                    .join(
+                        fact_evidence_links,
+                        fact_evidence_links.c.fact_id
+                        == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        source_field_assertions,
+                        source_field_assertions.c.assertion_id
+                        == fact_evidence_links.c.assertion_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code.in_(return_metric_codes),
+                    fact_evidence_links.c.evidence_role == "SUPPORTS",
+                )
+                .group_by(
+                    metric_observations.c.metric_code,
+                    source_field_assertions.c.source_column,
+                )
+            )
+        }
+        assert evidence_counts == {
+            (metric_code, PREF01_RETURN_SOURCE_FIELDS[metric_code]): count
+            for metric_code, count in EXPECTED_PREF01_RETURN_METRIC_COUNTS.items()
+        }
         value = connection.scalar(select(metric_observations.c.numeric_value).where(metric_observations.c.numeric_value.is_not(None)).limit(1))
         assert isinstance(value, Decimal)
         assert connection.scalar(select(func.count()).select_from(bonds).where(bonds.c.maturity_date == date(9999, 12, 31))) == 0
+
+
+def test_missing_return_metric_evidence_still_fails_closed(rebuilt) -> None:
+    engine = rebuilt[0]
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            fact_id = connection.scalar(
+                select(metric_observations.c.fact_id)
+                .select_from(
+                    metric_observations.join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    ).join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code == "ONE_DAY_RETURN",
+                )
+                .limit(1)
+            )
+            assert fact_id is not None
+            connection.execute(
+                delete(fact_evidence_links).where(
+                    fact_evidence_links.c.fact_id == fact_id
+                )
+            )
+            with pytest.raises(
+                ValueError,
+                match="PREF01 return metric provenance reconciliation mismatch",
+            ):
+                CanonicalV2Rebuilder(engine)._reconcile(connection)
+        finally:
+            transaction.rollback()
 
 
 def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:
