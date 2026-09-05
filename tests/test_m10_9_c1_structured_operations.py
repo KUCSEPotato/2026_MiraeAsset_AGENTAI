@@ -180,12 +180,6 @@ def test_credit_rating_is_an_explicit_non_lexical_order() -> None:
             "desc",
             3,
         ),
-        (
-            "위험이 낮은 채권형 상품을 비교해줘",
-            "product.risk_grade",
-            "asc",
-            None,
-        ),
     ],
 )
 def test_comparative_phrases_use_one_generic_structured_pipeline(
@@ -326,26 +320,11 @@ def test_unsupported_explicit_return_period_is_not_replaced_by_default() -> None
     assert "unparsed_material_clause" in caught.value.reasons
 
 
-def test_risk_order_compiles_ontology_sequence_and_stable_ties() -> None:
-    _, _, plan = asyncio.run(
-        _plan("위험이 낮은 채권형 상품을 비교해줘")
-    )
-    snapshot = V2SnapshotSelection(
-        snapshot_date=date(2026, 8, 24), generation="260824",
-        ontology_version="merged-optical-1.4",
-        snapshot_ids=("PRBD", "PREF01", "PREF02", "PRFD"),
-        dataset_ids=("PRBD", "PREF01", "PREF02", "PRFD"),
-    )
-    compiled = CanonicalV2QueryCompiler(
-        CanonicalV2FieldRegistry(), default_limit=10
-    ).compile(plan.steps[0], snapshot)
-    sql = str(compiled.statement.compile(
-        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
-    ))
-    assert compiled.ranking_applied
-    assert "RISK_GRADE_6' THEN 1" in sql
-    assert "RISK_GRADE_1' THEN 6" in sql
-    assert 'entity_id COLLATE "C" ASC' in sql
+def test_risk_order_fails_closed_without_source_comparability_proof() -> None:
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan("위험이 낮은 채권형 상품을 비교해줘"))
+    assert any("risk_grade_ordering_and_comparability_unverified" in reason
+               for reason in caught.value.reasons)
 
 
 def test_default_metric_disclosure_is_rendered_from_evidence() -> None:

@@ -180,33 +180,28 @@ PRBD_PURCHASABLE_BOND = ComparisonContract(
     ),
 )
 
+RISK_GRADE_UNVERIFIED_REASON = "risk_grade_ordering_and_comparability_unverified"
+
+# Source schemas name product risk grades and ZeroIn fund risk grades, but do
+# not establish equivalent assessment methods or a shared comparison scale.
+# Ontology aliases alone are not an ordering/comparability authorization.
 RISK_GRADE_ORDER = ComparisonContract(
     "RISK_GRADE_ORDER",
     "product.risk_grade",
     "PRBD01N001+PREF01N001+PRFD01N001",
     "FinancialProduct",
-    "ORDINAL",
-    "TEAM_ONTOLOGY_RISK_GRADE_V1",
+    None,
+    None,
     None,
     "READY canonical_v2 snapshot classification",
     False,
-    True,
-    True,
+    False,
+    False,
+    disabled_reason=RISK_GRADE_UNVERIFIED_REASON,
     source_field=(
         "PRBD/PREF01 pd_risk_nm; PRFD zrin_fd_ivst_risk_grd_nm"
     ),
-    comparison_kind="ordered_vocabulary",
-    # Ascending means lower risk first.  RiskGrade.6 is the ontology's
-    # lowest-risk grade, while RiskGrade.1 is the highest-risk grade.
-    ordered_values=(
-        "RiskGrade.6",
-        "RiskGrade.5",
-        "RiskGrade.4",
-        "RiskGrade.3",
-        "RiskGrade.2",
-        "RiskGrade.1",
-    ),
-    answer_disclosure="제공 데이터의 온톨로지 위험등급(낮은 위험 우선) 기준",
+    comparison_kind="source_classification",
 )
 
 
@@ -311,7 +306,7 @@ class MetricCapabilityRegistry:
         if canonical_field == "product.expense_ratio":
             return None, "expense_ratio_scale_unverified"
         if canonical_field == "product.risk_grade":
-            return RISK_GRADE_ORDER, None
+            return None, RISK_GRADE_UNVERIFIED_REASON
         if canonical_field in PREF01_RETURN_CONTRACTS:
             if universe == ("DomesticETF",) or provider_union:
                 return PREF01_RETURN_CONTRACTS[canonical_field], None
@@ -468,6 +463,11 @@ class MetricCapabilityRegistry:
             if not isinstance(item, dict):
                 continue
             field = item.get("canonical_field")
+            if field == "product.risk_grade":
+                if index < len(filter_constraint_ids) and filter_constraint_ids[index]:
+                    unsupported.append(str(filter_constraint_ids[index]))
+                unsupported_reasons.append(RISK_GRADE_UNVERIFIED_REASON)
+                continue
             if field == "product.current_sale_available":
                 contracts.append(PRBD_PURCHASABLE_BOND.as_plan_input())
                 continue

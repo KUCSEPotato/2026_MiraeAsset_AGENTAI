@@ -64,7 +64,7 @@ class RoutingMetadataRegistry:
             "product.risk_grade": CanonicalFieldMetadata(
                 "product.risk_grade",
                 (RetrievalSource.RDB,),
-                all_capabilities,
+                frozenset({FieldCapability.PROJECT}),
             ),
             "product.region": CanonicalFieldMetadata(
                 "product.region",

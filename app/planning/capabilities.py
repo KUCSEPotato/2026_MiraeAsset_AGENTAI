@@ -5,7 +5,11 @@ must still select a READY snapshot and evidence must prove every requested fact.
 This module never infers that data exists just because a canonical field exists.
 """
 
-from app.data.metric_capabilities import MetricCapabilityRegistry, PREF01_RETURN_CONTRACTS
+from app.data.metric_capabilities import (
+    MetricCapabilityRegistry,
+    PREF01_RETURN_CONTRACTS,
+    RISK_GRADE_UNVERIFIED_REASON,
+)
 from app.domain.models import FilterOperator, GroundedQuery, GroundingStatus, ScalarUnit
 from app.graph.mapping import GraphMappingRegistry
 from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
@@ -41,9 +45,7 @@ class SemanticCapabilityValidator:
             if hasattr(item, "raw_filter"):
                 raw = item.raw_filter
                 if "filter" not in mapping.operations:
-                    # Existing ordered risk/credit vocabularies are explicit contracts.
-                    if field != "product.risk_grade" or raw.operator not in {FilterOperator.EQ, FilterOperator.NE, FilterOperator.IN}:
-                        errors.append(f"filter_capability_disabled:{field}")
+                    errors.append(f"filter_capability_disabled:{field}")
                 if raw.operator.value == "contains" and field not in {
                     "product.name", "product.short_name", "product.ticker", "product.isin"
                 }:
@@ -61,6 +63,10 @@ class SemanticCapabilityValidator:
                 errors.append(f"projection_capability_disabled:{field}")
 
         for relation in query.grounded_relations:
+            if relation.canonical_relation == "hasRiskGrade":
+                # Risk grades remain available through RDB field projection.
+                # Graph traversal must not re-enable risk-based candidate selection.
+                errors.append(RISK_GRADE_UNVERIFIED_REASON)
             if relation.status is not GroundingStatus.RESOLVED or not relation.canonical_relation:
                 errors.append("unresolved_relation")
                 continue

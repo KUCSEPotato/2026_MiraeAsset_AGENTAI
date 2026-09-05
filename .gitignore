@@ -64,3 +64,4 @@ tests/external_data/**/*.py[cod]
 !tests/test_semantic_federated_composition.py
 !tests/test_semantic_composition_planner.py
 !tests/test_semantic_composition_evidence.py
+!tests/test_risk_grade_contract_audit.py

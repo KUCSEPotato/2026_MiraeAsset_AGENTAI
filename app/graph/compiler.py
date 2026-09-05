@@ -6,6 +6,7 @@ from app.domain.models import QueryOperation, QueryStep, RetrievalSource
 from app.graph.mapping import GraphMappingRegistry
 from app.graph.models import CompiledGraphQuery
 from app.retrieval.exceptions import GraphQueryCompilationError
+from app.data.metric_capabilities import RISK_GRADE_UNVERIFIED_REASON
 
 
 class GraphQueryCompiler:
@@ -87,6 +88,11 @@ class GraphQueryCompiler:
             mappings = [self._registry.get(str(item)) for item in relations]
         except ValueError as exc:
             raise GraphQueryCompilationError(str(exc)) from exc
+
+        if any(mapping.edge_type == "HAS_RISK_GRADE" for mapping in mappings):
+            # Projection stays in RDB; no graph path may bypass the disabled
+            # risk-grade candidate-selection/comparison contract.
+            raise GraphQueryCompilationError(RISK_GRADE_UNVERIFIED_REASON)
 
         pattern = f"(n0:{self._node_label})"
         for index, (mapping, direction) in enumerate(

@@ -128,10 +128,11 @@ def test_multiple_comparison_fields_receive_independent_contracts():
     assert set(compiled.projected_fields) == {"product.aum", "product.six_month_return"}
 
 
-def test_ordered_vocabulary_contract_survives_json_plan_serialization():
+def test_approved_comparison_contract_survives_json_plan_serialization():
     registry = MetricCapabilityRegistry()
     prepared, unsupported = registry.prepare({
-        "comparison": {"mode": "fieldwise", "fields": ["product.risk_grade"]},
+        "product_universe": {"operation": "UNION", "operands": ["DomesticETF"]},
+        "comparison": {"mode": "fieldwise", "fields": ["product.aum"]},
     })
     assert not unsupported
     registry.verified_inputs(json.loads(json.dumps(prepared)))

@@ -435,7 +435,7 @@ class CanonicalV2FieldRegistry:
             V2FieldMapping("product.asset_type", "classification", "ASSET_CLASS"),
             V2FieldMapping("product.region", "classification", "EXPOSURE_REGION"),
             V2FieldMapping("product.market_scope", "classification", "MARKET_SCOPE"),
-            V2FieldMapping("product.risk_grade", "classification", "RISK_GRADE"),
+            V2FieldMapping("product.risk_grade", "classification", "RISK_GRADE", False),
             V2FieldMapping("product.bond_type", "classification", "BOND_TYPE"),
             V2FieldMapping("product.offering_type", "classification", "OFFERING_TYPE"),
             V2FieldMapping("product.asset_manager", "organization_relation", "MANAGED_BY"),

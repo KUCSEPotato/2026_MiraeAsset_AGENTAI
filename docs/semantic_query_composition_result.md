@@ -59,7 +59,7 @@ unknown key는 schema에서 거부한다. LLM은 기존 strict candidate schema�
 | AND / OR | filter constraint ID 기반 트리 컴파일; 누락/중복/unknown leaf, NOT, store 간 OR는 차단 |
 | ProjectField | 여러 entity × 여러 canonical field; 필드마다 entity resolution을 반복하지 않음 |
 | ResolveMetric / TemporalResolve | 기존 6기간 RETURN와 기본 1Y; metric/field/period binding 검증 |
-| Sort | 기존 source-scoped return/AUM 및 검증된 risk-grade ordering; ASC/DESC |
+| Sort | 기존 source-scoped return/AUM; ASC/DESC. risk-grade 정렬은 근거 부족으로 비활성화 |
 | TopK / BottomK | DESC/ASC + bounded window; 전체 후보 조건을 적용하고 순위를 검증한 뒤 제한 |
 | Limit | 정렬 없는 조회 window는 TopK와 구분하여 표현 |
 | Compare | 모든 비교 필드의 독립 계약을 확인; 허용된 dataset/unit/scale/grain만 사용 |
@@ -149,10 +149,12 @@ Level 5의 subsidiary 예시는 실제 관계가 없으므로 부정 테스트�
   -o addopts='' -q -ra --tb=short
 ```
 
-결과: **531 passed, 108 skipped, 1 warning**, 58.25초.
+risk-grade 계약 검토 후 최종 결과: **575 passed, 108 skipped, 0 failed, 1 warning**, 61.13초.
+검토 전 구현 마감 결과는 531 passed, 108 skipped, 1 warning(58.25초)이었다.
 108 skip은 격리 PostgreSQL URL/환경 미설정에 따른 기존 integration 조건이다.
 실제 PostgreSQL/Neo4j 배포 환경에서의 성공으로 해석하면 안 된다.
 warning은 기존 FastAPI/Starlette의 httpx TestClient deprecation이다.
+Frontend 전체 suite(`node --test tests/frontend/*.test.cjs`)도 **3 passed, 0 skipped, 0 failed**이다.
 
 신규 focused suites: IR 32, RDB 34, evidence 12, federation 19, planner 29 = **126개**.
 각 구현 단위의 focused/관련 regression 및 최종 전체 suite를 수행했다.
@@ -168,9 +170,16 @@ company resolution, holdings/graph, semantic search, evidence validation, fail-c
 거부 테스트로 바꾸고 승인된 domestic positive를 추가한 부분이다. 기존 비교 정책을
 완화한 것이 아니다.
 
+후속 [risk-grade 계약 검토](risk_grade_contract_audit.md)에서 제공 스키마와 ontology가
+PREF01/PRBD/PRFD의 동일 ordering/comparison 의미를 증명하지 못함을 확인했다.
+따라서 risk-grade projection과 단일 상품 조회만 유지하고 sort/filter/comparison 및
+Graph 관계를 통한 후보 선택을 차단했다. 신규 감사 테스트 46개가 전체 suite에 포함된다.
+기존 위험등급 정렬/필터 성공 기대는 거부 테스트로 대체했다.
+
 ## 9. 아직 지원하지 않는 query class
 
 - 미검증 expense-ratio scale 기반 filter/sort/comparison.
+- 공식 ordering/comparability 근거가 부족한 risk-grade sort/filter/comparison.
 - 현재 snapshot만으로 계산하는 historical AUM 변화/증가율 및 기타 series 연산.
 - Aggregate/GroupBy 실행, 누락값 의미가 검증되지 않은 generic NOT.
 - 존재하지 않는 subsidiary relation, 2-hop을 넘는 traversal, relation/store를 넘는 OR.
@@ -197,4 +206,8 @@ Graph 기본 경로 제한은 100이며 이를 넘는 조합은 fail closed 한�
 
 Production deploy/rebuild, workflow auto-deploy gate, production artifact release identity는
 변경하지 않았다. 기존 untracked `Report/` 사용자 작업도 커밋하거나 수정하지 않았다.
-작업 브랜치의 로컬 코드·테스트·문서·커밋을 완료했으며 원격 push, main으로의 병합, deploy는 수행하지 않았다.
+구현 마감 시점에는 로컬 코드·테스트·문서·커밋만 완료했다. 이후 사용자 요청으로
+risk-grade 계약 감사와 제한 조치를 추가했으며 feature branch push를 수행하는 마감
+절차를 진행한다. 최종 push 결과와 exact HEAD SHA는 최종 작업 보고에서 확인한다.
+main 병합과 deploy는 수행하지 않으며 production PostgreSQL/Neo4j integration은
+production 서버의 별도 one-off environment에서 검증할 예정이다.

@@ -607,7 +607,6 @@ def test_negation_or_and_limit_execute_with_sql_null_policy(tmp_path: Path) -> N
         ("발행사가 대한민국인 채권", "issuedBy", "대한민국"),
         ("기초지수가 S&P 500인 ETF", "tracks", "TEST_INDEX_SP500"),
         ("표시통화가 USD인 ETF", "denominatedIn", "USD"),
-        ("위험등급 1등급인 ETF", "hasRiskGrade", "1"),
     ],
 )
 def test_relation_targets_reach_parameterized_graph_plan(
