@@ -34,9 +34,10 @@ def _compile(inputs, backend):
 
 
 @pytest.mark.parametrize("backend", ["v1", "v2"])
-def test_single_entity_risk_projection_compiles_without_order_contract(backend):
+@pytest.mark.parametrize("projection", ["위험 정보", "위험등급"])
+def test_single_entity_risk_projection_compiles_without_order_contract(backend, projection):
     _, _, grounded, plan = asyncio.run(
-        _tiger_plan("TIGER 미국S&P500 ETF의 위험 정보 알려줘")
+        _tiger_plan(f"TIGER 미국S&P500 ETF의 {projection} 알려줘")
     )
     inputs = plan.steps[0].inputs
     compiled = _compile(inputs, backend)
