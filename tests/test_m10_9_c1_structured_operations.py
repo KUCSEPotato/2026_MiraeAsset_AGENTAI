@@ -461,6 +461,13 @@ def test_domestic_return_periods_use_one_structured_pipeline(
             5,
         ),
         (
+            "국내 ETF 중 최근 6개월 수익률이 높은 상위 3개를 알려줘",
+            "product.six_month_return",
+            "SIX_MONTH_RETURN",
+            "6M",
+            3,
+        ),
+        (
             "국내 ETF 중 최근 3개월 수익률 상위 3개",
             "product.three_month_return",
             "THREE_MONTH_RETURN",
@@ -483,6 +490,13 @@ def test_domestic_return_periods_use_one_structured_pipeline(
         ),
         (
             "국내 ETF 중 올해 수익률 상위 3개",
+            "product.year_to_date_return",
+            "YEAR_TO_DATE_RETURN",
+            "YTD",
+            3,
+        ),
+        (
+            "국내 ETF 중 올해 수익률이 높은 상위 3개를 알려줘",
             "product.year_to_date_return",
             "YEAR_TO_DATE_RETURN",
             "YTD",

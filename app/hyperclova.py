@@ -83,6 +83,16 @@ def log_hyperclova_http_error(
     return details
 
 
+def sanitize_hyperclova_diagnostic(
+    value: object | None,
+    *,
+    fallback: str = "unavailable",
+) -> str:
+    """Sanitize one provider-derived diagnostic scalar for structured logs."""
+
+    return _safe_scalar(value, fallback=fallback)
+
+
 def _safe_scalar(value: object | None, *, fallback: str) -> str:
     if not isinstance(value, (str, int, float)):
         return fallback

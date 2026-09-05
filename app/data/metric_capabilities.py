@@ -259,6 +259,7 @@ class MetricCapabilityRegistry:
         "return": "product.return",
         "1d 수익률": "product.one_day_return",
         "1일 수익률": "product.one_day_return",
+        "오늘 수익률": "product.one_day_return",
         "1m 수익률": "product.one_month_return",
         "1개월 수익률": "product.one_month_return",
         "3m 수익률": "product.three_month_return",
@@ -270,6 +271,7 @@ class MetricCapabilityRegistry:
         "연 수익률": "product.one_year_return",
         "ytd 수익률": "product.year_to_date_return",
         "연초 이후 수익률": "product.year_to_date_return",
+        "올해 수익률": "product.year_to_date_return",
     }
 
     @classmethod
@@ -298,6 +300,8 @@ class MetricCapabilityRegistry:
     ) -> tuple[ComparisonContract | None, str | None]:
         universe_input = inputs.get("product_universe") or {}
         universe = tuple(universe_input.get("operands", ()))
+        if not universe:
+            universe = self._resolved_entity_universe(inputs)
         reviewed_domestic_holdings = {
             "KODEX_LONG_ONLY_COMPATIBLE", "TIGER_LONG_ONLY_COMPATIBLE",
         }
@@ -406,42 +410,35 @@ class MetricCapabilityRegistry:
                 if reason:
                     unsupported_reasons.append(reason)
             else:
-                plan_contract = contract.as_plan_input()
                 raw_field = str(item.get("raw", {}).get("field", ""))
-                if field in PREF01_RETURN_CONTRACTS or (
-                    field == "product.one_year_return"
-                    and contract is ISHARES_SCOPED_ONE_YEAR_RETURN
+                contracts.append(
+                    self._plan_contract(contract, str(field), raw_field)
+                )
+
+        requested_constraint_ids = prepared.get(
+            "requested_field_constraint_ids", []
+        )
+        for index, item in enumerate(
+            prepared.get("requested_field_details", [])
+        ):
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("canonical_field", ""))
+            if field not in PREF01_RETURN_CONTRACTS:
+                continue
+            contract, reason = self.comparison_contract(field, prepared)
+            if contract is None:
+                if (
+                    index < len(requested_constraint_ids)
+                    and requested_constraint_ids[index]
                 ):
-                    default_applied = raw_field.strip().casefold() in {
-                        "수익률", "return"
-                    }
-                    plan_contract["metric_resolution"] = {
-                        "status": (
-                            "RESOLVABLE_UNDERSPECIFICATION"
-                            if default_applied else "EXPLICIT_PERIOD"
-                        ),
-                        "policy": (
-                            f"RETURN.default_period={self.return_default_period}"
-                            if default_applied else "query_explicit_period"
-                        ),
-                        "requested_phrase": raw_field,
-                        "resolved_metric": field,
-                        "metric": "RETURN",
-                        "period": contract.exact_period,
-                        "period_source": (
-                            "DEFAULT_POLICY" if default_applied else "EXPLICIT_QUERY"
-                        ),
-                        **(
-                            {
-                                "disclosure": (
-                                    "기간이 별도로 지정되지 않아 1년 수익률을 "
-                                    "기준으로 비교했습니다."
-                                )
-                            }
-                            if default_applied else {}
-                        ),
-                    }
-                contracts.append(plan_contract)
+                    unsupported.append(str(requested_constraint_ids[index]))
+                if reason:
+                    unsupported_reasons.append(reason)
+                continue
+            contracts.append(
+                self._plan_contract(contract, field, str(item.get("raw", "")))
+            )
 
         if prepared.get("top_n") is not None and not sort_items:
             if prepared.get("limit_constraint_id"):
@@ -472,6 +469,62 @@ class MetricCapabilityRegistry:
         prepared["comparison_unsupported_reasons"] = list(dict.fromkeys(unsupported_reasons))
         prepared["evaluation_data_cutoff"] = EVALUATION_DATA_CUTOFF.isoformat()
         return prepared, list(dict.fromkeys(unsupported))
+
+    def _plan_contract(
+        self,
+        contract: ComparisonContract,
+        canonical_field: str,
+        raw_field: str,
+    ) -> dict[str, Any]:
+        plan_contract = contract.as_plan_input()
+        if canonical_field not in PREF01_RETURN_CONTRACTS and not (
+            canonical_field == "product.one_year_return"
+            and contract is ISHARES_SCOPED_ONE_YEAR_RETURN
+        ):
+            return plan_contract
+        default_applied = raw_field.strip().casefold() in {"수익률", "return"}
+        plan_contract["metric_resolution"] = {
+            "status": (
+                "RESOLVABLE_UNDERSPECIFICATION"
+                if default_applied else "EXPLICIT_PERIOD"
+            ),
+            "policy": (
+                f"RETURN.default_period={self.return_default_period}"
+                if default_applied else "query_explicit_period"
+            ),
+            "requested_phrase": raw_field,
+            "resolved_metric": canonical_field,
+            "metric": "RETURN",
+            "period": contract.exact_period,
+            "period_source": (
+                "DEFAULT_POLICY" if default_applied else "EXPLICIT_QUERY"
+            ),
+            **(
+                {
+                    "disclosure": (
+                        "기간이 별도로 지정되지 않아 1년 수익률을 "
+                        "기준으로 비교했습니다."
+                    )
+                }
+                if default_applied else {}
+            ),
+        }
+        return plan_contract
+
+    @staticmethod
+    def _resolved_entity_universe(inputs: dict[str, Any]) -> tuple[str, ...]:
+        entity_ids = inputs.get("entity_ids", [])
+        if (
+            isinstance(entity_ids, list)
+            and entity_ids
+            and all(
+                isinstance(entity_id, str)
+                and entity_id.casefold().startswith("etf_kr:")
+                for entity_id in entity_ids
+            )
+        ):
+            return ("DomesticETF",)
+        return ()
 
     @staticmethod
     def _eq_filter(inputs: dict[str, Any], canonical_field: str) -> Any:

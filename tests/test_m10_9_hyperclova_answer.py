@@ -208,6 +208,72 @@ def test_hyperclova_semantic_parse_payload_omits_unsupported_parameters() -> Non
     assert "responseFormat" not in payload
     assert payload["temperature"] == 0.0
     assert [item["role"] for item in payload["messages"]] == ["system", "user"]
+    request_content = json.loads(payload["messages"][1]["content"])
+    assert request_content["candidate_schema"]["additionalProperties"] is False
+    assert request_content["candidate_schema"]["required"] == ["intent"]
+
+
+def test_hyperclova_semantic_validation_error_logs_sanitized_shape() -> None:
+    question = "TIGER 미국S&P500 ETF의 위험 정보 알려줘"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "message": {
+                        "content": json.dumps({
+                            "intent": "search_product",
+                            "unexpected": {
+                                "api_key": "nv-must-not-leak",
+                                "authorization": "Bearer must-not-leak",
+                            },
+                        })
+                    }
+                }
+            },
+        )
+
+    async def scenario() -> SemanticParserError:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        parser = HyperCLOVASemanticParserClient(
+            HyperCLOVASemanticParserSettings(api_key="secret-test-key"),
+            http_client=client,
+        )
+        try:
+            with pytest.raises(SemanticParserError) as caught:
+                await parser.parse(SemanticParserRequest(
+                    original_question=question,
+                    rule_parse={},
+                    compact_vocabulary={},
+                    semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
+                    prompt_version=PROMPT_VERSION,
+                ))
+            return caught.value
+        finally:
+            await client.aclose()
+
+    with _capture_records("app.query.llm_parser") as records:
+        error = asyncio.run(scenario())
+
+    assert error.failure_reason == "semantic_parse_response_invalid"
+    record = next(
+        item for item in records
+        if item.getMessage() == "HyperCLOVA semantic response validation failed"
+    )
+    assert record.request_purpose == "semantic_parse"
+    assert record.request_id
+    assert record.parsed_top_level_keys == ["intent", "unexpected"]
+    assert record.validation_errors == [{
+        "loc": ["unexpected"],
+        "type": "extra_forbidden",
+        "msg": "Extra inputs are not permitted",
+    }]
+    rendered = repr(record.__dict__)
+    assert "nv-must-not-leak" not in rendered
+    assert "Bearer must-not-leak" not in rendered
+    assert "secret-test-key" not in rendered
 
 
 @pytest.mark.parametrize(

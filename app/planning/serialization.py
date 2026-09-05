@@ -12,6 +12,15 @@ from app.domain.models import (
 )
 
 
+BASIC_PRODUCT_PROJECTION = "BASIC_PRODUCT"
+BASIC_PRODUCT_FIELDS = (
+    "product.name",
+    "product.product_type",
+    "product.ticker",
+    "product.isin",
+)
+
+
 def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
     product_concepts = [
         concept.canonical_concept
@@ -26,6 +35,21 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
         if entity.resolution_status is ResolutionStatus.RESOLVED
         and entity.canonical_id is not None
     ]
+    explicit_requested_fields = [
+        item.canonical_field
+        for item in query.grounded_requested_fields
+        if item.canonical_field is not None
+    ]
+    basic_product_lookup = bool(
+        len(resolved_entities) == 1
+        and resolved_entities[0].entity_type == "product"
+        and not query.grounded_requested_fields
+        and not query.grounded_filters
+        and not query.grounded_sort
+        and not query.grounded_relations
+        and not query.parsed_query.requires_semantic_search
+        and not query.parsed_query.semantic_terms
+    )
     fund_subscription_fields = {
         "product.current_fund_subscription_eligible",
         "product.subscription_status",
@@ -82,11 +106,22 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
             }
             for item in query.grounded_sort
         ],
-        "requested_fields": [
-            item.canonical_field
+        "requested_fields": (
+            list(BASIC_PRODUCT_FIELDS)
+            if basic_product_lookup
+            else explicit_requested_fields
+        ),
+        "requested_field_details": [
+            {
+                "raw": item.raw_text,
+                "canonical_field": item.canonical_field,
+            }
             for item in query.grounded_requested_fields
             if item.canonical_field is not None
         ],
+        "projection_profile": (
+            BASIC_PRODUCT_PROJECTION if basic_product_lookup else None
+        ),
         "filter_constraint_ids": [
             item.raw_filter.constraint_id for item in query.grounded_filters
         ],
