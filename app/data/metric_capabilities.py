@@ -101,7 +101,7 @@ def _pref01_return_contract(
         False,
         source_field=source_field,
         exact_period=period,
-        percentage_representation="percentage points as supplied; no rescaling",
+        percentage_representation="percent value as supplied; no rescaling",
         value_basis="source-defined ETP return basis",
         adjustment_semantics="not stated; comparison restricted to PREF01N001",
     )
@@ -151,7 +151,7 @@ ISHARES_SCOPED_ONE_YEAR_RETURN = ComparisonContract(
     None, "official iShares month-end asOfDate at or before evaluation cutoff",
     False, True, False, source_field="oneYearAnnualized.navSourced",
     exact_period="1Y",
-    percentage_representation="percentage points as published; no rescaling",
+    percentage_representation="percent value as published; no rescaling",
     value_basis="issuer-published NAV total return",
     adjustment_semantics="accounts for distributions from the fund",
 )
@@ -160,7 +160,7 @@ PRFD_SHARE_CLASS_ONE_YEAR_RETURN = ComparisonContract(
     "FundShareClass", "PERCENT", "SOURCE_PERCENT", None,
     "fd_price_bas_dt return basis date in READY snapshot", False, True, False,
     source_field="fd_yr1_ern_r", exact_period="1Y",
-    percentage_representation="percentage points as supplied; no rescaling",
+    percentage_representation="percent value as supplied; no rescaling",
     value_basis="source-defined FundShareClass return basis",
     adjustment_semantics="not stated; no Fund-family promotion",
 )

@@ -74,10 +74,6 @@ class HyperCLOVASemanticParserClient:
             "temperature": 0.0,
             "repetitionPenalty": 1.0,
             "stop": [],
-            "responseFormat": {
-                "type": "json",
-                "schema": hyperclova_candidate_schema(),
-            },
         }
         request_id = str(uuid4())
         try:

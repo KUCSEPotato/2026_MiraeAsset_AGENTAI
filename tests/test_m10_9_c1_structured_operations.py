@@ -376,6 +376,24 @@ def test_default_metric_disclosure_is_rendered_from_evidence() -> None:
     )
 
 
+def test_percent_return_observation_is_not_rendered_as_percentage_points() -> None:
+    evidence = make_evidence(
+        field="product.one_year_return",
+        value="12.4",
+        metadata={"real_rdb": True, "metric_unit": "PERCENT"},
+    )
+    answer = asyncio.run(
+        DeterministicEvidenceAnswerGenerator().generate(
+            "1년 수익률",
+            make_bundle([evidence]),
+            ValidationResult(answerable=True),
+        )
+    )
+
+    assert "12.4%" in answer
+    assert "퍼센티지 포인트" not in answer
+
+
 @pytest.mark.parametrize(
     ("question", "canonical_field", "metric_code", "period"),
     [
@@ -406,6 +424,96 @@ def test_domestic_return_periods_use_one_structured_pipeline(
     contract = inputs["comparison_contracts"][0]
     assert contract["metric"] == metric_code
     assert contract["dataset"] == "PREF01N001"
+    assert contract["exact_period"] == period
+    assert contract["metric_resolution"]["period"] == period
+    assert contract["metric_resolution"]["period_source"] == "EXPLICIT_QUERY"
+
+
+@pytest.mark.parametrize(
+    ("question", "canonical_field", "metric_code", "period", "top_n"),
+    [
+        (
+            "국내 ETF 중 최근 1년 수익률이 높은 상위 3개를 알려줘",
+            "product.one_year_return",
+            "ONE_YEAR_RETURN",
+            "1Y",
+            3,
+        ),
+        (
+            "국내 ETF 최근 1년 수익률 상위 3개",
+            "product.one_year_return",
+            "ONE_YEAR_RETURN",
+            "1Y",
+            3,
+        ),
+        (
+            "국내 ETF 1년 수익률 높은 3개",
+            "product.one_year_return",
+            "ONE_YEAR_RETURN",
+            "1Y",
+            3,
+        ),
+        (
+            "국내 ETF 중 최근 6개월 수익률이 높은 상위 5개를 알려줘",
+            "product.six_month_return",
+            "SIX_MONTH_RETURN",
+            "6M",
+            5,
+        ),
+        (
+            "국내 ETF 중 최근 3개월 수익률 상위 3개",
+            "product.three_month_return",
+            "THREE_MONTH_RETURN",
+            "3M",
+            3,
+        ),
+        (
+            "국내 ETF 중 최근 1개월 수익률 상위 3개",
+            "product.one_month_return",
+            "ONE_MONTH_RETURN",
+            "1M",
+            3,
+        ),
+        (
+            "국내 ETF 중 오늘 수익률 상위 3개",
+            "product.one_day_return",
+            "ONE_DAY_RETURN",
+            "1D",
+            3,
+        ),
+        (
+            "국내 ETF 중 올해 수익률 상위 3개",
+            "product.year_to_date_return",
+            "YEAR_TO_DATE_RETURN",
+            "YTD",
+            3,
+        ),
+        (
+            "국내 ETF 중 YTD 수익률 상위 3개",
+            "product.year_to_date_return",
+            "YEAR_TO_DATE_RETURN",
+            "YTD",
+            3,
+        ),
+    ],
+)
+def test_natural_return_period_phrases_are_explicit_structured_rankings(
+    question: str,
+    canonical_field: str,
+    metric_code: str,
+    period: str,
+    top_n: int,
+) -> None:
+    parsed, grounded, plan = asyncio.run(_plan(question))
+
+    assert parsed.semantic_coverage == "complete"
+    assert parsed.unparsed_material_spans == []
+    assert parsed.result_limit is not None
+    assert parsed.result_limit.value == top_n
+    assert parsed.sort[0].direction == "desc"
+    assert grounded.grounded_sort[0].canonical_field == canonical_field
+    contract = plan.steps[0].inputs["comparison_contracts"][0]
+    assert contract["metric"] == metric_code
     assert contract["exact_period"] == period
     assert contract["metric_resolution"]["period"] == period
     assert contract["metric_resolution"]["period_source"] == "EXPLICIT_QUERY"

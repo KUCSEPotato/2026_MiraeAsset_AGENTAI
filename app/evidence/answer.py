@@ -50,6 +50,12 @@ class DeterministicEvidenceAnswerGenerator:
             value = item.value if item.value is not None else item.text
             if value is None:
                 continue
+            if (
+                item.metadata.get("metric_unit") == "PERCENT"
+                and item.value is not None
+                and not value.rstrip().endswith("%")
+            ):
+                value = f"{value}%"
             product = (
                 item.metadata.get("product_name")
                 if item.field == "product.strategy_description"

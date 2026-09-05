@@ -66,13 +66,15 @@ class RuleBasedQueryAnalyzer:
         "Equity", "주식", "Bond", "채권", "통화", "기타",
     )
     _field_aliases = (
-        "연초 이후 수익률", "연초이후수익률", "YTD 수익률", "YTD수익률",
+        "연초 이후 수익률", "연초이후수익률", "올해 수익률", "올해수익률",
+        "YTD 수익률", "YTD수익률",
         "6개월 수익률", "6개월수익률", "6M 수익률", "6M수익률",
         "3개월 수익률", "3개월수익률", "3M 수익률", "3M수익률",
         "1개월 수익률", "1개월수익률", "1M 수익률", "1M수익률",
         "1년 수익률", "1년수익률", "1Y 수익률", "1Y수익률",
         "연 수익률", "연수익률",
-        "1일 수익률", "1일수익률", "1D 수익률", "1D수익률",
+        "오늘 수익률", "오늘수익률", "1일 수익률", "1일수익률",
+        "1D 수익률", "1D수익률",
         "운용규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
         "위험등급", "기준가격", "NAV", "가격", "티커",
         "ticker", "ISIN", "신용등급",
@@ -88,7 +90,7 @@ class RuleBasedQueryAnalyzer:
     _non_material_tokens = {
         "에", "에는", "에서", "에게", "으로", "중", "중에서", "의", "이", "가",
         "은", "는", "을", "를", "와", "과", "그리고", "모두", "만", "어떤",
-        "상품", "상품을", "상품은", "상품이", "알려줘", "찾아줘", "보여줘", "정보",
+        "상품", "상품을", "상품은", "상품이", "알려줘", "알려주세요", "찾아줘", "보여줘", "정보",
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
@@ -758,8 +760,13 @@ class RuleBasedQueryAnalyzer:
         found: list[tuple[int, SortSpec, range]] = []
         adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
         for alias in sorted(self._ranking_field_aliases, key=len, reverse=True):
+            # In return comparisons, ``최근`` qualifies the trailing-period
+            # metric (for example, 최근 6개월 수익률).  Consume it with the
+            # structured sort span so it cannot become an unrelated temporal
+            # residual and spuriously trigger semantic-parser fallback.
+            context_prefix = r"(?:최근\s*)?" if "수익률" in alias else ""
             pattern = re.compile(
-                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:가장\s*)?"
+                rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:가장\s*)?"
                 rf"({adjective_pattern})(?:고|며)?", re.IGNORECASE,
             )
             for match in pattern.finditer(question):
@@ -772,7 +779,7 @@ class RuleBasedQueryAnalyzer:
                 found.append((match.start(), SortSpec(field=match.group(1), direction=direction),
                               range(match.start(), match.end())))
             explicit = re.compile(
-                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
+                rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
                 r"(오름차순|내림차순|ASC|DESC)",
                 re.IGNORECASE,
             )
@@ -788,7 +795,7 @@ class RuleBasedQueryAnalyzer:
                     )
                 )
             top_ranking = re.compile(
-                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
+                rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
                 r"(TOP|상위|하위)\s*\d+",
                 re.IGNORECASE,
             )

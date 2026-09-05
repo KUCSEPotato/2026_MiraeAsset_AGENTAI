@@ -125,6 +125,89 @@ def test_hyperclova_answer_is_one_shot_and_evidence_bounded() -> None:
     assert len(requests) == 1
     assert requests[0].headers["authorization"] == "Bearer test-secret"
     assert b"ETF:1" in requests[0].content
+    payload = json.loads(requests[0].content)
+    assert payload["topP"] == 0.2
+    assert payload["maxCompletionTokens"] == 1_024
+    assert [item["role"] for item in payload["messages"]] == ["system", "user"]
+    assert "PERCENT" in payload["messages"][0]["content"]
+    assert "퍼센티지 포인트" in payload["messages"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    ("question", "field", "limit"),
+    [
+        (
+            "국내 ETF 중 최근 1년 수익률이 높은 상위 3개를 알려줘",
+            "1년 수익률",
+            3,
+        ),
+        (
+            "국내 ETF 중 최근 6개월 수익률 상위 5개",
+            "6개월 수익률",
+            5,
+        ),
+        ("국내 ETF 중 올해 수익률 상위 3개", "올해 수익률", 3),
+    ],
+)
+def test_natural_return_rankings_do_not_call_semantic_llm(
+    question: str,
+    field: str,
+    limit: int,
+) -> None:
+    llm = _FailingSemanticParserLLM()
+    parsed = asyncio.run(_semantic_coordinator(llm).analyze(question))
+
+    assert llm.calls == 0
+    assert parsed.parser_source.value == "rule"
+    assert parsed.semantic_coverage.value == "complete"
+    assert parsed.sort[0].field == field
+    assert parsed.sort[0].direction == "desc"
+    assert parsed.result_limit is not None
+    assert parsed.result_limit.value == limit
+
+
+def test_hyperclova_semantic_parse_payload_omits_unsupported_parameters() -> None:
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "message": {
+                        "content": json.dumps({"intent": "search_product"})
+                    }
+                }
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        parser = HyperCLOVASemanticParserClient(
+            HyperCLOVASemanticParserSettings(api_key="secret-test-key"),
+            http_client=client,
+        )
+        try:
+            return await parser.parse(SemanticParserRequest(
+                original_question="반도체 ETF",
+                rule_parse={},
+                compact_vocabulary={},
+                semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
+                prompt_version=PROMPT_VERSION,
+            ))
+        finally:
+            await client.aclose()
+
+    parsed = asyncio.run(scenario())
+    payload = captured["payload"]
+
+    assert parsed.intent.value == "search_product"
+    assert isinstance(payload, dict)
+    assert "thinking" not in payload
+    assert "responseFormat" not in payload
+    assert payload["temperature"] == 0.0
+    assert [item["role"] for item in payload["messages"]] == ["system", "user"]
 
 
 @pytest.mark.parametrize(
