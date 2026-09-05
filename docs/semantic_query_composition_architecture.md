@@ -1,6 +1,6 @@
 # Semantic Query / Planning 일반화: 사전 분석 및 구현 계획
 
-분석 기준: `c7f07da` (사용자 요청으로 `origin/main` pull 후 재검토), 작업 브랜치 `feature/semantic-query-composition`.
+분석 기준: `fd9660a` (사용자 요청에 따라 `origin/main`을 두 차례 pull 후 재검토), 작업 브랜치 `feature/semantic-query-composition`.
 이 문서는 구현 코드 수정 전에 작성했다.
 
 ## 1. 현재 Semantic Query representation
@@ -109,3 +109,6 @@ deployment workflow/gate/secret, production release identity 변경은 범위 �
 로컬 `.venv`의 conda readline extension은 pytest startup에서 segfault를 일으켜
 다음 fallback runner로도 검증했다. application 코드는 변경하지 않는다: `.venv/bin/python -c 'import sys; sys.modules["readline"] = None;
 import pytest; raise SystemExit(pytest.main([...]))'`.
+
+두 번째 pull의 entity-centric lookup, 기본 상품 projection, requested return field 계약도
+보존한다. 구현 중 충돌은 이 upstream 변경과 일반화 변경을 함께 유지하여 해결했다.

@@ -3,6 +3,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from app.query.normalization import normalize_query_semantics
+
 from app.domain.models import (
     AggregationOperator,
     AggregationSpec,
@@ -90,7 +92,7 @@ class RuleBasedQueryAnalyzer:
     _ascending_words = {"낮은", "작은", "적은"}
     _non_material_tokens = {
         "에", "에는", "에서", "에게", "으로", "중", "중에서", "의", "이", "가",
-        "은", "는", "을", "를", "와", "과", "그리고", "모두", "만", "어떤",
+        "은", "는", "을", "를", "와", "과", "그리고", "및", "and", "모두", "만", "어떤",
         "상품", "상품을", "상품은", "상품이", "알려줘", "알려주세요", "찾아줘", "보여줘", "정보",
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "설명해줘", "설명해주세요", "대해", "인가", "기준",
@@ -104,20 +106,9 @@ class RuleBasedQueryAnalyzer:
         entity_spans = [range(*_find_span(question, item.raw_text)) for item in entities]
         product_types = self._extract_product_types(question, entity_spans)
         product_universe, universe_span = self._extract_product_universe(question)
-        filters = self._extract_filters(question, product_types, entity_spans)
-        if product_universe is not None:
-            filters = [
-                item
-                for item in filters
-                if not (
-                    item.field == "region"
-                    and str(item.value) in {"국내", "한국"}
-                    and bool(
-                        {"DomesticETF", "DomesticETN", "DomesticETP"}
-                        & set(product_universe.operands)
-                    )
-                )
-            ]
+        filters = self._extract_filters(
+            question, product_types, entity_spans, region_scope_span=universe_span,
+        )
         sort, sort_spans = self._extract_sort(question)
         requested_fields = self._extract_requested_fields(question, sort_spans)
         relations = self._extract_relations(question)
@@ -214,7 +205,7 @@ class RuleBasedQueryAnalyzer:
             )
 
         for index, item in enumerate(filters):
-            start, end = self._filter_span(question, item)
+            start, end = self._filter_span(question, item, region_scope_span=universe_span)
             unit_is_unexecutable = (
                 isinstance(item.value, TypedScalarValue)
                 and item.value.unit is not ScalarUnit.NONE
@@ -306,7 +297,7 @@ class RuleBasedQueryAnalyzer:
         intent_end = intent_match.end() if intent_match else len(question)
         unsupported_intent = (
             intent in {QueryIntent.RECOMMEND_PRODUCT, QueryIntent.UNKNOWN}
-            or (intent is QueryIntent.COMPARE_PRODUCTS and not sort)
+            or (intent is QueryIntent.COMPARE_PRODUCTS and not sort and not requested_fields)
         )
         add(
             intent_start, intent_end, ConstraintSemanticType.INTENT,
@@ -315,7 +306,7 @@ class RuleBasedQueryAnalyzer:
                 "intent": intent.value,
                 **(
                     {"ambiguity_class": "TRUE_AMBIGUITY"}
-                    if intent is QueryIntent.COMPARE_PRODUCTS and not sort
+                    if intent is QueryIntent.COMPARE_PRODUCTS and not sort and not requested_fields
                     else {}
                 ),
             },
@@ -324,7 +315,7 @@ class RuleBasedQueryAnalyzer:
                     else ConstraintStatus.PARSED),
             reason=(
                 "true_ambiguity:comparison_metric_missing"
-                if intent is QueryIntent.COMPARE_PRODUCTS and not sort
+                if intent is QueryIntent.COMPARE_PRODUCTS and not sort and not requested_fields
                 else "intent_execution_not_implemented"
                 if unsupported_intent
                 else None
@@ -396,7 +387,7 @@ class RuleBasedQueryAnalyzer:
             item.constraint_id for item in constraints
             if item.status is ConstraintStatus.UNSUPPORTED
         ]
-        return ParsedQuery(
+        return normalize_query_semantics(ParsedQuery(
             original_question=question, intent=intent, product_types=product_types,
             product_universe=product_universe,
             entities=entities, filters=filters, relations=relations, sort=sort,
@@ -411,7 +402,7 @@ class RuleBasedQueryAnalyzer:
                                else SemanticCoverageStatus.COMPLETE),
             unparsed_material_spans=residuals,
             unsupported_constraint_ids=unsupported,
-        )
+        ))
 
     def _classify_intent(self, question: str, entities: list[EntityMention]) -> QueryIntent:
         etp_status_query = bool(
@@ -479,10 +470,16 @@ class RuleBasedQueryAnalyzer:
         question: str,
         product_types: list[str],
         excluded_spans: list[range] | None = None,
+        *,
+        region_scope_span: range | None = None,
     ) -> list[FilterSpec]:
         filters: list[FilterSpec] = []
+        # A geography already consumed by product-universe selection is not
+        # an exposure predicate. Select remaining aliases before taking the
+        # first region, so an explicit second geography cannot be discarded.
         regions = self._find_aliases(
-            question, self._region_aliases, excluded_spans=excluded_spans,
+            question, self._region_aliases,
+            excluded_spans=[*(excluded_spans or []), *([region_scope_span] if region_scope_span else [])],
         )
         assets = self._find_aliases(
             question, self._asset_type_aliases, excluded_spans=excluded_spans,
@@ -842,13 +839,14 @@ class RuleBasedQueryAnalyzer:
                 if self._inside_numeric_condition(question, match.start()):
                     continue
                 requested.append((match.start(), match.end(), match.group(0)))
-        # Generic return is a facet request only in a possessive lookup
-        # expression.  It is intentionally not a global metric alias: the
-        # comparison registry must apply its reviewed default-period policy.
-        for match in re.finditer(r"의\s*(수익률)(?!\s*(?:이|가)?\s*(?:높|낮))", question):
-            field_start = match.start(1)
-            if not any(field_start in span for span in sort_spans):
-                requested.append((field_start, match.end(1), match.group(1)))
+        # Generic return uses the same reviewed default-period policy in a
+        # possessive lookup or coordinated comparison projection.
+        for match in re.finditer(r"수익률", question):
+            projection_context = "비교" in question or bool(re.search(r"의\s*", question[:match.start()]))
+            if (projection_context and not any(match.start() in span for span in sort_spans)
+                    and not any(start <= match.start() < end for start, end, _ in requested)
+                    and not self._inside_numeric_condition(question, match.start())):
+                requested.append((match.start(), match.end(), match.group()))
         selected: list[tuple[int, int, str]] = []
         for candidate in sorted(
             requested, key=lambda item: (item[0], -(item[1] - item[0]))
@@ -877,6 +875,9 @@ class RuleBasedQueryAnalyzer:
             r"(?:이상|이하|초과|미만)", question[position:position + 40]))
 
     def _extract_entity_mentions(self, question: str) -> list[EntityMention]:
+        coordinated = self._coordinated_entity_mentions(question)
+        if coordinated:
+            return coordinated
         candidates: list[tuple[int, int, str, str]] = []
         patterns = (
             (
@@ -946,6 +947,22 @@ class RuleBasedQueryAnalyzer:
         return [EntityMention(raw_text=_strip_korean_particle(raw_text),
                               entity_type=entity_type)
                 for _, _, raw_text, entity_type in accepted]
+
+    @staticmethod
+    def _coordinated_entity_mentions(question: str) -> list[EntityMention]:
+        """Separate explicit entity lists; resolution still owns their identity."""
+        if not re.search(r"비교|가장|최고|최저", question):
+            return []
+        prefix = re.split(r"의\s*|\s+중(?:에서)?\s*", question, maxsplit=1)[0]
+        if prefix == question or re.search(r"운용하는|보유한|편입한|이상|이하", prefix):
+            return []
+        # Conjunctions require a boundary on the right, avoiding syllables
+        # inside official names; quoted names also retain their full text.
+        parts = re.split(r"\s*[,、]\s*|(?:와|과)\s+|\s+(?:및|그리고|and)\s+", prefix, flags=re.IGNORECASE)
+        if len(parts) < 2 or any(not part.strip() for part in parts):
+            return []
+        return [EntityMention(raw_text=part.strip().strip("\"'"), entity_type="product")
+                for part in parts]
 
     def _is_structured_product_expression(self, raw_text: str) -> bool:
         """Distinguish collection constraints from a named product prefix."""
@@ -1310,7 +1327,9 @@ class RuleBasedQueryAnalyzer:
         return (TemporalConstraint(raw_text=match.group(0), requested_snapshot=snapshot),
                 range(match.start(), match.end()))
 
-    def _filter_span(self, question: str, item: FilterSpec) -> tuple[int, int]:
+    def _filter_span(
+        self, question: str, item: FilterSpec, *, region_scope_span: range | None = None,
+    ) -> tuple[int, int]:
         if isinstance(item.value, TypedScalarValue):
             field_alias = {"aum": r"(?:순자산|AUM|운용규모)",
                            "expense_ratio": r"(?:총보수|보수율|운용보수)"}[item.field]
@@ -1357,7 +1376,12 @@ class RuleBasedQueryAnalyzer:
             if match is not None:
                 return match.start(), match.end()
         values = item.value if isinstance(item.value, list) else [item.value]
-        spans = [_find_span(question, str(value)) for value in values]
+        spans = []
+        for value in values:
+            matches = list(re.finditer(re.escape(str(value)), question, re.IGNORECASE))
+            if item.field == "region" and region_scope_span is not None:
+                matches = [match for match in matches if match.start() not in region_scope_span]
+            spans.append((matches[0].start(), matches[0].end()) if matches else _find_span(question, str(value)))
         start, end = min(value[0] for value in spans), max(value[1] for value in spans)
         modifier = re.match(r"(?:을|를|이|가)?\s*(?:제외한?|아닌|또는)?",
                             question[end:end + 12])
@@ -1499,9 +1523,6 @@ def _boolean_expression(filters: list[FilterSpec],
             continue
         predicate = BooleanExpression(node_type=BooleanNodeType.PREDICATE,
                                       constraint_id=item.constraint_id)
-        if item.operator is FilterOperator.NE:
-            predicate = BooleanExpression(node_type=BooleanNodeType.NOT,
-                                          children=[predicate])
         nodes.append(predicate)
     if not nodes:
         return None

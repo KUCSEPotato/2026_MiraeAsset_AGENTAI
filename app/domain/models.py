@@ -25,6 +25,7 @@ class FilterOperator(str, Enum):
     GTE = "gte"
     IN = "in"
     BETWEEN = "between"
+    CONTAINS = "contains"
 
 
 class ScalarUnit(str, Enum):
@@ -58,6 +59,8 @@ class ConstraintSemanticType(str, Enum):
     INTENT = "intent"
     COMPARISON = "comparison"
     SUBJECTIVE = "subjective"
+    METRIC = "metric"
+    GROUP_BY = "group_by"
 
 
 class ParserSource(str, Enum):
@@ -386,6 +389,10 @@ class FilterSpec(BaseModel):
                 raise ValueError("BETWEEN filter requires exactly two values")
         elif collection:
             raise ValueError(f"{self.operator.value} filter requires a scalar value")
+        if self.operator is FilterOperator.CONTAINS and (
+            not isinstance(self.value, str) or not self.value
+        ):
+            raise ValueError("CONTAINS filter requires a non-empty string")
         return self
 
 
@@ -482,6 +489,46 @@ class TemporalConstraint(BaseModel):
     constraint_id: str | None = None
 
 
+class TemporalSpec(BaseModel):
+    """Period meaning, independent from a metric's physical field binding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    period: Literal["1D", "1M", "3M", "6M", "1Y", "YTD"]
+    period_source: Literal["EXPLICIT_QUERY", "DEFAULT_POLICY"] = "EXPLICIT_QUERY"
+    operation: Literal["PERIOD_VALUE", "CHANGE", "GROWTH_RATE"] = "PERIOD_VALUE"
+
+
+class MetricSpec(BaseModel):
+    """Normalized metric request; a field binding does not grant capability."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    metric: Literal["RETURN", "AUM", "EXPENSE_RATIO", "NAV", "PRICE"]
+    temporal: TemporalSpec | None = None
+    canonical_field: str | None = None
+    constraint_id: str | None = None
+
+
+class ComparisonSpec(BaseModel):
+    """Compare the query's entity set using each field's own contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["fieldwise"] = "fieldwise"
+    fields: list[str] = Field(default_factory=list)
+    constraint_id: str | None = None
+
+
+class GroupBySpec(BaseModel):
+    """Represent grouping explicitly even when execution is unsupported."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    fields: list[str] = Field(min_length=1)
+    constraint_id: str | None = None
+
+
 class ParsedQuery(BaseModel):
     original_question: str
     intent: QueryIntent
@@ -498,6 +545,9 @@ class ParsedQuery(BaseModel):
     result_limit: ResultLimit | None = None
     aggregation: AggregationSpec | None = None
     temporal_constraint: TemporalConstraint | None = None
+    metrics: list[MetricSpec] = Field(default_factory=list)
+    comparison: ComparisonSpec | None = None
+    group_by: GroupBySpec | None = None
     semantic_constraints: list[SemanticConstraint] = Field(default_factory=list)
     semantic_coverage: SemanticCoverageStatus = SemanticCoverageStatus.COMPLETE
     unparsed_material_spans: list[UnparsedMaterialSpan] = Field(
@@ -631,6 +681,7 @@ class QueryPlan(BaseModel):
     routing_reasons: list[RoutingReason] = Field(default_factory=list)
     unsupported_constraint_ids: list[str] = Field(default_factory=list)
     constraint_coverage_required: bool = False
+    semantic_ir: dict[str, Any] | None = None
 
 
 class RetrievalRecord(BaseModel):

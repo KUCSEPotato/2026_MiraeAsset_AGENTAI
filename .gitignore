@@ -59,3 +59,8 @@ tests/*
 !tests/external_data/**
 tests/external_data/**/__pycache__/
 tests/external_data/**/*.py[cod]
+!tests/test_semantic_composition_ir.py
+!tests/test_semantic_composition_rdb.py
+!tests/test_semantic_federated_composition.py
+!tests/test_semantic_composition_planner.py
+!tests/test_semantic_composition_evidence.py
