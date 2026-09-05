@@ -131,6 +131,7 @@ pip install -r requirements.txt
 ```
 
 현재 제출본의 검증 스크립트는 RDF/Turtle 파싱을 위해 `rdflib`을 사용합니다.
+`requirements.txt`에는 Ontology 검증뿐 아니라 이 저장소의 Python API, ingestion, graph, external data, migration, test 코드에서 직접 사용하는 패키지를 함께 명시했습니다.
 
 ## 10. Validation
 
