@@ -317,7 +317,7 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         FieldMapping(
             "product.risk_grade",
             "hasRiskGrade",
-            ("위험등급", "위험"),
+            ("위험등급", "위험 정보", "위험정보", "위험도", "리스크", "위험"),
             "rdb+graph",
             "canonical_v2.entity_classifications/HAS_RISK_GRADE",
             contract_sort,

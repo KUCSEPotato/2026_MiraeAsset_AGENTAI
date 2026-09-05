@@ -361,12 +361,23 @@ class RDFOntologyService:
 
     def _ground_field(self, raw: str) -> GroundedField:
         resolution = self.resolve_field(raw)
-        mapping = self._field_mapping(raw)
+        canonical_field = (
+            resolution.canonical_field
+            or MetricCapabilityRegistry.canonical_metric_alias(raw)
+        )
+        canonical_field = MetricCapabilityRegistry.default_metric(
+            canonical_field
+        )
+        if resolution.status is not GroundingStatus.RESOLVED and canonical_field:
+            concrete = self.resolve_field(canonical_field)
+            if concrete.status is GroundingStatus.RESOLVED:
+                resolution = concrete
+        mapping = self._field_mapping(canonical_field or raw)
         executable = mapping is None or "project" in mapping.operations
         return GroundedField(
             raw_text=raw,
             canonical_field=(
-                resolution.canonical_field if executable else None
+                canonical_field if executable else None
             ),
             ontology_uri=resolution.uri if executable else None,
             mapping_version=(

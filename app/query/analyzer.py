@@ -76,13 +76,14 @@ class RuleBasedQueryAnalyzer:
         "오늘 수익률", "오늘수익률", "1일 수익률", "1일수익률",
         "1D 수익률", "1D수익률",
         "운용규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
-        "위험등급", "기준가격", "NAV", "가격", "티커",
+        "위험 정보", "위험정보", "위험등급", "위험도", "리스크", "위험",
+        "기준가격", "NAV", "가격", "티커",
         "ticker", "ISIN", "신용등급",
     )
     _ranking_field_aliases = (*_field_aliases, "수익률", "위험")
     _semantic_markers = (
         "관련", "전략", "친환경", "폭넓게", "테마", "산업", "혁신형",
-        "구조", "위험 정보", "위험정보", "위험요인", "특징", "동향",
+        "구조", "위험요인", "특징", "동향",
         "covered call",
     )
     _descending_words = {"큰", "높은", "많은"}
@@ -92,7 +93,7 @@ class RuleBasedQueryAnalyzer:
         "은", "는", "을", "를", "와", "과", "그리고", "모두", "만", "어떤",
         "상품", "상품을", "상품은", "상품이", "알려줘", "알려주세요", "찾아줘", "보여줘", "정보",
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
-        "해줘", "인가", "기준",
+        "해줘", "설명해줘", "설명해주세요", "대해", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
         "종목", "종목을", "순으로",
         "TOP", "top",
@@ -237,7 +238,7 @@ class RuleBasedQueryAnalyzer:
                 ref=("sort", index))
 
         for index, value in enumerate(requested_fields):
-            start, end = _find_span(question, value)
+            start, end = self._requested_field_span(question, value)
             add(start, end, ConstraintSemanticType.REQUESTED_FIELD,
                 payload={"field": value}, ref=("requested_field", index))
 
@@ -426,7 +427,10 @@ class RuleBasedQueryAnalyzer:
             return QueryIntent.COMPARE_PRODUCTS
         if "추천" in question:
             return QueryIntent.RECOMMEND_PRODUCT
-        if any(token in question for token in ("알려줘", "찾아줘", "보여줘", "있어")):
+        if any(token in question for token in (
+            "알려줘", "알려주세요", "찾아줘", "보여줘", "설명해줘",
+            "설명해주세요", "있어",
+        )):
             return QueryIntent.SEARCH_PRODUCT
         if entities and any(token in question for token in ("정보", "조회")):
             return QueryIntent.LOOKUP_PRODUCT
@@ -830,22 +834,41 @@ class RuleBasedQueryAnalyzer:
         return [item[1] for item in selected], [item[2] for item in selected]
 
     def _extract_requested_fields(self, question: str, sort_spans: list[range]) -> list[str]:
-        requested: list[tuple[int, str]] = []
+        requested: list[tuple[int, int, str]] = []
         for alias in self._field_aliases:
             for match in re.finditer(re.escape(alias), question, re.IGNORECASE):
                 if any(match.start() in span for span in sort_spans):
                     continue
                 if self._inside_numeric_condition(question, match.start()):
                     continue
-                requested.append((match.start(), match.group(0)))
+                requested.append((match.start(), match.end(), match.group(0)))
         # Generic return is a facet request only in a possessive lookup
         # expression.  It is intentionally not a global metric alias: the
         # comparison registry must apply its reviewed default-period policy.
         for match in re.finditer(r"의\s*(수익률)(?!\s*(?:이|가)?\s*(?:높|낮))", question):
             field_start = match.start(1)
             if not any(field_start in span for span in sort_spans):
-                requested.append((field_start, match.group(1)))
-        return self._deduplicate(value for _, value in sorted(requested))
+                requested.append((field_start, match.end(1), match.group(1)))
+        selected: list[tuple[int, int, str]] = []
+        for candidate in sorted(
+            requested, key=lambda item: (item[0], -(item[1] - item[0]))
+        ):
+            start, end, _ = candidate
+            if any(
+                start < selected_end and end > selected_start
+                for selected_start, selected_end, _ in selected
+            ):
+                continue
+            selected.append(candidate)
+        return self._deduplicate(value for _, _, value in sorted(selected))
+
+    @staticmethod
+    def _requested_field_span(question: str, value: str) -> tuple[int, int]:
+        start, end = _find_span(question, value)
+        if "수익률" not in value:
+            return start, end
+        prefix = re.search(r"최근\s*$", question[:start])
+        return (prefix.start(), end) if prefix is not None else (start, end)
 
     @staticmethod
     def _inside_numeric_condition(question: str, position: int) -> bool:
@@ -865,7 +888,8 @@ class RuleBasedQueryAnalyzer:
             (r"^(.+?)\s*상품\s*중", "management_company"),
             (
                 r"^(.+?)의\s*"
-                r"(?:수익률|위험\s*정보|위험요인|구조|투자전략|특징|동향)",
+                r"(?:(?:최근\s*)?(?:1일|1개월|3개월|6개월|1년|1D|1M|3M|6M|1Y|YTD)?\s*수익률|"
+                r"위험\s*정보|위험도|리스크|위험|위험요인|구조|투자전략|특징|동향)",
                 "product",
             ),
             (r"^(.+?)의\s*(?:운용사|발행사|기초지수|추종지수|벤치마크)", "product"),
@@ -876,6 +900,16 @@ class RuleBasedQueryAnalyzer:
             ),
             (r"^(.+?)의\s*(?:판매\s*LOT|판매\s*로트)", "product"),
             (r"^(.+?)\s+정보(?:를)?\s*(?:알려줘|보여줘|조회)", "product"),
+            (
+                r"^(.+?\s+(?:ETF|ETN|ETP|펀드|채권|상품))\s*"
+                r"(?:알려줘|알려주세요|보여줘|조회(?:해줘)?)",
+                "product",
+            ),
+            (
+                r"^(.+?\s+(?:ETF|ETN|ETP|펀드|채권|상품))(?:에)?\s*대해\s*"
+                r"(?:설명해줘|설명해주세요)",
+                "product",
+            ),
             (
                 r"^(.+?)(?:을|를)\s*"
                 r"(?:알려줘|보여줘|조회(?:해줘)?)[?.!]?\s*$",

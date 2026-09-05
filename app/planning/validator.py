@@ -9,6 +9,10 @@ from app.domain.models import (
 )
 from app.planning.metadata import RoutingMetadataRegistry
 from app.planning.exceptions import UnsupportedQuerySemanticsError
+from app.planning.serialization import (
+    BASIC_PRODUCT_FIELDS,
+    BASIC_PRODUCT_PROJECTION,
+)
 
 
 class QueryPlanValidationError(ValueError):
@@ -114,7 +118,7 @@ class StructuredQueryPlanValidator:
         planner: PlannerType | None,
     ) -> list[str]:
         errors: list[str] = []
-        allowed_fields = set(query.canonical_fields.values())
+        canonical_allowed_fields = set(query.canonical_fields.values())
         allowed_concepts = {concept.value for concept in query.canonical_concepts}
         allowed_entity_ids = {
             entity.canonical_id
@@ -123,6 +127,24 @@ class StructuredQueryPlanValidator:
             and entity.canonical_id is not None
         }
         for step in plan.steps:
+            allowed_fields = set(canonical_allowed_fields)
+            projection_profile = step.inputs.get("projection_profile")
+            if projection_profile is not None:
+                valid_basic_projection = bool(
+                    projection_profile == BASIC_PRODUCT_PROJECTION
+                    and len(allowed_entity_ids) == 1
+                    and not query.grounded_requested_fields
+                    and not query.grounded_filters
+                    and not query.grounded_sort
+                    and not query.grounded_relations
+                    and not query.parsed_query.requires_semantic_search
+                    and step.inputs.get("requested_fields")
+                    == list(BASIC_PRODUCT_FIELDS)
+                )
+                if not valid_basic_projection:
+                    errors.append("invalid_default_projection_profile")
+                else:
+                    allowed_fields.update(BASIC_PRODUCT_FIELDS)
             used_fields = _extract_canonical_fields(step.inputs)
             unknown_fields = used_fields - allowed_fields
             if unknown_fields:
