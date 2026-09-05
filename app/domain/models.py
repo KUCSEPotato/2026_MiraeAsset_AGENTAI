@@ -529,12 +529,21 @@ class GroupBySpec(BaseModel):
     constraint_id: str | None = None
 
 
+class PeerSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["PEER_SELECTOR"] = "PEER_SELECTOR"
+    raw_text: str
+    source_span: SourceSpan
+    constraint_id: str | None = None
+
+
 class ParsedQuery(BaseModel):
     original_question: str
     intent: QueryIntent
     product_types: list[str] = Field(default_factory=list)
     product_universe: ProductUniverseUnion | None = None
     entities: list[EntityMention] = Field(default_factory=list)
+    selectors: list[PeerSelector] = Field(default_factory=list)
     filters: list[FilterSpec] = Field(default_factory=list)
     relations: list[str | RelationMention] = Field(default_factory=list)
     sort: list[SortSpec] = Field(default_factory=list)
@@ -682,6 +691,7 @@ class QueryPlan(BaseModel):
     unsupported_constraint_ids: list[str] = Field(default_factory=list)
     constraint_coverage_required: bool = False
     semantic_ir: dict[str, Any] | None = None
+    output_disclosures: list["ClauseResult"] = Field(default_factory=list)
 
 
 class RetrievalRecord(BaseModel):
@@ -779,8 +789,50 @@ class ValidationFinding(BaseModel):
 
 class ValidationResult(BaseModel):
     answerable: bool
+    answerability: "AnswerabilityStatus | None" = None
+    clauses: list["ClauseResult"] = Field(default_factory=list)
+    comparison_completed: bool = False
     reason_codes: list[AnswerabilityReasonCode] = Field(default_factory=list)
     findings: list[ValidationFinding] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def synchronize_answerability(self) -> "ValidationResult":
+        if self.answerability is None:
+            self.answerability = (AnswerabilityStatus.FULLY_ANSWERABLE if self.answerable
+                                  else AnswerabilityStatus.UNANSWERABLE)
+        elif self.answerable != (self.answerability is not AnswerabilityStatus.UNANSWERABLE):
+            raise ValueError("answerable must agree with answerability")
+        return self
+
+
+class AnswerabilityStatus(str, Enum):
+    FULLY_ANSWERABLE = "FULLY_ANSWERABLE"
+    PARTIALLY_ANSWERABLE = "PARTIALLY_ANSWERABLE"
+    UNANSWERABLE = "UNANSWERABLE"
+
+
+class ClauseStatus(str, Enum):
+    SATISFIED = "SATISFIED"
+    MISSING = "MISSING"
+    UNSUPPORTED = "UNSUPPORTED"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+class ClauseResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["OUTPUT", "ENTITY", "COMPARISON", "SELECTOR"] = "OUTPUT"
+    status: ClauseStatus
+    constraint_id: str | None = None
+    field: str | None = None
+    label: str
+    entity_id: str | None = None
+    entity_label: str | None = None
+    reason: str | None = None
+    evidence_indices: list[int] = Field(default_factory=list)
+
+
+ValidationResult.model_rebuild()
+QueryPlan.model_rebuild()

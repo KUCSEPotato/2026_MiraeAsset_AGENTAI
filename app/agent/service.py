@@ -34,6 +34,8 @@ from app.agent.interfaces import (
 )
 from app.domain.models import (
     AnswerabilityReasonCode,
+    ClauseResult,
+    ClauseStatus,
     ParseProvenance,
     ResolutionStatus,
     RetrievalSource,
@@ -299,6 +301,27 @@ class PipelineAnswerService:
                     if reason.startswith("unsupported_comparison:")
                 ],
                 reason_code=entity_reason,
+                clauses=[
+                    ClauseResult(
+                        label=field.raw_text,
+                        field=field.canonical_field,
+                        status=ClauseStatus.UNSUPPORTED,
+                        reason="query_not_executable",
+                    )
+                    for field in grounded_query.grounded_requested_fields
+                ] + [
+                    ClauseResult(
+                        kind="ENTITY",
+                        label=item.raw_text,
+                        constraint_id=item.constraint_id,
+                        status=(ClauseStatus.AMBIGUOUS
+                                if item.resolution_status is ResolutionStatus.AMBIGUOUS
+                                else ClauseStatus.MISSING),
+                        reason="entity_not_resolved",
+                    )
+                    for item in resolved_query.resolved_entities
+                    if item.resolution_status is not ResolutionStatus.RESOLVED
+                ],
             )
         planning_latency_ms = _elapsed_ms(planning_started)
         trace.append("planning")
@@ -332,13 +355,15 @@ class PipelineAnswerService:
 
         answer_started = perf_counter()
         if validation.answerable:
-            final_answer = await self._answer_generator.generate(
+            generator = (DeterministicEvidenceAnswerGenerator()
+                         if validation.answerability.value == "PARTIALLY_ANSWERABLE" else self._answer_generator)
+            final_answer = await generator.generate(
                 question,
                 evidence,
                 validation,
             )
             trace.append("answer_generation")
-            status = "success"
+            status = "partial" if validation.answerability.value == "PARTIALLY_ANSWERABLE" else "success"
         else:
             final_answer = await self._safe_response_generator.generate(validation)
             trace.append("safe_response")
@@ -374,6 +399,9 @@ class PipelineAnswerService:
                     "validation_reasons": validation.reasons,
                     "validation_summary": {
                         "answerable": validation.answerable,
+                        "answerability": validation.answerability.value,
+                        "comparison_completed": validation.comparison_completed,
+                        "clauses": [item.model_dump(mode="json") for item in validation.clauses],
                         "reason_codes": [
                             code.value for code in validation.reason_codes
                         ],
@@ -384,7 +412,7 @@ class PipelineAnswerService:
                         ),
                         "answer_generation_calls": (
                             int(getattr(self._answer_generator, "model_calls_per_answer", 0))
-                            if validation.answerable
+                            if validation.answerable and validation.answerability.value != "PARTIALLY_ANSWERABLE"
                             else 0
                         ),
                         "retries": 0,
@@ -466,6 +494,7 @@ class PipelineAnswerService:
         ontology_latency_ms: float = 0.0,
         planning_latency_ms: float = 0.0,
         unsupported_details: list[str] | None = None,
+        clauses: list[ClauseResult] | None = None,
         reason_code: AnswerabilityReasonCode = (
             AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT
         ),
@@ -483,6 +512,7 @@ class PipelineAnswerService:
             answerable=False,
             reason_codes=[reason_code],
             reasons=[reason_code.value, *details],
+            clauses=clauses or [],
         )
         final_answer = await self._safe_response_generator.generate(validation)
         return AgentResult(
@@ -491,6 +521,8 @@ class PipelineAnswerService:
                     "question": question,
                     "validation": {
                         "answerable": False,
+                        "answerability": "UNANSWERABLE",
+                        "clauses": [item.model_dump(mode="json") for item in validation.clauses],
                         "reason_codes": [
                             reason_code.value
                         ],
@@ -506,6 +538,8 @@ class PipelineAnswerService:
                     "reason": failure_state[1],
                     "validation_summary": {
                         "answerable": False,
+                        "answerability": "UNANSWERABLE",
+                        "clauses": [item.model_dump(mode="json") for item in validation.clauses],
                         "reason_codes": [
                             reason_code.value
                         ],

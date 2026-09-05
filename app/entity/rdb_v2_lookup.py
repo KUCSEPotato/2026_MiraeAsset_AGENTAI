@@ -26,6 +26,7 @@ from app.domain.models import (
     EntityResolutionCandidate,
 )
 from app.entity.normalization import (
+    organization_identity_compatible,
     FUZZY_ACCEPTANCE_THRESHOLD,
     FUZZY_AMBIGUITY_MARGIN,
     FUZZY_CANDIDATE_LIMIT,
@@ -288,6 +289,8 @@ class CanonicalV2EntityLookup:
         matches: list[EntityLookupMatch] = []
         for entity_id in sorted(entity_rows):
             row = entity_rows[entity_id]
+            if not organization_identity_compatible(raw_text, row["preferred_name"], entity_type):
+                continue
             identifier = identifier_by_id.get(entity_id)
             alias = matched_alias_by_id.get(entity_id)
             if entity_id == raw_text:
@@ -439,6 +442,8 @@ class CanonicalV2EntityLookup:
 
         ranked: list[EntityLookupMatch] = []
         for entity_id, row in rows.items():
+            if not organization_identity_compatible(raw_text, row["preferred_name"], entity_type):
+                continue
             aliases = aliases_by_id.get(entity_id, [])
             labels = [value for value in (row["preferred_name"], *aliases) if value]
             if not labels:

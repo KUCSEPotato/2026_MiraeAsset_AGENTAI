@@ -173,9 +173,10 @@ def test_capability_gate_rejects_unbacked_operators(query, reason, products, ont
 
 def test_comparison_cannot_enable_unverified_expense_ratio(products, ontology) -> None:
     question = f"{products[0].official_name}과 {products[1].aliases[0]}의 운용보수와 AUM을 비교해줘"
-    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
-        asyncio.run(_plan(question, products, ontology))
-    assert "unsupported_comparison:expense_ratio_scale_unverified" in caught.value.reasons
+    _, _, plan = asyncio.run(_plan(question, products, ontology))
+    assert all(step.inputs.get("comparison") is None for step in plan.steps)
+    assert any(item.kind == "COMPARISON" and item.reason == "expense_ratio_scale_unverified"
+               for item in plan.output_disclosures)
 
 
 def test_cross_store_or_cannot_drop_semantic_branch(products, ontology) -> None:

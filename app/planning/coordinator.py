@@ -7,6 +7,7 @@ from app.planning.interfaces import (
 )
 from app.planning.capabilities import SemanticCapabilityValidator
 from app.planning.semantic_ir import build_semantic_ir
+from app.planning.output_requirements import prepare_outputs
 
 
 class QueryPlanner:
@@ -28,6 +29,9 @@ class QueryPlanner:
         self._capability_validator = capability_validator or SemanticCapabilityValidator()
 
     async def create_plan(self, query: GroundedQuery) -> QueryPlan:
+        original = query
+        prepared = prepare_outputs(original)
+        query = prepared.query
         semantic_ir = build_semantic_ir(query)
         self._capability_validator.validate(query, semantic_ir)
         decision = self._routing_checker.check(query)
@@ -38,5 +42,6 @@ class QueryPlanner:
         plan = plan.model_copy(update={
             "routing_reasons": decision.reasons,
             "semantic_ir": semantic_ir.model_dump(mode="json"),
+            "output_disclosures": prepared.disclosures,
         })
-        return self._plan_validator.validate(plan, query)
+        return self._plan_validator.validate(plan, original)

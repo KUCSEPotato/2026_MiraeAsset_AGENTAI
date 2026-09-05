@@ -16,6 +16,7 @@ from app.domain.models import (
     FilterOperator,
     FilterSpec,
     ParsedQuery,
+    PeerSelector,
     ProductUniverseUnion,
     QueryIntent,
     RelationDirection,
@@ -97,15 +98,21 @@ class RuleBasedQueryAnalyzer:
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "설명해줘", "설명해주세요", "대해", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
-        "종목", "종목을", "순으로", "찾고", "각각의", "각각", "도",
+        "종목", "종목을", "순으로", "찾고", "각각의", "각각", "도", "각", "상품의",
         "TOP", "top",
     }
 
     async def analyze(self, question: str) -> ParsedQuery:
+        selectors = self._extract_peer_selectors(question)
         entities = self._extract_entity_mentions(question)
+        entities = [item for item in entities if not any(item.raw_text == selector.raw_text for selector in selectors)]
         entity_spans = [range(*_find_span(question, item.raw_text)) for item in entities]
+        entity_spans.extend(range(item.source_span.start, item.source_span.end) for item in selectors)
         product_types = self._extract_product_types(question, entity_spans)
-        product_universe, universe_span = self._extract_product_universe(question)
+        scope_text = list(question)
+        for selector in selectors:
+            scope_text[selector.source_span.start:selector.source_span.end] = " " * (selector.source_span.end - selector.source_span.start)
+        product_universe, universe_span = self._extract_product_universe("".join(scope_text))
         filters = self._extract_filters(
             question, product_types, entity_spans, region_scope_span=universe_span,
         )
@@ -243,6 +250,11 @@ class RuleBasedQueryAnalyzer:
             add(start, end, ConstraintSemanticType.ENTITY,
                 payload={"entity_type": item.entity_type}, ref=("entity", index))
 
+        for index, selector in enumerate(selectors):
+            add(selector.source_span.start, selector.source_span.end, ConstraintSemanticType.REQUESTED_FIELD,
+                payload={"role": "PEER_SELECTOR", "selector": selector.raw_text}, ref=("selector", index),
+                status=ConstraintStatus.UNSUPPORTED, reason="peer_selector_unverified")
+
         for index, item in enumerate(relations):
             start, end = self._relation_span(question, item)
             add(
@@ -368,6 +380,8 @@ class RuleBasedQueryAnalyzer:
                 for i, item in enumerate(sort)]
         entities = [item.model_copy(update={"constraint_id": ref_ids.get(("entity", i))})
                     for i, item in enumerate(entities)]
+        selectors = [item.model_copy(update={"constraint_id": ref_ids.get(("selector", i))})
+                     for i, item in enumerate(selectors)]
         relations = [
             item.model_copy(update={"constraint_id": ref_ids.get(("relation", i))})
             for i, item in enumerate(relations)
@@ -395,7 +409,7 @@ class RuleBasedQueryAnalyzer:
         return normalize_query_semantics(ParsedQuery(
             original_question=question, intent=intent, product_types=product_types,
             product_universe=product_universe,
-            entities=entities, filters=filters, relations=relations, sort=sort,
+            entities=entities, selectors=selectors, filters=filters, relations=relations, sort=sort,
             requested_fields=requested_fields,
             semantic_terms=semantic_terms,
             requires_semantic_search=semantic_search,
@@ -986,9 +1000,16 @@ class RuleBasedQueryAnalyzer:
         return match
 
     @staticmethod
+    def _extract_peer_selectors(question: str) -> list[PeerSelector]:
+        # A requested "other ... ETF" category is not a named product. Keep
+        # its original words; no peers/index/exposure are invented here.
+        return [PeerSelector(raw_text=match.group(), source_span=SourceSpan(start=match.start(), end=match.end()))
+                for match in re.finditer(r"다른\s+[^,\n]+?\s+ETF(?=의|와|과|를|을|\s|$)", question, re.IGNORECASE)]
+
+    @staticmethod
     def _coordinated_entity_mentions(question: str) -> list[EntityMention]:
         """Separate explicit entity lists; resolution still owns their identity."""
-        if not re.search(r"비교|가장|최고|최저", question):
+        if not re.search(r"비교|가장|최고|최저|다른\s+.*ETF", question, re.IGNORECASE):
             return []
         prefix = re.split(r"의\s*|\s+중(?:에서)?\s*", question, maxsplit=1)[0]
         if prefix == question or re.search(r"운용하는|보유한|편입한|이상|이하", prefix):
