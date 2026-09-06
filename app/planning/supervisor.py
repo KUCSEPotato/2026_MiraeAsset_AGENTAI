@@ -81,7 +81,9 @@ class DeterministicSupervisorPlanner:
             not semantic_search
             or restrict_semantic_candidates
             or needs_rdb_fields
-        ) and not relation_only_product_identity and not relation_domain_covers_product_type
+        ) and not relation_only_product_identity and not (
+            relation_domain_covers_product_type and not needs_rdb_fields
+        )
         if needs_rdb:
             rdb_inputs = dict(structured_inputs)
             if semantic_search or has_resolved_relations:
@@ -183,7 +185,12 @@ class DeterministicSupervisorPlanner:
         if graph_paths and (
             resolved_source_ids or graph_dependencies or has_target_anchor
         ):
-            graph_limit = structured_inputs["result_limit"]
+            # A financial Top-K belongs after every relation/filter. Restricting
+            # graph paths to K here can discard the highest-ranked product.
+            graph_limit = (
+                self._candidate_limit if needs_rdb or semantic_search or len(graph_paths) > 1
+                else structured_inputs["result_limit"]
+            )
             steps.append(
                 QueryStep(
                     step_id="graph-relations",
@@ -193,6 +200,11 @@ class DeterministicSupervisorPlanner:
                         "paths": graph_paths,
                         "source_node_ids": resolved_source_ids,
                         "candidate_ids_from": graph_dependencies,
+                        "path_operator": "and",
+                        "require_complete_candidates": bool(needs_rdb or semantic_search or len(graph_paths) > 1),
+                        **({"result_limit": structured_inputs["result_limit"]}
+                           if len(graph_paths) > 1 and not needs_rdb and not semantic_search
+                           and structured_inputs["result_limit"] is not None else {}),
                         **({"limit": graph_limit} if graph_limit is not None else {}),
                     },
                     depends_on=graph_dependencies,
@@ -215,6 +227,49 @@ class DeterministicSupervisorPlanner:
                     ),
                 )
             )
+
+        # Routing depends on the grounded operators and their anchors. An
+        # anchored graph can select IDs first; the same RDB filter/projection/
+        # ordering implementation then operates on precisely that candidate set.
+        if needs_rdb and needs_rdb_fields:
+            graph_first = bool(
+                graph_paths and not semantic_search
+                and (resolved_source_ids or all(
+                    any(value is not None for value in path["target_values"])
+                    for path in graph_paths
+                ))
+            )
+            semantic_first = bool(
+                semantic_step_id == "bm25-strategy" and not has_resolved_relations
+                and not restrict_semantic_candidates
+            )
+            candidate_step_id = (
+                "graph-relations" if graph_first else
+                semantic_step_id if semantic_first else None
+            )
+            if candidate_step_id is not None:
+                reordered: list[QueryStep] = []
+                for step in steps:
+                    if step.step_id == candidate_step_id:
+                        inputs = dict(step.inputs)
+                        inputs.pop("candidate_ids_from", None)
+                        inputs["require_complete_candidates"] = True
+                        if semantic_first:
+                            inputs["top_k"] = self._candidate_limit
+                        reordered.insert(0, step.model_copy(update={
+                            "inputs": inputs, "depends_on": [],
+                        }))
+                    elif step.step_id == "rdb-candidates":
+                        reordered.append(step.model_copy(update={
+                            "inputs": {
+                                **step.inputs,
+                                "candidate_ids_from": [candidate_step_id],
+                            },
+                            "depends_on": [candidate_step_id],
+                        }))
+                    else:
+                        reordered.append(step)
+                steps = reordered
 
         unresolved_mentions = [
             entity.raw_text
@@ -249,6 +304,10 @@ class DeterministicSupervisorPlanner:
         retrieval_step_ids = [step.step_id for step in steps]
         if len(retrieval_step_ids) > 1:
             has_sort = bool(structured_inputs["sort"])
+            if has_sort:
+                # The merge consumes the deterministic RDB ordering even when
+                # another store produced that RDB step's candidate IDs.
+                retrieval_step_ids.sort(key=lambda value: value != "rdb-candidates")
             steps.append(
                 QueryStep(
                     step_id=(
@@ -263,6 +322,7 @@ class DeterministicSupervisorPlanner:
                     inputs={
                         "sort": structured_inputs["sort"],
                         "limit": structured_inputs["result_limit"],
+                        "require_complete_candidates": bool(has_sort or graph_paths),
                     },
                     depends_on=retrieval_step_ids,
                 )
@@ -325,7 +385,7 @@ def _graph_paths(query: GroundedQuery, *, allow_holdings: bool = True) -> list[d
     chained: dict[str, list] = {}
     for relation in resolved:
         if relation.chain_id is None:
-            paths.extend(_allow_listed_paths(relation))
+            paths.extend(_allow_listed_paths(query, relation))
         else:
             chained.setdefault(relation.chain_id, []).append(relation)
     for chain_id in sorted(chained):
@@ -333,17 +393,18 @@ def _graph_paths(query: GroundedQuery, *, allow_holdings: bool = True) -> list[d
             chained[chain_id],
             key=lambda item: item.path_position if item.path_position is not None else 0,
         )
-        paths.append(_path(relations))
+        paths.append(_path(relations, query))
     return paths
 
 
-def _allow_listed_paths(relation) -> list[dict]:
+def _allow_listed_paths(query: GroundedQuery, relation) -> list[dict]:
     """Expand only reviewed bounded semantic paths; never infer arbitrary hops."""
 
     if (
         relation.canonical_relation == "holds"
         and relation.target_value is not None
     ):
+        target_value = _resolved_target_value(query, relation)
         common = {
             "raw_relations": [relation.raw_text],
             "constraint_ids": [relation.constraint_id] if relation.constraint_id else [],
@@ -357,7 +418,7 @@ def _allow_listed_paths(relation) -> list[dict]:
                     RelationDirection.OUTGOING.value,
                 ],
                 "raw_relations": [relation.raw_text, "증권 발행사"],
-                "target_values": [None, relation.target_value],
+                "target_values": [None, target_value],
                 "target_types": ["EquitySecurity", "Organization"],
             }]
         if relation.target_type in {"Security", "EquitySecurity"}:
@@ -365,19 +426,21 @@ def _allow_listed_paths(relation) -> list[dict]:
                 **common,
                 "relations": ["holds"],
                 "directions": [RelationDirection.OUTGOING.value],
-                "target_values": [relation.target_value],
+                "target_values": [target_value],
                 "target_types": ["EquitySecurity"],
             }]
         return []
-    return [_path([relation])]
+    return [_path([relation], query)]
 
 
-def _path(relations: list) -> dict:
+def _path(relations: list, query: GroundedQuery) -> dict:
     return {
         "relations": [item.canonical_relation for item in relations],
         "directions": [item.direction.value for item in relations],
         "raw_relations": [item.raw_text for item in relations],
-        "target_values": [item.target_value for item in relations],
+        "target_values": [
+            _resolved_target_value(query, item) for item in relations
+        ],
         "target_types": [item.target_type for item in relations],
         "constraint_ids": [
             item.constraint_id
@@ -385,6 +448,27 @@ def _path(relations: list) -> dict:
             if item.constraint_id is not None
         ],
     }
+
+
+def _resolved_target_value(query: GroundedQuery, relation) -> str | None:
+    """Prefer a validated canonical relation target over a raw graph label."""
+
+    target = relation.target_value
+    if target is None:
+        return None
+    raw_values = {
+        str(value).casefold()
+        for value in (relation.target_value, relation.target_raw_text)
+        if value is not None
+    }
+    for entity in query.resolved_entities:
+        if (
+            entity.resolution_status is ResolutionStatus.RESOLVED
+            and entity.canonical_id is not None
+            and entity.raw_text.casefold() in raw_values
+        ):
+            return entity.canonical_id
+    return target
 
 
 def _relation_domain_covers_product_type(query: GroundedQuery) -> bool:

@@ -115,6 +115,33 @@ def test_json_logging_redacts_connection_and_token_secrets() -> None:
     assert rendered.count("[REDACTED]") == 3
 
 
+def test_json_logging_emits_allowlisted_hyperclova_error_fields() -> None:
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonLogFormatter())
+    logger = logging.getLogger("hcx-safe-error-test")
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.ERROR)
+    logger.error(
+        "HyperCLOVA request failed",
+        extra={
+            "http_status": 400,
+            "hcx_error_code": "40055",
+            "hcx_error_message": "Invalid response format schema",
+            "request_purpose": "semantic_parse",
+            "request_id": "request-safe-id",
+        },
+    )
+
+    payload = json.loads(stream.getvalue())
+    assert payload["http_status"] == 400
+    assert payload["hcx_error_code"] == "40055"
+    assert payload["hcx_error_message"] == "Invalid response format schema"
+    assert payload["request_purpose"] == "semantic_parse"
+    assert payload["request_id"] == "request-safe-id"
+
+
 def test_app_timeout_must_leave_evaluator_margin(monkeypatch) -> None:
     monkeypatch.setenv("APP_TIMEOUT_SECONDS", "300")
     with pytest.raises(ValueError, match="below 300"):

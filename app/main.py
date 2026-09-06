@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import os
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +14,7 @@ from app.api.answer import router as answer_router
 from app.data.database import DATABASE_BACKEND, DATABASE_SCHEMA_VERSION
 from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 from app.ontology.runtime_mapping import SEMANTIC_MAPPING_VERSION
-from app.operations import OperationalSettings, configure_logging
+from app.operations import OperationalSettings, configure_logging, request_correlation_id
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 FRONTEND_EXPORT_DIR = FRONTEND_DIR / "out"
@@ -85,6 +86,18 @@ def create_app() -> FastAPI:
             name="frontend-assets",
         )
 
+    @application.middleware("http")
+    async def correlate_request(request: Request, call_next):
+        # Server-generated identity; do not trust a user-supplied header as a log key.
+        request.state.request_id = str(uuid4())
+        token = request_correlation_id.set(request.state.request_id)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request.state.request_id
+            return response
+        finally:
+            request_correlation_id.reset(token)
+
     @application.exception_handler(Exception)
     async def controlled_internal_error(
         request: Request, exc: Exception
@@ -94,7 +107,7 @@ def create_app() -> FastAPI:
             extra={
                 "error_class": type(exc).__name__,
                 "http_status": 500,
-                "request_id": request.headers.get("x-request-id", "unavailable"),
+                "request_id": getattr(request.state, "request_id", "unavailable"),
             },
         )
         return JSONResponse(status_code=500, content={"detail": "internal service error"})

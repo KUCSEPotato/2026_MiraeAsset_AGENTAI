@@ -3,6 +3,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from app.ontology.runtime_mapping import BOND_TYPE_RESOURCES
+from app.query.normalization import MATURITY_YEAR_PATTERNS, normalize_query_semantics
+
 from app.domain.models import (
     AggregationOperator,
     AggregationSpec,
@@ -14,6 +17,7 @@ from app.domain.models import (
     FilterOperator,
     FilterSpec,
     ParsedQuery,
+    PeerSelector,
     ProductUniverseUnion,
     QueryIntent,
     RelationDirection,
@@ -65,49 +69,65 @@ class RuleBasedQueryAnalyzer:
         "채권형", "혼합자산", "채권혼합", "주식혼합", "단기자금", "대체자산", "부동산", "원자재",
         "Equity", "주식", "Bond", "채권", "통화", "기타",
     )
+    _bond_type_aliases = tuple(BOND_TYPE_RESOURCES)
     _field_aliases = (
-        "1년 수익률", "1년수익률", "연 수익률", "연수익률",
-        "운용규모", "순자산", "AUM", "총보수", "보수율", "기준가격", "NAV",
-        "가격", "티커", "ticker", "ISIN", "신용등급", "만기일", "만기",
+        "연초 이후 수익률", "연초이후수익률", "올해 수익률", "올해수익률",
+        "YTD 수익률", "YTD수익률",
+        "6개월 수익률", "6개월수익률", "6M 수익률", "6M수익률",
+        "3개월 수익률", "3개월수익률", "3M 수익률", "3M수익률",
+        "1개월 수익률", "1개월수익률", "1M 수익률", "1M수익률",
+        "1년 수익률", "1년수익률", "1Y 수익률", "1Y수익률",
+        "연 수익률", "연수익률",
+        "오늘 수익률", "오늘수익률", "1일 수익률", "1일수익률",
+        "1D 수익률", "1D수익률",
+        "운용규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
+        "위험 정보", "위험정보", "위험등급", "위험도", "리스크", "위험",
+        "기준가격", "NAV", "가격", "티커",
+        "ticker", "ISIN", "신용등급", "편입 비중", "보유 비중",
+        "상품유형", "상품종류", "자산유형", "자산군", "투자지역", "노출지역",
+        "상장국가", "거래통화", "시장범위", "국내외구분", "채권유형", "채권종류", "만기일", "만기",
     )
+    _ranking_field_aliases = (*_field_aliases, "수익률", "위험", "만기일", "만기")
     _semantic_markers = (
         "관련", "전략", "친환경", "폭넓게", "테마", "산업", "혁신형",
+        "구조", "위험요인", "특징", "동향",
         "covered call",
     )
     _descending_words = {"큰", "높은", "많은"}
     _ascending_words = {"낮은", "작은", "적은"}
     _non_material_tokens = {
         "에", "에는", "에서", "에게", "으로", "중", "중에서", "의", "이", "가",
-        "은", "는", "을", "를", "와", "과", "그리고", "모두", "만", "어떤",
-        "상품", "상품을", "상품은", "상품이", "알려줘", "찾아줘", "보여줘", "정보",
+        "은", "는", "을", "를", "와", "과", "그리고", "및", "and", "모두", "만", "어떤",
+        "상품", "상품을", "상품은", "상품이", "알려줘", "알려주세요", "찾아줘", "보여줘", "정보",
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
-        "해줘", "인가", "기준",
+        "해줘", "설명해줘", "설명해주세요", "대해", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
         "종목", "종목을", "순으로", "순서로",
+        "찾고", "각각의", "각각", "도", "각", "상품의",
         "TOP", "top",
     }
 
     async def analyze(self, question: str) -> ParsedQuery:
+        selectors = self._extract_peer_selectors(question)
         entities = self._extract_entity_mentions(question)
+        entities = [item for item in entities if not any(item.raw_text == selector.raw_text for selector in selectors)]
         entity_spans = [range(*_find_span(question, item.raw_text)) for item in entities]
+        entity_spans.extend(range(item.source_span.start, item.source_span.end) for item in selectors)
         product_types = self._extract_product_types(question, entity_spans)
-        product_universe, universe_span = self._extract_product_universe(question)
-        filters = self._extract_filters(question, product_types, entity_spans)
-        if product_universe is not None:
-            filters = [
-                item
-                for item in filters
-                if not (
-                    item.field == "region"
-                    and str(item.value) in {"국내", "한국"}
-                    and bool(
-                        {"DomesticETF", "DomesticETN", "DomesticETP"}
-                        & set(product_universe.operands)
-                    )
-                )
-            ]
+        scope_text = list(question)
+        for selector in selectors:
+            scope_text[selector.source_span.start:selector.source_span.end] = " " * (selector.source_span.end - selector.source_span.start)
+        product_universe, universe_span = self._extract_product_universe("".join(scope_text))
+        filters = self._extract_filters(
+            question, product_types, entity_spans, region_scope_span=universe_span,
+        )
         sort, sort_spans = self._extract_sort(question)
-        requested_fields = self._extract_requested_fields(question, sort_spans)
+        requested_fields = self._extract_requested_fields(
+            question,
+            sort_spans,
+            filters,
+            region_scope_span=universe_span,
+        )
         relations = self._extract_relations(question)
         # In an explicit "<name> fund class" lookup, the suffix declares the
         # entity grain; it is not a separate traversal request.
@@ -130,9 +150,11 @@ class RuleBasedQueryAnalyzer:
         # are not result-grain anchors.  This keeps company names and explicit
         # Security tickers on the same exact, canonical lookup boundary.
         target_entity_types = {
+            "AssetManager": "management_company",
             "Organization": "organization",
             "EquitySecurity": "security",
             "Security": "security",
+            "Index": "index",
         }
         entities.extend(
             EntityMention(
@@ -140,8 +162,7 @@ class RuleBasedQueryAnalyzer:
                 entity_type=target_entity_types[item.target_type],
             )
             for item in relations
-            if item.raw_text == "보유한"
-            and item.target_value is not None
+            if item.target_value is not None
             and item.target_type in target_entity_types
         )
         result_limit, limit_span = self._extract_limit(question)
@@ -201,7 +222,7 @@ class RuleBasedQueryAnalyzer:
             )
 
         for index, item in enumerate(filters):
-            start, end = self._filter_span(question, item)
+            start, end = self._filter_span(question, item, region_scope_span=universe_span)
             unit_is_unexecutable = (
                 isinstance(item.value, TypedScalarValue)
                 and item.value.unit is not ScalarUnit.NONE
@@ -225,14 +246,24 @@ class RuleBasedQueryAnalyzer:
                 ref=("sort", index))
 
         for index, value in enumerate(requested_fields):
-            start, end = _find_span(question, value)
+            start, end = self._requested_field_span(question, value)
+            path_weight = value in {"편입 비중", "보유 비중"}
             add(start, end, ConstraintSemanticType.REQUESTED_FIELD,
-                payload={"field": value}, ref=("requested_field", index))
+                payload={"field": value, **({"projection_scope": "path", "relation": "holds",
+                                            "property": "weight"} if path_weight else {})},
+                ref=("requested_field", index),
+                status=ConstraintStatus.UNSUPPORTED if path_weight else ConstraintStatus.PARSED,
+                reason="holdings_weight_projection_unavailable" if path_weight else None)
 
         for index, item in enumerate(entities):
             start, end = _find_span(question, item.raw_text)
             add(start, end, ConstraintSemanticType.ENTITY,
                 payload={"entity_type": item.entity_type}, ref=("entity", index))
+
+        for index, selector in enumerate(selectors):
+            add(selector.source_span.start, selector.source_span.end, ConstraintSemanticType.REQUESTED_FIELD,
+                payload={"role": "PEER_SELECTOR", "selector": selector.raw_text}, ref=("selector", index),
+                status=ConstraintStatus.UNSUPPORTED, reason="peer_selector_unverified")
 
         for index, item in enumerate(relations):
             start, end = self._relation_span(question, item)
@@ -248,7 +279,8 @@ class RuleBasedQueryAnalyzer:
         if result_limit is not None and limit_span is not None:
             limit_out_of_bounds = result_limit.value > 1000
             ranking_field_missing = (
-                result_limit.raw_text.startswith(("상위", "가장")) and not sort
+                result_limit.raw_text.startswith(("상위", "하위", "가장", "TOP", "Top", "top"))
+                and not sort
             )
             add(
                 limit_span.start,
@@ -290,16 +322,31 @@ class RuleBasedQueryAnalyzer:
         )
         intent_start = intent_match.start() if intent_match else 0
         intent_end = intent_match.end() if intent_match else len(question)
-        unsupported_intent = intent in {
-            QueryIntent.COMPARE_PRODUCTS, QueryIntent.RECOMMEND_PRODUCT,
-            QueryIntent.UNKNOWN,
-        }
+        unsupported_intent = (
+            intent in {QueryIntent.RECOMMEND_PRODUCT, QueryIntent.UNKNOWN}
+            or (intent is QueryIntent.COMPARE_PRODUCTS and not sort and not requested_fields)
+        )
         add(
             intent_start, intent_end, ConstraintSemanticType.INTENT,
-            raw_text=intent.value, payload={"intent": intent.value}, ref=("intent", 0),
+            raw_text=intent.value,
+            payload={
+                "intent": intent.value,
+                **(
+                    {"ambiguity_class": "TRUE_AMBIGUITY"}
+                    if intent is QueryIntent.COMPARE_PRODUCTS and not sort and not requested_fields
+                    else {}
+                ),
+            },
+            ref=("intent", 0),
             status=(ConstraintStatus.UNSUPPORTED if unsupported_intent
                     else ConstraintStatus.PARSED),
-            reason=("intent_execution_not_implemented" if unsupported_intent else None),
+            reason=(
+                "true_ambiguity:comparison_metric_missing"
+                if intent is QueryIntent.COMPARE_PRODUCTS and not sort and not requested_fields
+                else "intent_execution_not_implemented"
+                if unsupported_intent
+                else None
+            ),
         )
         # Intent words are grammatical/request operators, not evidence that the
         # surrounding material clause was semantically consumed.
@@ -343,6 +390,8 @@ class RuleBasedQueryAnalyzer:
                 for i, item in enumerate(sort)]
         entities = [item.model_copy(update={"constraint_id": ref_ids.get(("entity", i))})
                     for i, item in enumerate(entities)]
+        selectors = [item.model_copy(update={"constraint_id": ref_ids.get(("selector", i))})
+                     for i, item in enumerate(selectors)]
         relations = [
             item.model_copy(update={"constraint_id": ref_ids.get(("relation", i))})
             for i, item in enumerate(relations)
@@ -367,10 +416,10 @@ class RuleBasedQueryAnalyzer:
             item.constraint_id for item in constraints
             if item.status is ConstraintStatus.UNSUPPORTED
         ]
-        return ParsedQuery(
+        return normalize_query_semantics(ParsedQuery(
             original_question=question, intent=intent, product_types=product_types,
             product_universe=product_universe,
-            entities=entities, filters=filters, relations=relations, sort=sort,
+            entities=entities, selectors=selectors, filters=filters, relations=relations, sort=sort,
             requested_fields=requested_fields,
             semantic_terms=semantic_terms,
             requires_semantic_search=semantic_search,
@@ -382,7 +431,7 @@ class RuleBasedQueryAnalyzer:
                                else SemanticCoverageStatus.COMPLETE),
             unparsed_material_spans=residuals,
             unsupported_constraint_ids=unsupported,
-        )
+        ))
 
     def _classify_intent(self, question: str, entities: list[EntityMention]) -> QueryIntent:
         etp_status_query = bool(
@@ -398,7 +447,10 @@ class RuleBasedQueryAnalyzer:
             return QueryIntent.COMPARE_PRODUCTS
         if "추천" in question:
             return QueryIntent.RECOMMEND_PRODUCT
-        if any(token in question for token in ("알려줘", "찾아줘", "보여줘", "있어")):
+        if any(token in question for token in (
+            "알려줘", "알려주세요", "찾아줘", "보여줘", "설명해줘",
+            "설명해주세요", "있어",
+        )):
             return QueryIntent.SEARCH_PRODUCT
         if entities and any(token in question for token in ("정보", "조회")):
             return QueryIntent.LOOKUP_PRODUCT
@@ -416,6 +468,11 @@ class RuleBasedQueryAnalyzer:
         )
         if "펀드 클래스" in question:
             matches = [value for value in matches if value != "펀드"]
+        # "채권형" is an AssetClass expression.  It must not also become the
+        # Bond product subtype merely because one alias is a substring of the
+        # other.  A separate standalone "채권" still preserves product grain.
+        if "채권" in matches and not re.search(r"채권(?!형)", question):
+            matches = [value for value in matches if value != "채권"]
         lifecycle_bond_exclusion = bool(
             _BOND_LIFECYCLE_EXCLUSION_PATTERN.search(question)
         )
@@ -442,15 +499,52 @@ class RuleBasedQueryAnalyzer:
         question: str,
         product_types: list[str],
         excluded_spans: list[range] | None = None,
+        *,
+        region_scope_span: range | None = None,
     ) -> list[FilterSpec]:
         filters: list[FilterSpec] = []
+        market_scope_match = re.search(
+            r"시장범위(?:가|는|은)?\s*(국내외혼합|국내|해외)(?:인|인\s+상품)?"
+            r"|(국내외혼합|국내|해외)\s*시장범위(?:인)?",
+            question,
+            re.IGNORECASE,
+        )
+        market_scope_span = (
+            range(market_scope_match.start(), market_scope_match.end())
+            if market_scope_match is not None
+            else None
+        )
+        bond_types = self._find_aliases(
+            question,
+            self._bond_type_aliases,
+            excluded_spans=excluded_spans,
+        )
+        bond_type_spans = [
+            range(match.start(), match.end())
+            for value in bond_types
+            for match in re.finditer(re.escape(value), question, re.IGNORECASE)
+        ]
+        for pattern in MATURITY_YEAR_PATTERNS:
+            for match in pattern.finditer(question):
+                if not any(match.start() in span for span in (excluded_spans or [])):
+                    filters.append(FilterSpec(field=match.group("field"), operator="eq", value=match.group("year")))
+        # A geography already consumed by product-universe selection is not
+        # an exposure predicate. Select remaining aliases before taking the
+        # first region, so an explicit second geography cannot be discarded.
         regions = self._find_aliases(
-            question, self._region_aliases, excluded_spans=excluded_spans,
+            question, self._region_aliases,
+            excluded_spans=[
+                *(excluded_spans or []),
+                *([region_scope_span] if region_scope_span else []),
+                *([market_scope_span] if market_scope_span else []),
+            ],
         )
         assets = self._find_aliases(
-            question, self._asset_type_aliases, excluded_spans=excluded_spans,
+            question,
+            self._asset_type_aliases,
+            excluded_spans=[*(excluded_spans or []), *bond_type_spans],
         )
-        if "표시통화" in question:
+        if "표시통화" in question or "거래통화" in question:
             assets = [value for value in assets if value != "통화"]
         if product_types == ["채권"]:
             assets = [value for value in assets if value != "채권"]
@@ -489,6 +583,30 @@ class RuleBasedQueryAnalyzer:
                 filters.append(FilterSpec(field="asset_type", operator="in", value=assets))
             else:
                 filters.append(FilterSpec(field="asset_type", operator="eq", value=assets[0]))
+        if bond_types:
+            negated = next((value for value in bond_types if re.search(
+                rf"{re.escape(value)}(?:을|를|이|가)?\s*(?:제외|아닌)",
+                question,
+                re.IGNORECASE,
+            )), None)
+            if negated is not None:
+                filters.append(FilterSpec(
+                    field="bond_type", operator=FilterOperator.NE, value=negated,
+                ))
+            elif len(bond_types) > 1 and "또는" in question:
+                filters.append(FilterSpec(
+                    field="bond_type", operator=FilterOperator.IN, value=bond_types,
+                ))
+            else:
+                filters.append(FilterSpec(
+                    field="bond_type", operator=FilterOperator.EQ, value=bond_types[0],
+                ))
+        if market_scope_match is not None:
+            filters.append(FilterSpec(
+                field="market_scope",
+                operator=FilterOperator.EQ,
+                value=market_scope_match.group(1) or market_scope_match.group(2),
+            ))
         for value in self._find_aliases(
             question, self._product_type_aliases, excluded_spans=excluded_spans,
         ):
@@ -500,6 +618,10 @@ class RuleBasedQueryAnalyzer:
         if re.search(r"공모\s*펀드", question, re.IGNORECASE):
             filters.append(
                 FilterSpec(field="offering_type", operator="eq", value="공모")
+            )
+        elif re.search(r"사모\s*펀드", question, re.IGNORECASE):
+            filters.append(
+                FilterSpec(field="offering_type", operator="eq", value="사모")
             )
         listing = re.search(
             r"(미국|한국|국내)\s*(?:증시|시장|거래소)(?:에)?\s*상장(?:된|한)?",
@@ -514,6 +636,18 @@ class RuleBasedQueryAnalyzer:
                     value="US" if listing.group(1) == "미국" else "KR",
                 )
             )
+        trading_currency = re.search(
+            r"거래통화(?:가|는|은)?\s*([A-Za-z]{3})(?:인)?"
+            r"|\b([A-Za-z]{3})\s*거래통화(?:인|의)?",
+            question,
+            re.IGNORECASE,
+        )
+        if trading_currency:
+            filters.append(FilterSpec(
+                field="trading_currency",
+                operator=FilterOperator.EQ,
+                value=(trading_currency.group(1) or trading_currency.group(2)).upper(),
+            ))
         if re.search(r"원화\s*채권", question):
             filters.append(
                 FilterSpec(field="currency", operator=FilterOperator.EQ, value="KRW")
@@ -742,27 +876,42 @@ class RuleBasedQueryAnalyzer:
 
     def _extract_sort(self, question: str) -> tuple[list[SortSpec], list[range]]:
         found: list[tuple[int, SortSpec, range]] = []
-        adjective_pattern = (
-            "큰|높은|많은|낮은|작은|적은|빠른|이른|늦은|"
-            "크고|높고|많고|낮고|작고|적고|빠르고|이르고|늦고"
+        # Preserve historical change as metric semantics, never as a current
+        # snapshot AUM ranking. Normalization marks the series unavailable.
+        historical = re.compile(
+            r"(?:최근\s*)?(?:\d+\s*(?:일|개월|년)|[136]M|1Y)\s*(?:동안\s*)?"
+            r"(AUM|순자산|운용규모)(?:이|가|은|는)?\s*"
+            r"(?:가장\s*)?(많이|크게|적게)\s*(?:증가한|감소한|변화한|늘어난|줄어든)",
+            re.IGNORECASE,
         )
-        for alias in self._field_aliases:
+        for match in historical.finditer(question):
+            found.append((match.start(), SortSpec(
+                field=match.group(1), direction="asc" if match.group(2) == "적게" else "desc",
+            ), range(match.start(), match.end())))
+        adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
+        for alias in sorted(self._ranking_field_aliases, key=len, reverse=True):
+            adjectives = "빠른|늦은|이른" if alias in {"만기", "만기일"} else adjective_pattern
+            # In return comparisons, ``최근`` qualifies the trailing-period
+            # metric (for example, 최근 6개월 수익률).  Consume it with the
+            # structured sort span so it cannot become an unrelated temporal
+            # residual and spuriously trigger semantic-parser fallback.
+            context_prefix = r"(?:최근\s*)?" if "수익률" in alias else ""
             pattern = re.compile(
-                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:가장\s*)?"
-                rf"({adjective_pattern})(?:고|며)?", re.IGNORECASE,
+                rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:가장\s*)?"
+                rf"({adjectives})(?:고|며)?(?:\s*순(?:서)?(?:로|으로)?)?", re.IGNORECASE,
             )
             for match in pattern.finditer(question):
                 direction = (
                     "desc"
                     if match.group(2) in self._descending_words
-                    or match.group(2) in {"크고", "높고", "많고", "늦은", "늦고"}
+                    or match.group(2) in {"크고", "높고", "많고", "늦은"}
                     else "asc"
                 )
                 found.append((match.start(), SortSpec(field=match.group(1), direction=direction),
                               range(match.start(), match.end())))
             explicit = re.compile(
-                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
-                r"(오름차순|내림차순|ASC|DESC)",
+                rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
+                r"(오름차순|내림차순|ASC|DESC)(?:으로|로)?",
                 re.IGNORECASE,
             )
             for match in explicit.finditer(question):
@@ -777,31 +926,94 @@ class RuleBasedQueryAnalyzer:
                     )
                 )
             top_ranking = re.compile(
-                rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
-                r"(?:TOP|상위)\s*\d+",
+                rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
+                r"(TOP|상위|하위)\s*\d+",
                 re.IGNORECASE,
             )
             for match in top_ranking.finditer(question):
                 found.append(
                     (
                         match.start(),
-                        SortSpec(field=match.group(1), direction="desc"),
+                        SortSpec(
+                            field=match.group(1),
+                            direction=(
+                                "asc"
+                                if match.group(2).casefold() == "하위"
+                                else "desc"
+                            ),
+                        ),
                         range(match.start(), match.end()),
                     )
                 )
-        found.sort(key=lambda item: item[0])
-        return [item[1] for item in found], [item[2] for item in found]
+        # Long aliases win overlapping matches ("1년 수익률" over "수익률").
+        selected: list[tuple[int, SortSpec, range]] = []
+        for candidate in sorted(
+            found, key=lambda item: (item[0], -(item[2].stop - item[2].start))
+        ):
+            span = candidate[2]
+            if any(
+                span.start < existing.stop and span.stop > existing.start
+                for _, _, existing in selected
+            ):
+                continue
+            selected.append(candidate)
+        selected.sort(key=lambda item: item[0])
+        return [item[1] for item in selected], [item[2] for item in selected]
 
-    def _extract_requested_fields(self, question: str, sort_spans: list[range]) -> list[str]:
-        requested: list[tuple[int, str]] = []
+    def _extract_requested_fields(
+        self,
+        question: str,
+        sort_spans: list[range],
+        filters: list[FilterSpec],
+        *,
+        region_scope_span: range | None = None,
+    ) -> list[str]:
+        requested: list[tuple[int, int, str]] = []
+        filter_spans = [
+            range(*self._filter_span(
+                question,
+                item,
+                region_scope_span=region_scope_span,
+            ))
+            for item in filters
+        ]
         for alias in self._field_aliases:
             for match in re.finditer(re.escape(alias), question, re.IGNORECASE):
                 if any(match.start() in span for span in sort_spans):
                     continue
+                if any(match.start() in span for span in filter_spans):
+                    continue
                 if self._inside_numeric_condition(question, match.start()):
                     continue
-                requested.append((match.start(), match.group(0)))
-        return self._deduplicate(value for _, value in sorted(requested))
+                requested.append((match.start(), match.end(), match.group(0)))
+        # Generic return uses the same reviewed default-period policy in a
+        # possessive lookup or coordinated comparison projection.
+        for match in re.finditer(r"수익률", question):
+            projection_context = "비교" in question or bool(re.search(r"의\s*", question[:match.start()]))
+            if (projection_context and not any(match.start() in span for span in sort_spans)
+                    and not any(start <= match.start() < end for start, end, _ in requested)
+                    and not self._inside_numeric_condition(question, match.start())):
+                requested.append((match.start(), match.end(), match.group()))
+        selected: list[tuple[int, int, str]] = []
+        for candidate in sorted(
+            requested, key=lambda item: (item[0], -(item[1] - item[0]))
+        ):
+            start, end, _ = candidate
+            if any(
+                start < selected_end and end > selected_start
+                for selected_start, selected_end, _ in selected
+            ):
+                continue
+            selected.append(candidate)
+        return self._deduplicate(value for _, _, value in sorted(selected))
+
+    @staticmethod
+    def _requested_field_span(question: str, value: str) -> tuple[int, int]:
+        start, end = _find_span(question, value)
+        if "수익률" not in value:
+            return start, end
+        prefix = re.search(r"최근\s*$", question[:start])
+        return (prefix.start(), end) if prefix is not None else (start, end)
 
     @staticmethod
     def _inside_numeric_condition(question: str, position: int) -> bool:
@@ -810,7 +1022,13 @@ class RuleBasedQueryAnalyzer:
             r"(?:이상|이하|초과|미만)", question[position:position + 40]))
 
     def _extract_entity_mentions(self, question: str) -> list[EntityMention]:
+        coordinated = self._coordinated_entity_mentions(question)
+        if coordinated:
+            return coordinated
         candidates: list[tuple[int, int, str, str]] = []
+        manager = self._management_collection_match(question)
+        if manager is not None:
+            candidates.append((manager.start(), manager.end(), manager.group(1).strip(), "management_company"))
         patterns = (
             (
                 r"^(.+?)\s+(?:펀드\s*)?클래스\s+정보(?:를)?\s*(?:알려줘|보여줘|조회)",
@@ -818,6 +1036,13 @@ class RuleBasedQueryAnalyzer:
             ),
             (r"^(.+?)(?:에는|에)\s*어떤\s*(?:펀드\s*)?클래스", "fund"),
             (r"^(.+?)(?:이|가)\s*운용하는", "management_company"),
+            (r"^(.+?)\s*상품\s*중", "management_company"),
+            (
+                r"^(.+?)의\s*"
+                r"(?:(?:최근\s*)?(?:1일|1개월|3개월|6개월|1년|1D|1M|3M|6M|1Y|YTD)?\s*수익률|"
+                r"위험\s*정보|위험도|리스크|위험|위험요인|구조|투자전략|특징|동향)",
+                "product",
+            ),
             (r"^(.+?)의\s*(?:운용사|발행사|기초지수|추종지수|벤치마크)", "product"),
             (
                 r"^(.+?)의\s*(?:운용규모|순자산|AUM|총보수|보수율|"
@@ -826,6 +1051,21 @@ class RuleBasedQueryAnalyzer:
             ),
             (r"^(.+?)의\s*(?:판매\s*LOT|판매\s*로트)", "product"),
             (r"^(.+?)\s+정보(?:를)?\s*(?:알려줘|보여줘|조회)", "product"),
+            (
+                r"^(.+?\s+(?:ETF|ETN|ETP|펀드|채권|상품))\s*"
+                r"(?:알려줘|알려주세요|보여줘|조회(?:해줘)?)",
+                "product",
+            ),
+            (
+                r"^(.+?\s+(?:ETF|ETN|ETP|펀드|채권|상품))(?:에)?\s*대해\s*"
+                r"(?:설명해줘|설명해주세요)",
+                "product",
+            ),
+            (
+                r"^(.+?)(?:을|를)\s*"
+                r"(?:알려줘|보여줘|조회(?:해줘)?)[?.!]?\s*$",
+                "product",
+            ),
             (r"[A-Za-z0-9가-힣]+자산운용", "management_company"),
         )
         for pattern, entity_type in patterns:
@@ -835,6 +1075,12 @@ class RuleBasedQueryAnalyzer:
         accepted: list[tuple[int, int, str, str]] = []
         for candidate in sorted(candidates):
             start, end, raw_text, entity_type = candidate
+            if entity_type == "product" and re.search(
+                r"(?:편입한|편입된|보유한|추종하는|운용하는|발행한)",
+                raw_text,
+                re.IGNORECASE,
+            ):
+                continue
             if entity_type == "product" and self._is_structured_product_expression(
                 raw_text
             ):
@@ -842,13 +1088,73 @@ class RuleBasedQueryAnalyzer:
             if any(start < other_end and end > other_start
                    for other_start, other_end, *_ in accepted):
                 continue
-            accepted.append(candidate)
+            accepted.append((
+                start,
+                end,
+                _strip_entity_type_suffix(raw_text, entity_type),
+                entity_type,
+            ))
         return [EntityMention(raw_text=_strip_korean_particle(raw_text),
                               entity_type=entity_type)
                 for _, _, raw_text, entity_type in accepted]
 
+    def _management_collection_match(self, question: str):
+        """A collection prefix proposes a manager identity; resolver proves it."""
+        match = re.search(
+            r"^(.+?)\s+((?:(?:국내|해외)\s*)?(?:ETF|ETN|펀드|채권))\s*중(?:에서)?",
+            question, re.IGNORECASE,
+        )
+        if match is None:
+            return None
+        prefix = match.group(1).strip()
+        if self._is_structured_product_expression(prefix + " ETF"):
+            return None
+        # Existing provider scopes already have their own identity contract.
+        universe, scope_span = self._extract_product_universe(match.group())
+        if universe and scope_span and scope_span.start == match.start():
+            return None
+        return match
+
+    @staticmethod
+    def _extract_peer_selectors(question: str) -> list[PeerSelector]:
+        # A requested "other ... ETF" category is not a named product. Keep
+        # its original words; no peers/index/exposure are invented here.
+        return [PeerSelector(raw_text=match.group(), source_span=SourceSpan(start=match.start(), end=match.end()))
+                for match in re.finditer(r"다른\s+[^,\n]+?\s+ETF(?=의|와|과|를|을|\s|$)", question, re.IGNORECASE)]
+
+    @staticmethod
+    def _coordinated_entity_mentions(question: str) -> list[EntityMention]:
+        """Separate explicit entity lists; resolution still owns their identity."""
+        if not re.search(r"비교|가장|최고|최저|다른\s+.*ETF", question, re.IGNORECASE):
+            return []
+        prefix = re.split(r"의\s*|\s+중(?:에서)?\s*", question, maxsplit=1)[0]
+        if prefix == question or re.search(r"운용하는|보유한|편입한|이상|이하", prefix):
+            return []
+        # Conjunctions require a boundary on the right, avoiding syllables
+        # inside official names; quoted names also retain their full text.
+        parts = re.split(r"\s*[,、]\s*|(?:와|과)\s+|\s+(?:및|그리고|and)\s+", prefix, flags=re.IGNORECASE)
+        if len(parts) < 2 or any(not part.strip() for part in parts):
+            return []
+        return [EntityMention(raw_text=part.strip().strip("\"'"), entity_type="product")
+                for part in parts]
+
     def _is_structured_product_expression(self, raw_text: str) -> bool:
         """Distinguish collection constraints from a named product prefix."""
+        possessive = re.match(r"^(.+?)의(?:\s|$|[A-Za-z가-힣])", raw_text)
+        if possessive is not None and self._is_structured_product_expression(
+            possessive.group(1).strip()
+        ):
+            # ``ETF의 <field>`` denotes a collection projection, not a named
+            # product. The suffix must remain available to field extraction or
+            # fail-closed residual tracking instead of disappearing into an
+            # unresolved entity mention.
+            return True
+        if self._find_aliases(raw_text, self._field_aliases) or re.search(
+            r"(?:편입한|편입된|보유한|추종하는|운용하는|발행한|상장된|상장한|\s중(?:에서)?\b)",
+            raw_text,
+            re.IGNORECASE,
+        ):
+            return True
         if not self._find_aliases(raw_text, self._product_type_aliases):
             return False
 
@@ -877,6 +1183,7 @@ class RuleBasedQueryAnalyzer:
         return not remainder
 
     def _extract_relations(self, question: str) -> list[RelationMention]:
+        manager = self._management_collection_match(question)
         chain = re.search(
             r"^(.+?)(?:이|가)\s*운용하는\s+(ETF|ETN).*?의\s*(기초지수|추종지수)",
             question, re.IGNORECASE,
@@ -891,6 +1198,13 @@ class RuleBasedQueryAnalyzer:
                                 path_position=1),
             ]
         target_patterns = (
+            (
+                re.compile(r"^(.+?)\s*(상품\s*중)", re.IGNORECASE),
+                "운용사",
+                "FinancialProduct",
+                "AssetManager",
+                lambda value: _strip_korean_particle(value),
+            ),
             (re.compile(
                 r"^(?:검증된\s*)?(?:iShares|아이셰어즈)"
                 r"(?:\s*(?:해외\s*)?ETF)?\s*(?:보유종목\s*)?(?:범위|스코프)"
@@ -916,6 +1230,14 @@ class RuleBasedQueryAnalyzer:
                 re.IGNORECASE,
             ), "보유한", "FinancialProduct", "Security",
              lambda value: _strip_korean_particle(value)),
+            (re.compile(
+                r"^(.+?)(?:을|를|이|가)\s*(?:편입한|편입된)\s*"
+                r"(?:(?:국내\s*/\s*해외|국내|해외)\s*)?"
+                r"(?:[^\s]+\s*)?"
+                r"(?:ETF|ETN|공모\s*펀드|펀드)",
+                re.IGNORECASE,
+            ), "편입", "FinancialProduct", "Organization",
+             lambda value: _strip_korean_particle(value)),
             (re.compile(r"^(.+?)(?:이|가)\s*발행한\s*채권"), "발행한", "Bond",
              "Organization", lambda value: _strip_korean_particle(value)),
             (re.compile(r"발행사가\s*(.+?)인\s*채권"), "발행사", "Bond", "Issuer",
@@ -937,6 +1259,13 @@ class RuleBasedQueryAnalyzer:
              lambda value: value.removesuffix("등급")),
         )
         target_results: list[tuple[int, range, RelationMention]] = []
+        if manager is not None:
+            target = manager.group(1).strip()
+            target_results.append((manager.start(), range(manager.start(), manager.end()), RelationMention(
+                raw_text=question[manager.start(2):manager.end()], semantic_key="운용사",
+                direction=RelationDirection.OUTGOING, subject_type="FinancialProduct",
+                target_raw_text=target, target_type="AssetManager", target_value=target,
+            )))
         for pattern, alias, subject_type, target_type, normalize in target_patterns:
             for match in pattern.finditer(question):
                 if any(
@@ -945,7 +1274,13 @@ class RuleBasedQueryAnalyzer:
                 ):
                     continue
                 target_value = normalize(match.group(1).strip())
-                if alias == "보유한":
+                if alias == "편입" and re.search(
+                    r"의\s*자회사$", target_value
+                ):
+                    # A subsidiary expression requires a reviewed two-hop
+                    # organization relation; it is not a direct holding name.
+                    continue
+                if alias in {"보유한", "편입"}:
                     # A six-digit KRX ticker or an exchange-qualified global
                     # ticker identifies a Security.  A
                     # lexical company target denotes the issuing Organization;
@@ -960,9 +1295,19 @@ class RuleBasedQueryAnalyzer:
                         )
                         else "Organization"
                     )
+                raw_relation = alias
+                semantic_key = None
+                if alias == "운용사" and len(match.groups()) >= 2:
+                    raw_relation = match.group(2)
+                    semantic_key = alias
+                if alias == "편입":
+                    relation_match = re.search(r"편입(?:한|된)", match.group(0))
+                    if relation_match is not None:
+                        raw_relation = relation_match.group(0)
                 target_results.append((
                     match.start(), range(match.start(), match.end()),
-                    RelationMention(raw_text=alias, direction=RelationDirection.OUTGOING,
+                    RelationMention(raw_text=raw_relation, semantic_key=semantic_key,
+                                    direction=RelationDirection.OUTGOING,
                                     subject_type=subject_type,
                                     target_raw_text=match.group(1), target_type=target_type,
                                     target_value=target_value),
@@ -979,8 +1324,10 @@ class RuleBasedQueryAnalyzer:
             ("운용사", RelationDirection.OUTGOING),
             ("발행사", RelationDirection.OUTGOING),
             ("표시통화", RelationDirection.OUTGOING),
-            ("위험등급", RelationDirection.OUTGOING),
         )
+        # Bare risk-grade mentions are requested fields, not implicit Graph
+        # traversals. Explicit grade targets are preserved by target_patterns
+        # above and remain subject to the risk selection capability gate.
         results = [(start, item) for start, _, item in target_results]
         occupied = [span for _, span, _ in target_results]
         for alias, direction in aliases:
@@ -994,9 +1341,9 @@ class RuleBasedQueryAnalyzer:
 
     @staticmethod
     def _extract_limit(question: str) -> tuple[ResultLimit | None, range | None]:
-        for pattern in (r"(?:TOP|Top|top)\s*(\d+)", r"상위\s*(\d+)\s*개", r"(\d+)\s*개만",
+        for pattern in (r"(?:TOP|Top|top)\s*(\d+)", r"(?:상위|하위)\s*(\d+)\s*개", r"(\d+)\s*개만",
                         r"가장\s+(?:큰|낮은|높은|작은)\s*(\d+)\s*개",
-                        r"(?:상품|종목)?\s*(\d+)\s*개(?:를|만)?"):
+                        r"(?:상품|종목)?\s*(\d+)\s*개(?:를|만)?(?=\s|[?.!]|$)"):
             match = re.search(pattern, question)
             if match is not None:
                 return (ResultLimit(value=int(match.group(1)), raw_text=match.group(0)),
@@ -1173,12 +1520,19 @@ class RuleBasedQueryAnalyzer:
         return (TemporalConstraint(raw_text=match.group(0), requested_snapshot=snapshot),
                 range(match.start(), match.end()))
 
-    def _filter_span(self, question: str, item: FilterSpec) -> tuple[int, int]:
+    def _filter_span(
+        self, question: str, item: FilterSpec, *, region_scope_span: range | None = None,
+    ) -> tuple[int, int]:
+        if item.field in {"만기", "만기일"}:
+            for pattern in MATURITY_YEAR_PATTERNS:
+                for match in pattern.finditer(question):
+                    if match.group("field") == item.field and match.group("year") == item.value:
+                        return match.start(), match.end()
         if isinstance(item.value, TypedScalarValue):
             field_alias = {"aum": r"(?:순자산|AUM|운용규모)",
                            "expense_ratio": r"(?:총보수|보수율|운용보수)"}[item.field]
             match = re.search(field_alias + r".*?" + re.escape(item.value.raw)
-                              + r"\s*(?:이상|이하|초과|미만)",
+                              + r"\s*(?:이상|이하|초과|미만)(?:인)?",
                               question, re.IGNORECASE)
             if match is not None:
                 return match.start(), match.end()
@@ -1192,6 +1546,10 @@ class RuleBasedQueryAnalyzer:
         special_patterns = {
             "listing_country": r"(?:미국|한국|국내)\s*(?:증시|시장|거래소)(?:에)?\s*상장(?:된|한)?",
             "currency": r"원화\s*채권",
+            "trading_currency": (
+                r"거래통화(?:가|는|은)?\s*[A-Za-z]{3}(?:인)?"
+                r"|\b[A-Za-z]{3}\s*거래통화(?:인|의)?"
+            ),
             "credit_rating": r"(?:신용등급\s*)?[A-Z]{1,4}(?:[+\-0])?\s*(?:이상|이하|초과|미만)",
             "current_sale_available": r"현재\s*판매\s*가능(?:한)?",
             "current_bond_purchase_eligible": (
@@ -1221,13 +1579,26 @@ class RuleBasedQueryAnalyzer:
             "current_fund_subscription_eligible": r"(?:(?:(?:현재|지금)\s*)?(?:미래에셋(?:에서)?\s*)?(?:가입|신규\s*가입|추가매수)(?:할\s*수\s*있는|\s*가능(?:한)?)|미래에셋(?:에서)?\s*판매\s*중(?:인)?)",
             "subscription_status": r"판매완료\s*펀드(?:는|를)?\s*제외",
             "latest_fund_price_available": r"최신\s*기준가(?:가)?\s*(?:있는|보유)",
+            "bond_type": "|".join(
+                re.escape(value)
+                for value in sorted(self._bond_type_aliases, key=len, reverse=True)
+            ),
+            "market_scope": (
+                r"시장범위(?:가|는|은)?\s*(?:국내외혼합|국내|해외)(?:인|인\s+상품)?"
+                r"|(?:국내외혼합|국내|해외)\s*시장범위(?:인)?"
+            ),
         }
         if item.field in special_patterns:
             match = re.search(special_patterns[item.field], question, re.IGNORECASE)
             if match is not None:
                 return match.start(), match.end()
         values = item.value if isinstance(item.value, list) else [item.value]
-        spans = [_find_span(question, str(value)) for value in values]
+        spans = []
+        for value in values:
+            matches = list(re.finditer(re.escape(str(value)), question, re.IGNORECASE))
+            if item.field == "region" and region_scope_span is not None:
+                matches = [match for match in matches if match.start() not in region_scope_span]
+            spans.append((matches[0].start(), matches[0].end()) if matches else _find_span(question, str(value)))
         start, end = min(value[0] for value in spans), max(value[1] for value in spans)
         modifier = re.match(r"(?:을|를|이|가)?\s*(?:제외한?|아닌|또는)?",
                             question[end:end + 12])
@@ -1369,9 +1740,6 @@ def _boolean_expression(filters: list[FilterSpec],
             continue
         predicate = BooleanExpression(node_type=BooleanNodeType.PREDICATE,
                                       constraint_id=item.constraint_id)
-        if item.operator is FilterOperator.NE:
-            predicate = BooleanExpression(node_type=BooleanNodeType.NOT,
-                                          children=[predicate])
         nodes.append(predicate)
     if not nodes:
         return None
@@ -1392,3 +1760,17 @@ def _strip_korean_particle(value: str) -> str:
         if value.endswith(suffix) and len(value) > len(suffix):
             return value[:-len(suffix)]
     return value
+
+
+def _strip_entity_type_suffix(value: str, entity_type: str) -> str:
+    """Separate a grammatical type suffix from a named entity mention."""
+
+    stripped = _strip_korean_particle(value.strip())
+    if entity_type == "product":
+        stripped = re.sub(
+            r"\s+(?:ETF|ETN|펀드|채권|상품)$",
+            "",
+            stripped,
+            flags=re.IGNORECASE,
+        ).strip()
+    return stripped

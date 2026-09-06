@@ -17,11 +17,17 @@ from app.domain.models import (
     ExecutionContext,
     ExecutionResult,
     RetrievalRecord,
+    CanonicalEntity,
+    EntityMention,
     SemanticCoverageStatus,
 )
 from app.entity.lookup import StaticEntityLookup
 from app.entity.rdb_lookup import RDBEntityLookup
 from app.entity.resolver import RegistryEntityResolver
+from app.entity.normalization import (
+    entity_lookup_keys,
+    normalized_entity_form,
+)
 from app.ontology.loader import OntologyLoader
 from app.ontology.canonical_fields import ONTOLOGY_CANONICAL_FIELDS
 from app.ontology.rdf_service import RDFOntologyService
@@ -38,6 +44,7 @@ from app.retrieval.rdb import (
     RDBQueryCompiler,
     RealRDBRetriever,
 )
+from app.retrieval.rdb_v2 import CanonicalV2FieldRegistry
 from tests.data_helpers import postgres_engine
 from tests.test_rdb_retriever import product
 from tests.evidence_helpers import make_bundle, make_evidence, make_query, validate
@@ -74,6 +81,33 @@ def _run_plan(question: str):
     return asyncio.run(_semantic_plan(question))
 
 
+_TIGER_SP500 = CanonicalEntity(
+    canonical_id="etf_kr:KR7360750004",
+    entity_type="product",
+    official_name=(
+        "미래에셋 TIGER 미국S&P500증권상장지수투자신탁(주식)"
+    ),
+    aliases=["TIGER 미국S&P500"],
+    identifiers={"isin": "KR7360750004"},
+)
+
+
+async def _tiger_plan(question: str):
+    parsed = await RuleBasedQueryAnalyzer().analyze(question)
+    resolved = await RegistryEntityResolver(
+        StaticEntityLookup([_TIGER_SP500])
+    ).resolve(parsed)
+    ontology = RDFOntologyService(
+        OntologyLoader(
+            Path("ontology"),
+            known_canonical_fields=CanonicalV2FieldRegistry().canonical_fields,
+            version="team-v1",
+        ).load()
+    )
+    grounded = await ontology.ground(resolved)
+    return parsed, resolved, grounded, await _planner().create_plan(grounded)
+
+
 def _assert_blocked(question: str) -> None:
     with pytest.raises(UnsupportedQuerySemanticsError):
         _run_plan(question)
@@ -90,6 +124,361 @@ def test_material_clause_tracking_is_stable_and_fail_closed() -> None:
     assert parsed.semantic_coverage is SemanticCoverageStatus.INCOMPLETE
     assert [item.raw_text for item in parsed.unparsed_material_spans] == ["반도체"]
     assert parsed.unsupported_constraint_ids == ["C1"]
+
+
+def test_named_product_facets_do_not_pollute_entity_identity() -> None:
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze(
+        "TIGER 미국S&P500 ETF의 수익률과 위험 정보를 알려줘"
+    ))
+
+    assert [(item.raw_text, item.entity_type) for item in parsed.entities] == [
+        ("TIGER 미국S&P500", "product")
+    ]
+    assert parsed.product_types == ["ETF"]
+    assert parsed.requested_fields == ["수익률", "위험 정보"]
+    assert parsed.requires_semantic_search is False
+    assert parsed.semantic_terms == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "TIGER 미국S&P500 ETF 알려줘",
+        "TIGER 미국S&P500 ETF 정보 알려줘",
+        "TIGER 미국S&P500 ETF에 대해 설명해줘",
+    ],
+)
+def test_named_product_information_uses_basic_canonical_projection(
+    question: str,
+) -> None:
+    parsed, resolved, _, plan = asyncio.run(_tiger_plan(question))
+
+    assert parsed.semantic_coverage is SemanticCoverageStatus.COMPLETE
+    assert parsed.requires_semantic_search is False
+    assert parsed.unparsed_material_spans == []
+    assert resolved.resolved_entities[0].canonical_id == _TIGER_SP500.canonical_id
+    inputs = plan.steps[0].inputs
+    assert inputs["entity_ids"] == [_TIGER_SP500.canonical_id]
+    assert inputs["projection_profile"] == "BASIC_PRODUCT"
+    assert inputs["requested_fields"] == [
+        "product.name",
+        "product.product_type",
+        "product.ticker",
+        "product.isin",
+    ]
+
+
+def test_named_product_generic_return_uses_default_period_without_ranking() -> None:
+    _, resolved, grounded, plan = asyncio.run(
+        _tiger_plan("TIGER 미국S&P500 ETF의 수익률 알려줘")
+    )
+
+    assert resolved.resolved_entities[0].canonical_id == _TIGER_SP500.canonical_id
+    assert [item.canonical_field for item in grounded.grounded_requested_fields] == [
+        "product.one_year_return"
+    ]
+    inputs = plan.steps[0].inputs
+    assert inputs["entity_ids"] == [_TIGER_SP500.canonical_id]
+    assert inputs["requested_fields"] == ["product.one_year_return"]
+    assert inputs["sort"] == []
+    assert inputs["sort_operations"] == []
+    assert inputs["top_n"] is None
+    resolution = inputs["comparison_contracts"][0]["metric_resolution"]
+    assert resolution["period"] == "1Y"
+    assert resolution["period_source"] == "DEFAULT_POLICY"
+    assert "기간이 별도로 지정되지 않아" in resolution["disclosure"]
+
+
+def test_named_product_explicit_return_period_does_not_rank() -> None:
+    parsed, _, grounded, plan = asyncio.run(
+        _tiger_plan("TIGER 미국S&P500 ETF의 최근 6개월 수익률 알려줘")
+    )
+
+    assert parsed.semantic_coverage is SemanticCoverageStatus.COMPLETE
+    assert parsed.unparsed_material_spans == []
+    assert [item.canonical_field for item in grounded.grounded_requested_fields] == [
+        "product.six_month_return"
+    ]
+    inputs = plan.steps[0].inputs
+    assert inputs["requested_fields"] == ["product.six_month_return"]
+    assert inputs["sort"] == []
+    assert inputs["top_n"] is None
+    resolution = inputs["comparison_contracts"][0]["metric_resolution"]
+    assert resolution["period"] == "6M"
+    assert resolution["period_source"] == "EXPLICIT_QUERY"
+
+
+@pytest.mark.parametrize("risk_phrase", ["위험 정보", "위험", "위험도", "리스크"])
+def test_named_product_risk_aliases_project_only_canonical_risk_grade(
+    risk_phrase: str,
+) -> None:
+    _, _, grounded, plan = asyncio.run(
+        _tiger_plan(f"TIGER 미국S&P500 ETF의 {risk_phrase} 알려줘")
+    )
+
+    assert [item.canonical_field for item in grounded.grounded_requested_fields] == [
+        "product.risk_grade"
+    ]
+    assert plan.steps[0].inputs["requested_fields"] == ["product.risk_grade"]
+
+
+def test_missing_named_product_risk_grade_remains_explicitly_unavailable() -> None:
+    _, _, grounded, _ = asyncio.run(
+        _tiger_plan("TIGER 미국S&P500 ETF의 위험 정보 알려줘")
+    )
+    name_evidence = make_evidence(
+        field="product.name",
+        value=_TIGER_SP500.official_name,
+    ).model_copy(update={"entity_id": _TIGER_SP500.canonical_id})
+
+    result = validate(grounded, make_bundle([name_evidence]))
+
+    assert not result.answerable
+    assert AnswerabilityReasonCode.MISSING_REQUIRED_FIELD in result.reason_codes
+    assert result.missing_fields == ["product.risk_grade"]
+
+
+def test_named_product_return_and_risk_reuse_one_entity_resolution() -> None:
+    parsed, resolved, grounded, plan = asyncio.run(
+        _tiger_plan(
+            "TIGER 미국S&P500 ETF의 수익률과 위험 정보를 알려줘"
+        )
+    )
+
+    assert len(resolved.resolved_entities) == 1
+    assert resolved.resolved_entities[0].canonical_id == _TIGER_SP500.canonical_id
+    assert parsed.requires_semantic_search is False
+    assert [item.canonical_field for item in grounded.grounded_requested_fields] == [
+        "product.one_year_return",
+        "product.risk_grade",
+    ]
+    inputs = plan.steps[0].inputs
+    assert inputs["entity_ids"] == [_TIGER_SP500.canonical_id]
+    assert inputs["requested_fields"] == [
+        "product.one_year_return",
+        "product.risk_grade",
+    ]
+    assert inputs["comparison_contracts"][0]["metric_resolution"][
+        "period_source"
+    ] == "DEFAULT_POLICY"
+
+
+def test_direct_named_product_and_index_targets_have_clean_entity_spans() -> None:
+    product = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze("TIGER 미국S&P500 ETF를 알려줘")
+    )
+    index = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze("S&P 500을 추종하는 ETF를 알려줘")
+    )
+
+    assert [(item.raw_text, item.entity_type) for item in product.entities] == [
+        ("TIGER 미국S&P500", "product")
+    ]
+    assert product.product_types == ["ETF"]
+    assert [(item.raw_text, item.entity_type) for item in index.entities] == [
+        ("S&P 500", "index")
+    ]
+
+
+def test_generic_entity_normalization_handles_spacing_and_context_suffixes() -> None:
+    assert normalized_entity_form(
+        "TIGER 미국 S&P500 ETF", "product"
+    ) == normalized_entity_form("TIGER 미국S&P500", "product")
+    assert normalized_entity_form(
+        "미래에셋자산운용사", "management_company"
+    ) == normalized_entity_form("미래에셋자산운용", "management_company")
+    assert normalized_entity_form(
+        "㈜ 예시기업 Co., Ltd.", "company"
+    ) == normalized_entity_form("예시기업", "company")
+    assert normalized_entity_form("S&P500", "index") == normalized_entity_form(
+        "S&P 500", "index"
+    )
+    assert "tiger미국s&p500" in entity_lookup_keys(
+        "TIGER 미국 S&P500 ETF", "product"
+    )
+
+
+def test_normalized_entity_resolution_is_exact_and_ambiguity_safe() -> None:
+    entities = [
+        CanonicalEntity(
+            canonical_id="ETF:1",
+            entity_type="product",
+            official_name="TIGER 미국S&P500",
+            aliases=["미국 S&P 500 대표 ETF"],
+        ),
+        CanonicalEntity(
+            canonical_id="ORG:1",
+            entity_type="management_company",
+            official_name="미래에셋자산운용",
+        ),
+        CanonicalEntity(
+            canonical_id="INDEX:1",
+            entity_type="index",
+            official_name="S&P 500",
+        ),
+    ]
+
+    async def resolve(raw: str, entity_type: str):
+        parsed = await RuleBasedQueryAnalyzer().analyze("ETF를 알려줘")
+        parsed = parsed.model_copy(update={
+            "entities": [EntityMention(raw_text=raw, entity_type=entity_type)]
+        })
+        return (
+            await RegistryEntityResolver(StaticEntityLookup(entities)).resolve(parsed)
+        ).resolved_entities[0]
+
+    product = asyncio.run(resolve("TIGER 미국 S&P500 ETF", "product"))
+    manager = asyncio.run(resolve("미래에셋자산운용사", "management_company"))
+    index = asyncio.run(resolve("S&P500", "index"))
+
+    assert product.canonical_id == "ETF:1"
+    assert product.resolution_method == "NORMALIZED_EXACT"
+    assert manager.canonical_id == "ORG:1"
+    assert index.canonical_id == "INDEX:1"
+    assert all(item.confidence == 1.0 for item in (product, manager, index))
+
+
+def test_fuzzy_entity_resolution_requires_a_unique_high_confidence_winner() -> None:
+    entities = [
+        CanonicalEntity(
+            canonical_id="ETF:TIGER-SP500",
+            entity_type="product",
+            official_name="TIGER 미국S&P500",
+        ),
+        CanonicalEntity(
+            canonical_id="ETF:OTHER",
+            entity_type="product",
+            official_name="다른 글로벌채권 ETF",
+        ),
+    ]
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze("ETF를 알려줘"))
+    parsed = parsed.model_copy(update={
+        "entities": [EntityMention(
+            raw_text="TIGER 미국S&P50O",
+            entity_type="product",
+        )]
+    })
+
+    resolved = asyncio.run(
+        RegistryEntityResolver(StaticEntityLookup(entities)).resolve(parsed)
+    ).resolved_entities[0]
+
+    assert resolved.canonical_id == "ETF:TIGER-SP500"
+    assert resolved.resolution_method == "FUZZY_MATCH"
+    assert resolved.candidate_diagnostics[0].match_score >= 0.9
+    assert resolved.candidate_diagnostics[0].rejection_reason is None
+
+
+def test_exact_canonical_name_precedes_a_conflicting_alias() -> None:
+    entities = [
+        CanonicalEntity(
+            canonical_id="ETF:CANONICAL",
+            entity_type="product",
+            official_name="알파 대표 ETF",
+        ),
+        CanonicalEntity(
+            canonical_id="ETF:ALIAS",
+            entity_type="product",
+            official_name="베타 대표 ETF",
+            aliases=["알파 대표 ETF"],
+        ),
+    ]
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze("ETF를 알려줘"))
+    parsed = parsed.model_copy(update={
+        "entities": [EntityMention(raw_text="알파 대표 ETF", entity_type="product")]
+    })
+
+    resolved = asyncio.run(
+        RegistryEntityResolver(StaticEntityLookup(entities)).resolve(parsed)
+    ).resolved_entities[0]
+
+    assert resolved.canonical_id == "ETF:CANONICAL"
+    assert resolved.resolution_method == "EXACT_CANONICAL"
+
+
+def test_empty_entity_span_is_a_parse_failure_not_entity_not_found() -> None:
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze("ETF를 알려줘"))
+    parsed = parsed.model_copy(update={
+        "entities": [EntityMention(raw_text="   ", entity_type="product")]
+    })
+
+    resolved = asyncio.run(
+        RegistryEntityResolver(StaticEntityLookup()).resolve(parsed)
+    ).resolved_entities[0]
+
+    assert resolved.resolution_status.value == "unresolved"
+    assert resolved.resolution_reason == "ENTITY_PARSE_FAILED"
+
+
+def test_fuzzy_entity_resolution_does_not_choose_close_competing_candidates() -> None:
+    entities = [
+        CanonicalEntity(
+            canonical_id="ETF:ALPHA",
+            entity_type="product",
+            official_name="알파 글로벌 혁신성장 A",
+        ),
+        CanonicalEntity(
+            canonical_id="ETN:ALPHA",
+            entity_type="product",
+            official_name="알파 글로벌 혁신성장 B",
+        ),
+    ]
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze("ETF를 알려줘"))
+    parsed = parsed.model_copy(update={
+        "entities": [EntityMention(
+            raw_text="알파 글로벌 혁신성장 C",
+            entity_type="product",
+        )]
+    })
+
+    resolved = asyncio.run(
+        RegistryEntityResolver(StaticEntityLookup(entities)).resolve(parsed)
+    ).resolved_entities[0]
+
+    assert resolved.resolution_status.value == "ambiguous"
+    assert resolved.canonical_id is None
+    assert set(resolved.candidate_ids) == {"ETF:ALPHA", "ETN:ALPHA"}
+    assert all(
+        item.rejection_reason == "AMBIGUOUS"
+        for item in resolved.candidate_diagnostics
+    )
+
+
+def test_below_threshold_candidate_remains_explicitly_unresolved() -> None:
+    entities = [CanonicalEntity(
+        canonical_id="ETF:SP500",
+        entity_type="product",
+        official_name="TIGER 미국S&P500",
+    )]
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze("ETF를 알려줘"))
+    parsed = parsed.model_copy(update={
+        "entities": [EntityMention(
+            raw_text="TIGER 미국나스닥100",
+            entity_type="product",
+        )]
+    })
+
+    resolved = asyncio.run(
+        RegistryEntityResolver(StaticEntityLookup(entities)).resolve(parsed)
+    ).resolved_entities[0]
+
+    assert resolved.resolution_status.value == "unresolved"
+    assert resolved.resolution_reason == "ENTITY_UNRESOLVED"
+    assert resolved.candidate_ids == []
+    assert resolved.candidate_diagnostics[0].rejection_reason == "BELOW_THRESHOLD"
+
+
+def test_holding_phrase_extracts_generic_organization_relation() -> None:
+    parsed = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze("삼성전자를 편입한 ETF를 알려줘")
+    )
+
+    assert [(item.raw_text, item.entity_type) for item in parsed.entities] == [
+        ("삼성전자", "organization")
+    ]
+    assert parsed.relations[0].raw_text == "편입한"
+    assert parsed.relations[0].target_type == "Organization"
+    assert parsed.unparsed_material_spans == []
 
 
 def test_filter_operator_value_contract_and_boolean_tree() -> None:
@@ -216,9 +605,8 @@ def test_negation_or_and_limit_execute_with_sql_null_policy(tmp_path: Path) -> N
     ("question", "relation", "target"),
     [
         ("발행사가 대한민국인 채권", "issuedBy", "대한민국"),
-        ("기초지수가 S&P 500인 ETF", "tracks", "S&P 500"),
+        ("기초지수가 S&P 500인 ETF", "tracks", "TEST_INDEX_SP500"),
         ("표시통화가 USD인 ETF", "denominatedIn", "USD"),
-        ("위험등급 1등급인 ETF", "hasRiskGrade", "1"),
     ],
 )
 def test_relation_targets_reach_parameterized_graph_plan(

@@ -155,7 +155,9 @@ class RegistryOntologyService:
                 if isinstance(relation, RelationMention)
                 else RelationMention(raw_text=relation)
             )
-            canonical = relation_aliases.get(mention.raw_text.casefold())
+            canonical = relation_aliases.get(
+                (mention.semantic_key or mention.raw_text).casefold()
+            )
             grounded_relations.append(
                 GroundedRelation(
                     raw_text=mention.raw_text,

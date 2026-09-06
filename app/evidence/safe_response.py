@@ -14,6 +14,18 @@ class ReasonAwareSafeResponseGenerator:
 
     async def generate(self, validation: ValidationResult) -> str:
         codes = set(validation.reason_codes)
+        if AnswerabilityReasonCode.SEMANTIC_PARSE_FAILED in codes:
+            return (
+                "질의 해석 서비스를 완료하지 못해 안전하게 검색을 진행할 수 "
+                "없습니다. 잠시 후 다시 시도해 주세요."
+            )
+        if AnswerabilityReasonCode.ENTITY_RESOLUTION_FAILED in codes:
+            return (
+                "상품·기관 식별 서비스를 완료하지 못해 안전하게 검색을 진행할 "
+                "수 없습니다. 잠시 후 다시 시도해 주세요."
+            )
+        if AnswerabilityReasonCode.ENTITY_PARSE_FAILED in codes:
+            return "질문에서 조회할 상품 또는 기관 이름을 식별하지 못했습니다."
         if (
             AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS in codes
             or AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT in codes
@@ -56,7 +68,10 @@ class ReasonAwareSafeResponseGenerator:
             )
         if AnswerabilityReasonCode.AMBIGUOUS_ENTITY in codes:
             return "요청하신 상품을 하나로 특정할 수 없어 답변할 수 없습니다."
-        if AnswerabilityReasonCode.ENTITY_NOT_FOUND in codes:
+        if (
+            AnswerabilityReasonCode.ENTITY_NOT_FOUND in codes
+            or AnswerabilityReasonCode.ENTITY_UNRESOLVED in codes
+        ):
             return "요청하신 상품 또는 기관을 현재 데이터에서 찾을 수 없습니다."
         if AnswerabilityReasonCode.ZERO_MATCH in codes:
             return "제공된 조건을 모두 만족하는 결과는 없습니다."

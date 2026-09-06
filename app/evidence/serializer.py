@@ -8,6 +8,12 @@ def serialize_evidence_bundle(
     validation: ValidationResult | None = None,
 ) -> str:
     sections: list[str] = []
+    if validation is not None and validation.clauses:
+        sections.append("[Answerability]\n" + json.dumps({
+            "status": validation.answerability.value,
+            "comparison_completed": validation.comparison_completed,
+            "clauses": [item.model_dump(mode="json") for item in validation.clauses],
+        }, ensure_ascii=False, separators=(",", ":")))
     for index, evidence in enumerate(bundle.evidence, start=1):
         lines = [
             f"[Evidence {index}]",
@@ -19,6 +25,8 @@ def serialize_evidence_bundle(
                 finding
                 for finding in validation.findings
                 if evidence.source_id in finding.source_ids
+                and finding.field in {None, evidence.field}
+                and finding.entity_id in {None, evidence.entity_id}
             ]
             if validation is not None
             else []

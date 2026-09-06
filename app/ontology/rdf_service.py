@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.data.metric_capabilities import MetricCapabilityRegistry
 from app.domain.models import (
     CanonicalConcept,
     CanonicalSemanticValue,
@@ -88,6 +89,8 @@ class RDFOntologyService:
             "region": "product.region",
             "asset_type": "product.asset_type",
             "product_type": "product.product_type",
+            "market_scope": "product.market_scope",
+            "bond_type": "product.bond_type",
             "aum": "product.aum",
             "expense_ratio": "product.expense_ratio",
             "credit_rating": "product.credit_rating",
@@ -110,6 +113,7 @@ class RDFOntologyService:
             "etp_insufficient_info": "product.etp_insufficient_info",
             "listing_country": "product.listing_country",
             "currency": "product.currency",
+            "trading_currency": "product.trading_currency",
         }.get(raw, raw)
         resolution = self.index.resolve_alias(semantic_slot, "field")
         if self.is_team_ontology or resolution.status is not GroundingStatus.UNRESOLVED:
@@ -212,6 +216,8 @@ class RDFOntologyService:
             ),
             "product_type": ConceptCategory.PRODUCT_TYPE,
             "offering_type": ConceptCategory.OFFERING_TYPE,
+            "market_scope": ConceptCategory.MARKET_SCOPE,
+            "bond_type": ConceptCategory.BOND_TYPE,
         }
         for item in parsed.filters:
             field_resolution = self.resolve_field(item.field)
@@ -287,7 +293,8 @@ class RDFOntologyService:
             for entity in query.resolved_entities
             if entity.resolution_status is ResolutionStatus.RESOLVED
             and entity.canonical_id is not None
-            and entity.entity_type in {"organization", "security"}
+            and entity.entity_type
+            in {"management_company", "organization", "security"}
         }
         relations = [
             self._ground_relation(
@@ -343,30 +350,46 @@ class RDFOntologyService:
 
     def _ground_sort(self, item) -> GroundedSort:
         resolution = self.resolve_field(item.field)
-        mapping = self._field_mapping(item.field)
-        executable = mapping is None or bool(
-            {"sort", "sort_contract"} & mapping.operations
+        canonical_field = (
+            resolution.canonical_field
+            or MetricCapabilityRegistry.canonical_metric_alias(item.field)
         )
+        # Generic metric families remain raw in ParsedQuery.  A reviewed
+        # registry default may select one concrete comparable metric; the
+        # comparison contract still decides whether the selected scope is
+        # executable.  This is resolvable underspecification, not ambiguity.
+        canonical_field = MetricCapabilityRegistry.default_metric(
+            canonical_field
+        )
+        if resolution.status is not GroundingStatus.RESOLVED and canonical_field:
+            concrete = self.resolve_field(canonical_field)
+            if concrete.status is GroundingStatus.RESOLVED:
+                resolution = concrete
         return GroundedSort(
             raw_sort=item,
-            canonical_field=(
-                resolution.canonical_field if executable else None
-            ),
-            status=(
-                resolution.status
-                if executable
-                else GroundingStatus.UNRESOLVED
-            ),
+            canonical_field=canonical_field,
+            status=resolution.status,
         )
 
     def _ground_field(self, raw: str) -> GroundedField:
         resolution = self.resolve_field(raw)
-        mapping = self._field_mapping(raw)
+        canonical_field = (
+            resolution.canonical_field
+            or MetricCapabilityRegistry.canonical_metric_alias(raw)
+        )
+        canonical_field = MetricCapabilityRegistry.default_metric(
+            canonical_field
+        )
+        if resolution.status is not GroundingStatus.RESOLVED and canonical_field:
+            concrete = self.resolve_field(canonical_field)
+            if concrete.status is GroundingStatus.RESOLVED:
+                resolution = concrete
+        mapping = self._field_mapping(canonical_field or raw)
         executable = mapping is None or "project" in mapping.operations
         return GroundedField(
             raw_text=raw,
             canonical_field=(
-                resolution.canonical_field if executable else None
+                canonical_field if executable else None
             ),
             ontology_uri=resolution.uri if executable else None,
             mapping_version=(
@@ -389,7 +412,9 @@ class RDFOntologyService:
             if isinstance(raw, RelationMention)
             else RelationMention(raw_text=str(raw))
         )
-        resolution = self.resolve_relation(mention.raw_text)
+        resolution = self.resolve_relation(
+            mention.semantic_key or mention.raw_text
+        )
         relation = (
             self.index.local_name(resolution.uri)
             if resolution.status is GroundingStatus.RESOLVED

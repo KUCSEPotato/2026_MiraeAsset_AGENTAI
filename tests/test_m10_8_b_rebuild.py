@@ -9,13 +9,17 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import create_engine, distinct, func, insert, inspect, select, text
+from sqlalchemy import create_engine, delete, distinct, func, insert, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 
 from app.data.ingest import FinancialDataIngestor
 from app.data.schema import canonical_products as v1_products
 from app.data.v2_rebuild import (
+    CANONICAL_REBUILD_DATASET_IDS,
     CanonicalV2Rebuilder,
+    EXPECTED_PREF01_RETURN_METRIC_COUNTS,
+    EXPECTED_SOURCE_PROVENANCE_COUNTS,
+    PREF01_RETURN_SOURCE_FIELDS,
     PRFD_MISSING_ASSERTION_FIELDS,
     TARGET_FIELDS,
     _Rows,
@@ -31,7 +35,7 @@ from app.data.cleaning import (
     normalized_date,
     source_assertion_semantics,
 )
-from app.data.catalog import DATASET_SPECS
+from app.data.catalog import DATASET_SPECS, discover_dataset_files
 from app.data.mapping import map_product
 from app.data.v2_schema import (
     CANONICAL_V2_SCHEMA,
@@ -60,6 +64,7 @@ from app.data.v2_schema import (
     quarantine_records,
     sale_lots,
     source_classification_values,
+    source_datasets,
     source_field_assertions,
     source_record_entities,
     source_records,
@@ -69,6 +74,33 @@ from app.data.v2_schema import (
 pytestmark = pytest.mark.postgresql
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_TABLE = "alembic_version_m10_8"
+
+
+def _skip_if_organizer_material_is_fully_unprovisioned(root: Path) -> None:
+    """Skip only when none of the four organizer datasets is provisioned."""
+
+    matches: list[Path] = []
+    for spec in DATASET_SPECS:
+        matches.extend(root.rglob(f"{spec.prefix.lower()}_data.xlsx"))
+        matches.extend(root.rglob(f"{spec.prefix.lower()}_schema.xlsx"))
+        matches.extend(root.rglob(f"{spec.prefix}_*_datarows.xlsx"))
+        matches.extend(root.rglob(f"{spec.prefix}_*_schema.xlsx"))
+    if not matches:
+        pytest.skip(
+            "authoritative 2026-08-24 organizer material is not provisioned"
+        )
+
+
+def test_organizer_material_availability_skips_only_when_fully_absent(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_organizer_material_is_fully_unprovisioned(tmp_path)
+
+    (tmp_path / "prbd01n001_data.xlsx").touch()
+    _skip_if_organizer_material_is_fully_unprovisioned(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        discover_dataset_files(tmp_path)
 
 
 def test_subscription_status_relation_domain_contract_is_narrow() -> None:
@@ -93,6 +125,90 @@ def test_prbd_sale_lot_evidence_predicate_ignores_buyable_quantity() -> None:
 
 def test_trade_price_is_preserved_as_sale_lot_source_assertion() -> None:
     assert "trade_price" in TARGET_FIELDS["PRBD01N001"]
+
+
+def test_pref01_return_metric_contract_uses_field_evidence_not_entity_support() -> None:
+    assert set(PREF01_RETURN_SOURCE_FIELDS.values()).issubset(
+        TARGET_FIELDS["PREF01N001"]
+    )
+    assert EXPECTED_PREF01_RETURN_METRIC_COUNTS == {
+        "ONE_DAY_RETURN": 1_585,
+        "ONE_MONTH_RETURN": 1_584,
+        "THREE_MONTH_RETURN": 1_553,
+        "SIX_MONTH_RETURN": 1_486,
+        "ONE_YEAR_RETURN": 1_416,
+        "YEAR_TO_DATE_RETURN": 1_477,
+    }
+    newly_added_assertions = sum(
+        count
+        for metric_code, count in EXPECTED_PREF01_RETURN_METRIC_COUNTS.items()
+        if metric_code != "ONE_YEAR_RETURN"
+    )
+    assert newly_added_assertions == 7_685
+    assert EXPECTED_SOURCE_PROVENANCE_COUNTS == {
+        "source_records": 53_374,
+        "quarantine_records": 1,
+        "describes": 25_024,
+        "supports": 38_456,
+    }
+
+
+def test_authoritative_organizer_source_baseline_is_unchanged() -> None:
+    _skip_if_organizer_material_is_fully_unprovisioned(ROOT / "material")
+    rebuilder = object.__new__(CanonicalV2Rebuilder)
+    audit = rebuilder._audit(discover_dataset_files(ROOT / "material"))
+    actual = {
+        item.dataset: (
+            item.source_rows,
+            item.valid_rows,
+            item.quarantined_rows,
+        )
+        for item in audit.datasets
+    }
+    assert actual == {
+        "PRBD01N001": (21_882, 21_882, 0),
+        "PREF01N001": (1_780, 1_779, 1),
+        "PREF02N001": (6_037, 6_037, 0),
+        "PRFD01N001": (23_676, 23_676, 0),
+    }
+    rebuilder._verify_source_baseline(audit)
+
+
+def test_pref01_return_family_materializes_facts_and_field_evidence() -> None:
+    rows = _Rows()
+    assertions = {
+        field_name: f"assertion:{field_name}"
+        for field_name in PREF01_RETURN_SOURCE_FIELDS.values()
+    }
+    cleaned = {
+        field_name: str(index)
+        for index, field_name in enumerate(
+            PREF01_RETURN_SOURCE_FIELDS.values(), start=1
+        )
+    }
+    cleaned.update({"du_upt_dt": "20260824", "pd_curr_cd": "KRW"})
+
+    rebuilder = object.__new__(CanonicalV2Rebuilder)
+    rebuilder._metrics(
+        rows,
+        "PREF01N001",
+        "etf:test",
+        None,
+        "snapshot:test",
+        cleaned,
+        assertions,
+    )
+
+    observations = rows._rows[metric_observations]
+    facts = rows._rows[canonical_facts]
+    evidence = rows._rows[fact_evidence_links]
+    assert {row["metric_code"] for row in observations} == set(
+        EXPECTED_PREF01_RETURN_METRIC_COUNTS
+    )
+    assert len(observations) == len(facts) == len(evidence) == 6
+    assert {row["assertion_id"] for row in evidence} == set(assertions.values())
+    assert all(row["evidence_role"] == "SUPPORTS" for row in evidence)
+    assert rows._rows[source_record_entities] == []
 
 
 @pytest.mark.parametrize("raw", [None, "", "   ", float("nan")])
@@ -489,9 +605,15 @@ def test_entity_grains_names_and_parent_integrity(rebuilt) -> None:
 
 def test_final_provenance_and_fact_evidence(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
-    assert first.provenance_counts["SourceRecords"] == 53_374
-    assert first.provenance_counts["DESCRIBES"] == 25_024
-    assert first.provenance_counts["SUPPORTS"] == 38_456
+    assert first.provenance_counts["SourceRecords"] == (
+        EXPECTED_SOURCE_PROVENANCE_COUNTS["source_records"]
+    )
+    assert first.provenance_counts["DESCRIBES"] == (
+        EXPECTED_SOURCE_PROVENANCE_COUNTS["describes"]
+    )
+    assert first.provenance_counts["SUPPORTS"] == (
+        EXPECTED_SOURCE_PROVENANCE_COUNTS["supports"]
+    )
     with engine.connect() as connection:
         duplicate_describes = connection.scalar(text(
             "SELECT count(*) FROM (SELECT source_record_id FROM canonical_v2.source_record_entities "
@@ -532,6 +654,198 @@ def test_final_provenance_and_fact_evidence(rebuilt) -> None:
         assert no_lot_prbd_supports == 21_248
 
 
+def test_external_activation_provenance_does_not_pollute_rebuild_scope(
+    rebuilt,
+) -> None:
+    engine = rebuilt[0]
+    dataset_id = "dataset:test-external-provenance"
+    snapshot_id = "snapshot:test-external-provenance:20260824"
+    described_record = "source:test-external-described"
+    supported_record = "source:test-external-supported"
+
+    with engine.begin() as connection:
+        entity_id = connection.scalar(
+            select(exchange_traded_products.c.etp_id).limit(1)
+        )
+        assert entity_id is not None
+        connection.execute(
+            insert(source_datasets).values(
+                dataset_id=dataset_id,
+                dataset_code="TEST_EXTERNAL_PROVENANCE",
+                display_name="Test external activation provenance",
+                source_system="isolated regression fixture",
+                schema_contract_version="test-external-v1",
+                is_authoritative=True,
+            )
+        )
+        connection.execute(
+            insert(dataset_snapshots).values(
+                snapshot_id=snapshot_id,
+                dataset_id=dataset_id,
+                snapshot_date=date(2026, 8, 24),
+                generation="external",
+                ontology_version="test",
+                semantic_mapping_version="test",
+                transformer_version="test",
+                database_schema_version="test",
+                data_sha256="a" * 64,
+                schema_sha256="b" * 64,
+                source_row_count=2,
+                accepted_row_count=2,
+                quarantined_row_count=0,
+                status="READY",
+                reconciliation_status="PASSED",
+                row_count_reconciled=True,
+                metadata_json={"scope": "external-regression"},
+            )
+        )
+        connection.execute(
+            insert(source_records),
+            [
+                {
+                    "source_record_id": described_record,
+                    "snapshot_id": snapshot_id,
+                    "source_primary_key": "external-1",
+                    "source_row_number": 1,
+                    "raw_payload": {"external": 1},
+                    "normalized_payload": {"external": 1},
+                    "payload_sha256": "c" * 64,
+                    "quality_status": "VALID",
+                },
+                {
+                    "source_record_id": supported_record,
+                    "snapshot_id": snapshot_id,
+                    "source_primary_key": "external-2",
+                    "source_row_number": 2,
+                    "raw_payload": {"external": 2},
+                    "normalized_payload": {"external": 2},
+                    "payload_sha256": "d" * 64,
+                    "quality_status": "VALID",
+                },
+            ],
+        )
+        connection.execute(
+            insert(source_record_entities),
+            [
+                {
+                    "source_record_id": described_record,
+                    "entity_id": entity_id,
+                    "entity_kind": "FINANCIAL_PRODUCT",
+                    "provenance_role": "DESCRIBES",
+                },
+                {
+                    "source_record_id": supported_record,
+                    "entity_id": entity_id,
+                    "entity_kind": "FINANCIAL_PRODUCT",
+                    "provenance_role": "SUPPORTS",
+                },
+            ],
+        )
+
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(select(func.count()).select_from(source_records)) == (
+                EXPECTED_SOURCE_PROVENANCE_COUNTS["source_records"] + 2
+            )
+            assert connection.scalar(
+                select(func.count())
+                .select_from(source_record_entities)
+                .where(source_record_entities.c.provenance_role == "DESCRIBES")
+            ) == EXPECTED_SOURCE_PROVENANCE_COUNTS["describes"] + 1
+            assert CanonicalV2Rebuilder(engine)._reconcile(connection) == {
+                **{
+                    "financial_products": 35_180,
+                    "bonds": 20_497,
+                    "funds": 6_867,
+                    "fund_share_classes": 16_574,
+                    "etf": 7_206,
+                    "etn": 610,
+                    "unresolved_fund_rows": 7_102,
+                },
+                "sale_lots": 634,
+            }
+
+        report = CanonicalV2Rebuilder(engine).rebuild(ROOT / "material")
+        assert report.status == "SKIPPED_UNCHANGED"
+        assert report.skipped is True
+        assert report.provenance_counts["SourceRecords"] == 53_374
+        assert report.provenance_counts["DESCRIBES"] == 25_024
+        assert report.provenance_counts["SUPPORTS"] == 38_456
+        assert set(CANONICAL_REBUILD_DATASET_IDS) == {
+            "PRBD01N001",
+            "PREF01N001",
+            "PREF02N001",
+            "PRFD01N001",
+        }
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                delete(source_record_entities).where(
+                    source_record_entities.c.source_record_id.in_(
+                        (described_record, supported_record)
+                    )
+                )
+            )
+            connection.execute(
+                delete(source_records).where(
+                    source_records.c.snapshot_id == snapshot_id
+                )
+            )
+            connection.execute(
+                delete(dataset_snapshots).where(
+                    dataset_snapshots.c.snapshot_id == snapshot_id
+                )
+            )
+            connection.execute(
+                delete(source_datasets).where(
+                    source_datasets.c.dataset_id == dataset_id
+                )
+            )
+
+
+def test_missing_owned_source_provenance_remains_fail_closed(rebuilt) -> None:
+    engine = rebuilt[0]
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            source_record_id = connection.scalar(
+                select(source_record_entities.c.source_record_id)
+                .join(
+                    source_records,
+                    source_records.c.source_record_id
+                    == source_record_entities.c.source_record_id,
+                )
+                .join(
+                    dataset_snapshots,
+                    dataset_snapshots.c.snapshot_id == source_records.c.snapshot_id,
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id.in_(
+                        CANONICAL_REBUILD_DATASET_IDS
+                    ),
+                    source_record_entities.c.provenance_role == "SUPPORTS",
+                )
+                .limit(1)
+            )
+            assert source_record_id is not None
+            connection.execute(
+                delete(source_record_entities).where(
+                    source_record_entities.c.source_record_id == source_record_id,
+                    source_record_entities.c.provenance_role == "SUPPORTS",
+                )
+            )
+            with pytest.raises(
+                ValueError, match="source/provenance reconciliation mismatch"
+            ) as exc_info:
+                CanonicalV2Rebuilder(engine)._reconcile(connection)
+            message = str(exc_info.value)
+            assert "actual=" in message
+            assert "expected=" in message
+            assert "scope=dataset_ids:" in message
+        finally:
+            transaction.rollback()
+
+
 def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
     assert first.identifier_counts["collision_cases"] > 0
@@ -557,24 +871,138 @@ def test_classification_conflicts_identifiers_and_composites(rebuilt) -> None:
 def test_metric_numeric_date_and_safe_comparability(rebuilt) -> None:
     engine, first, _, _, _ = rebuilt
     # M10.9-C1 enables comparability only for observations backed by an
-    # explicit source/grain-scoped contract (AUM, rating order, and exact 1Y
-    # returns). Organizer purchasability is a lifecycle rule, not a metric.
+    # explicit source/grain-scoped contract (AUM, rating order, and exact
+    # period returns). Organizer purchasability is a lifecycle rule, not a metric.
     assert first.metric_status == {
-        "COMPARABLE": 33_397,
+        "COMPARABLE": 40_757,
         # Fourteen foreign rows have neither source price nor source volume;
         # absence is preserved instead of fabricating metric observations.
-        "NOT_COMPARABLE": 89_862,
+        # Return observations lacking du_upt_dt are retained but not rankable.
+        "NOT_COMPARABLE": 90_167,
     }
     assert first.metric_counts["MARKET_PRICE"] == 7_799
     assert first.metric_counts["VOLUME"] == 7_799
     assert first.metric_counts["ONE_YEAR_RETURN"] == 8_417
+    assert first.metric_counts["ONE_DAY_RETURN"] == 1_585
+    assert first.metric_counts["ONE_MONTH_RETURN"] == 1_584
+    assert first.metric_counts["THREE_MONTH_RETURN"] == 1_553
+    assert first.metric_counts["SIX_MONTH_RETURN"] == 1_486
+    assert first.metric_counts["YEAR_TO_DATE_RETURN"] == 1_477
     assert "CURRENT_SALE_AVAILABILITY" not in first.metric_counts
     assert "BUYABLE_QUANTITY" not in first.metric_counts
     assert sum(first.metric_status.values()) == sum(first.metric_counts.values())
     with engine.connect() as connection:
+        return_metric_codes = tuple(EXPECTED_PREF01_RETURN_METRIC_COUNTS)
+        pref01_return_counts = dict(
+            connection.execute(
+                select(metric_observations.c.metric_code, func.count())
+                .select_from(
+                    metric_observations
+                    .join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code.in_(return_metric_codes),
+                )
+                .group_by(metric_observations.c.metric_code)
+            )
+        )
+        assert pref01_return_counts == EXPECTED_PREF01_RETURN_METRIC_COUNTS
+
+        evidence_counts = {
+            (metric_code, source_column): count
+            for metric_code, source_column, count in connection.execute(
+                select(
+                    metric_observations.c.metric_code,
+                    source_field_assertions.c.source_column,
+                    func.count(func.distinct(metric_observations.c.fact_id)),
+                )
+                .select_from(
+                    metric_observations
+                    .join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                    .join(
+                        fact_evidence_links,
+                        fact_evidence_links.c.fact_id
+                        == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        source_field_assertions,
+                        source_field_assertions.c.assertion_id
+                        == fact_evidence_links.c.assertion_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code.in_(return_metric_codes),
+                    fact_evidence_links.c.evidence_role == "SUPPORTS",
+                )
+                .group_by(
+                    metric_observations.c.metric_code,
+                    source_field_assertions.c.source_column,
+                )
+            )
+        }
+        assert evidence_counts == {
+            (metric_code, PREF01_RETURN_SOURCE_FIELDS[metric_code]): count
+            for metric_code, count in EXPECTED_PREF01_RETURN_METRIC_COUNTS.items()
+        }
         value = connection.scalar(select(metric_observations.c.numeric_value).where(metric_observations.c.numeric_value.is_not(None)).limit(1))
         assert isinstance(value, Decimal)
         assert connection.scalar(select(func.count()).select_from(bonds).where(bonds.c.maturity_date == date(9999, 12, 31))) == 0
+
+
+def test_missing_return_metric_evidence_still_fails_closed(rebuilt) -> None:
+    engine = rebuilt[0]
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            fact_id = connection.scalar(
+                select(metric_observations.c.fact_id)
+                .select_from(
+                    metric_observations.join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    ).join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code == "ONE_DAY_RETURN",
+                )
+                .limit(1)
+            )
+            assert fact_id is not None
+            connection.execute(
+                delete(fact_evidence_links).where(
+                    fact_evidence_links.c.fact_id == fact_id
+                )
+            )
+            with pytest.raises(
+                ValueError,
+                match="PREF01 return metric provenance reconciliation mismatch",
+            ):
+                CanonicalV2Rebuilder(engine)._reconcile(connection)
+        finally:
+            transaction.rollback()
 
 
 def test_etp_availability_policy_counts_and_sentinels(rebuilt) -> None:

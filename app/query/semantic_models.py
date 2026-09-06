@@ -14,6 +14,45 @@ from app.domain.models import (
 )
 
 
+ALLOWED_RELATION_SUBJECT_TYPES = (
+    "AssetManager",
+    "Bond",
+    "Currency",
+    "ETF",
+    "ETN",
+    "EquitySecurity",
+    "ExchangeTradedProduct",
+    "FinancialProduct",
+    "Fund",
+    "FundShareClass",
+    "Index",
+    "Issuer",
+    "Organization",
+    "RiskGrade",
+    "SaleLot",
+    "Security",
+)
+ALLOWED_RELATION_TARGET_TYPES = (
+    "AssetClass",
+    "AssetManager",
+    "AssetManagementCompany",
+    "BondType",
+    "Country",
+    "Currency",
+    "EquitySecurity",
+    "ExposureRegion",
+    "FundShareClass",
+    "Index",
+    "Issuer",
+    "MarketScope",
+    "Organization",
+    "OfferingType",
+    "RiskGrade",
+    "SaleLot",
+    "Security",
+)
+
+
 class UntrustedCandidateModel(BaseModel):
     """Strict base for data proposed by an external language model."""
 
@@ -40,7 +79,22 @@ class LLMSemanticTermCandidate(UntrustedCandidateModel):
 class LLMEntityCandidate(UntrustedCandidateModel):
     source_span: LLMCandidateSpan
     entity_type: Literal[
-        "product", "management_company", "issuer", "index", "fund"
+        "product",
+        "financial_product",
+        "fund",
+        "fund_share_class",
+        "sale_lot",
+        "management_company",
+        "asset_manager",
+        "organization",
+        "company",
+        "issuer",
+        "portfolio_company",
+        "subsidiary",
+        "institution",
+        "index",
+        "security",
+        "holding",
     ]
 
 
@@ -118,6 +172,7 @@ class LLMSemanticParseCandidate(UntrustedCandidateModel):
     filters: list[LLMFilterCandidate] = Field(default_factory=list)
     sorts: list[LLMSortCandidate] = Field(default_factory=list)
     requested_fields: list[LLMSemanticTermCandidate] = Field(default_factory=list)
+    group_by: list[LLMSemanticTermCandidate] = Field(default_factory=list)
     semantic_texts: list[LLMSemanticTermCandidate] = Field(default_factory=list)
     subjective_conditions: list[LLMSemanticTermCandidate] = Field(
         default_factory=list

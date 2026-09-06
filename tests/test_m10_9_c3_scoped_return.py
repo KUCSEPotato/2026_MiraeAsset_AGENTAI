@@ -79,10 +79,15 @@ def test_holdings_and_return_constraints_compose_without_special_plan(
         "1년 수익률이 높은 순으로 알려줘"
     ))
     assert parsed.semantic_coverage == "complete"
-    inputs = plan.steps[0].inputs
+    rdb_step = next(step for step in plan.steps if step.source.value == "rdb")
+    inputs = rdb_step.inputs
     assert inputs["product_universe"]["operands"] == [ISHARES_SCOPE]
     graph_step = next(step for step in plan.steps if step.step_id == "graph-relations")
     assert graph_step.inputs["paths"][0]["relations"] == ["holds"]
+    assert plan.steps.index(graph_step) < plan.steps.index(rdb_step)
+    assert rdb_step.depends_on == [graph_step.step_id]
+    assert inputs["candidate_ids_from"] == [graph_step.step_id]
+    assert graph_step.inputs["require_complete_candidates"] is True
     assert inputs["sort_operations"][0]["semantic_metric_key"] == (
         "product.one_year_return"
     )
@@ -92,7 +97,7 @@ def test_generic_foreign_return_ranking_fails_closed() -> None:
     with pytest.raises(UnsupportedQuerySemanticsError) as raised:
         asyncio.run(_plan("해외 ETF 중 1년 수익률 TOP10"))
     assert any(
-        "foreign_etf_one_year_return_unavailable" in item
+        "foreign_etf_return_1Y_unavailable_or_incompatible" in item
         for item in raised.value.reasons
     )
 

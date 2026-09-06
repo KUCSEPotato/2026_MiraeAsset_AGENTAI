@@ -25,6 +25,7 @@ class FilterOperator(str, Enum):
     GTE = "gte"
     IN = "in"
     BETWEEN = "between"
+    CONTAINS = "contains"
 
 
 class ScalarUnit(str, Enum):
@@ -58,6 +59,8 @@ class ConstraintSemanticType(str, Enum):
     INTENT = "intent"
     COMPARISON = "comparison"
     SUBJECTIVE = "subjective"
+    METRIC = "metric"
+    GROUP_BY = "group_by"
 
 
 class ParserSource(str, Enum):
@@ -87,6 +90,22 @@ class ResolutionStatus(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+class EntityMatchMethod(str, Enum):
+    EXACT_CANONICAL = "EXACT_CANONICAL"
+    EXACT_ALIAS = "EXACT_ALIAS"
+    NORMALIZED_EXACT = "NORMALIZED_EXACT"
+    IDENTIFIER_MATCH = "IDENTIFIER_MATCH"
+    FUZZY_MATCH = "FUZZY_MATCH"
+
+
+class EntityCandidateRejectionReason(str, Enum):
+    TYPE_MISMATCH = "TYPE_MISMATCH"
+    AMBIGUOUS = "AMBIGUOUS"
+    BELOW_THRESHOLD = "BELOW_THRESHOLD"
+    CONSTRAINT_MISMATCH = "CONSTRAINT_MISMATCH"
+    NO_CANONICAL_ENTITY = "NO_CANONICAL_ENTITY"
+
+
 class GroundingStatus(str, Enum):
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
@@ -105,6 +124,8 @@ class ConceptCategory(str, Enum):
     EXPOSURE_REGION = "exposure_region"
     ASSET_CLASS = "asset_class"
     OFFERING_TYPE = "offering_type"
+    MARKET_SCOPE = "market_scope"
+    BOND_TYPE = "bond_type"
     CLASSIFICATION = "classification"
     SEMANTIC_TERM = "semantic_term"
 
@@ -236,8 +257,12 @@ class AnswerabilityReasonCode(str, Enum):
     NO_EVIDENCE = "NO_EVIDENCE"
     ZERO_MATCH = "ZERO_MATCH"
     ENTITY_NOT_FOUND = "ENTITY_NOT_FOUND"
+    ENTITY_UNRESOLVED = "ENTITY_UNRESOLVED"
+    ENTITY_PARSE_FAILED = "ENTITY_PARSE_FAILED"
+    ENTITY_RESOLUTION_FAILED = "ENTITY_RESOLUTION_FAILED"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     UNSUPPORTED_CONSTRAINT = "UNSUPPORTED_CONSTRAINT"
+    SEMANTIC_PARSE_FAILED = "SEMANTIC_PARSE_FAILED"
     MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
     INVALID_SENTINEL = "INVALID_SENTINEL"
     CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"
@@ -256,6 +281,17 @@ class AnswerabilityReasonCode(str, Enum):
     RANKING_NOT_APPLIED = "RANKING_NOT_APPLIED"
 
 
+class EntityResolutionCandidate(BaseModel):
+    entity_id: str
+    entity_type: str
+    canonical_name: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    normalized_form: str
+    match_method: EntityMatchMethod
+    match_score: float = Field(ge=0.0, le=1.0)
+    rejection_reason: EntityCandidateRejectionReason | None = None
+
+
 class EntityMention(BaseModel):
     raw_text: str
     entity_type: str
@@ -264,7 +300,13 @@ class EntityMention(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     matched_alias: str | None = None
     identifier_type: str | None = None
+    resolution_method: EntityMatchMethod | None = None
+    normalized_form: str | None = None
+    resolution_reason: str | None = None
     candidate_ids: list[str] = Field(default_factory=list)
+    candidate_diagnostics: list[EntityResolutionCandidate] = Field(
+        default_factory=list
+    )
     constraint_id: str | None = None
 
 
@@ -304,7 +346,7 @@ class UnparsedMaterialSpan(BaseModel):
 
 class ParseProvenance(BaseModel):
     parser_source: ParserSource = ParserSource.RULE
-    semantic_schema_version: str = "m10.6-semantic-v1"
+    semantic_schema_version: str = "m10.9-semantic-v2"
     prompt_version: str | None = None
     model: str | None = None
     rule_latency_ms: float = Field(default=0.0, ge=0.0)
@@ -349,6 +391,10 @@ class FilterSpec(BaseModel):
                 raise ValueError("BETWEEN filter requires exactly two values")
         elif collection:
             raise ValueError(f"{self.operator.value} filter requires a scalar value")
+        if self.operator is FilterOperator.CONTAINS and (
+            not isinstance(self.value, str) or not self.value
+        ):
+            raise ValueError("CONTAINS filter requires a non-empty string")
         return self
 
 
@@ -412,6 +458,10 @@ class ProductUniverseUnion(BaseModel):
 
 class RelationMention(BaseModel):
     raw_text: str
+    # A syntax-derived ontology alias may differ from the literal surface
+    # text.  Keeping both prevents an implicit relation from overwriting the
+    # user's wording while still giving grounding a controlled lookup key.
+    semantic_key: str | None = None
     direction: RelationDirection = RelationDirection.OUTGOING
     constraint_id: str | None = None
     subject_type: str | None = None
@@ -441,12 +491,61 @@ class TemporalConstraint(BaseModel):
     constraint_id: str | None = None
 
 
+class TemporalSpec(BaseModel):
+    """Period meaning, independent from a metric's physical field binding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    period: Literal["1D", "1M", "3M", "6M", "1Y", "YTD"]
+    period_source: Literal["EXPLICIT_QUERY", "DEFAULT_POLICY"] = "EXPLICIT_QUERY"
+    operation: Literal["PERIOD_VALUE", "CHANGE", "GROWTH_RATE"] = "PERIOD_VALUE"
+
+
+class MetricSpec(BaseModel):
+    """Normalized metric request; a field binding does not grant capability."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    metric: Literal["RETURN", "AUM", "EXPENSE_RATIO", "NAV", "PRICE"]
+    temporal: TemporalSpec | None = None
+    canonical_field: str | None = None
+    constraint_id: str | None = None
+
+
+class ComparisonSpec(BaseModel):
+    """Compare the query's entity set using each field's own contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["fieldwise"] = "fieldwise"
+    fields: list[str] = Field(default_factory=list)
+    constraint_id: str | None = None
+
+
+class GroupBySpec(BaseModel):
+    """Represent grouping explicitly even when execution is unsupported."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    fields: list[str] = Field(min_length=1)
+    constraint_id: str | None = None
+
+
+class PeerSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["PEER_SELECTOR"] = "PEER_SELECTOR"
+    raw_text: str
+    source_span: SourceSpan
+    constraint_id: str | None = None
+
+
 class ParsedQuery(BaseModel):
     original_question: str
     intent: QueryIntent
     product_types: list[str] = Field(default_factory=list)
     product_universe: ProductUniverseUnion | None = None
     entities: list[EntityMention] = Field(default_factory=list)
+    selectors: list[PeerSelector] = Field(default_factory=list)
     filters: list[FilterSpec] = Field(default_factory=list)
     relations: list[str | RelationMention] = Field(default_factory=list)
     sort: list[SortSpec] = Field(default_factory=list)
@@ -457,6 +556,9 @@ class ParsedQuery(BaseModel):
     result_limit: ResultLimit | None = None
     aggregation: AggregationSpec | None = None
     temporal_constraint: TemporalConstraint | None = None
+    metrics: list[MetricSpec] = Field(default_factory=list)
+    comparison: ComparisonSpec | None = None
+    group_by: GroupBySpec | None = None
     semantic_constraints: list[SemanticConstraint] = Field(default_factory=list)
     semantic_coverage: SemanticCoverageStatus = SemanticCoverageStatus.COMPLETE
     unparsed_material_spans: list[UnparsedMaterialSpan] = Field(
@@ -559,6 +661,14 @@ class EntityLookupMatch(BaseModel):
     entity: CanonicalEntity
     matched_alias: str
     identifier_type: str
+    match_method: EntityMatchMethod = EntityMatchMethod.NORMALIZED_EXACT
+    normalized_form: str | None = None
+    match_score: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class EntityLookupOutcome(BaseModel):
+    matches: list[EntityLookupMatch] = Field(default_factory=list)
+    candidates: list[EntityResolutionCandidate] = Field(default_factory=list)
 
 
 class RoutingDecision(BaseModel):
@@ -582,6 +692,8 @@ class QueryPlan(BaseModel):
     routing_reasons: list[RoutingReason] = Field(default_factory=list)
     unsupported_constraint_ids: list[str] = Field(default_factory=list)
     constraint_coverage_required: bool = False
+    semantic_ir: dict[str, Any] | None = None
+    output_disclosures: list["ClauseResult"] = Field(default_factory=list)
 
 
 class RetrievalRecord(BaseModel):
@@ -679,8 +791,50 @@ class ValidationFinding(BaseModel):
 
 class ValidationResult(BaseModel):
     answerable: bool
+    answerability: "AnswerabilityStatus | None" = None
+    clauses: list["ClauseResult"] = Field(default_factory=list)
+    comparison_completed: bool = False
     reason_codes: list[AnswerabilityReasonCode] = Field(default_factory=list)
     findings: list[ValidationFinding] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def synchronize_answerability(self) -> "ValidationResult":
+        if self.answerability is None:
+            self.answerability = (AnswerabilityStatus.FULLY_ANSWERABLE if self.answerable
+                                  else AnswerabilityStatus.UNANSWERABLE)
+        elif self.answerable != (self.answerability is not AnswerabilityStatus.UNANSWERABLE):
+            raise ValueError("answerable must agree with answerability")
+        return self
+
+
+class AnswerabilityStatus(str, Enum):
+    FULLY_ANSWERABLE = "FULLY_ANSWERABLE"
+    PARTIALLY_ANSWERABLE = "PARTIALLY_ANSWERABLE"
+    UNANSWERABLE = "UNANSWERABLE"
+
+
+class ClauseStatus(str, Enum):
+    SATISFIED = "SATISFIED"
+    MISSING = "MISSING"
+    UNSUPPORTED = "UNSUPPORTED"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+class ClauseResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["OUTPUT", "ENTITY", "COMPARISON", "SELECTOR"] = "OUTPUT"
+    status: ClauseStatus
+    constraint_id: str | None = None
+    field: str | None = None
+    label: str
+    entity_id: str | None = None
+    entity_label: str | None = None
+    reason: str | None = None
+    evidence_indices: list[int] = Field(default_factory=list)
+
+
+ValidationResult.model_rebuild()
+QueryPlan.model_rebuild()

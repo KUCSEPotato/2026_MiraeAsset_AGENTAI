@@ -51,7 +51,7 @@ class SemanticParserCoordinator:
             and rule_result.requires_semantic_search
             and bool(rule_result.semantic_terms)
         )
-        if _is_complete(rule_result) and not descriptive_fallback:
+        if (_is_complete(rule_result) or _is_understood_unsupported(rule_result)) and not descriptive_fallback:
             parsed = rule_result.model_copy(
                 update={
                     "parser_source": ParserSource.RULE,
@@ -87,6 +87,12 @@ class SemanticParserCoordinator:
             semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
             prompt_version=PROMPT_VERSION,
         )
+        logger.info("semantic fallback required", extra={
+            "request_purpose": "semantic_parse", "parser_path": "LLM_FALLBACK",
+            "rule_latency_ms": rule_latency,
+            "constraint_count": len(rule_result.semantic_constraints),
+            "unparsed_count": len(rule_result.unparsed_material_spans),
+        })
         llm_started = perf_counter()
         try:
             candidate = await self._llm_parser.parse(request)
@@ -103,22 +109,24 @@ class SemanticParserCoordinator:
             )
         except SemanticParserError as exc:
             raise SemanticParseSafetyError(
-                "llm_dependency_failure",
+                exc.failure_reason,
                 rule_latency_ms=rule_latency,
                 llm_latency_ms=_milliseconds(llm_started),
             ) from exc
         except SemanticCandidateValidationError as exc:
-            logger.warning(
-                "semantic parse candidate rejected",
-                extra={
-                    "parser_path": "LLM_FALLBACK",
-                    "rule_latency_ms": rule_latency,
-                    "llm_latency_ms": _milliseconds(llm_started),
-                    "validation_status": "rejected",
-                    "validation_reasons": exc.reasons,
-                    "validation_reason_count": len(exc.reasons),
-                },
-            )
+          logger.warning(
+            "semantic candidate rejected",
+             extra={
+                  "request_purpose": "semantic_parse",
+                  "parser_path": "LLM_FALLBACK",
+                  "failure_stage": "candidate_validation",
+                  "validation_status": "rejected",
+                  "candidate_rejection_reasons": exc.reasons,
+                  "validation_reason_count": len(exc.reasons),
+                  "rule_latency_ms": rule_latency,
+                  "llm_latency_ms": _milliseconds(llm_started),
+              },
+          )
             raise SemanticParseSafetyError(
                 "llm_candidate_rejected",
                 rule_latency_ms=rule_latency,
@@ -146,6 +154,18 @@ def _is_complete(parsed: ParsedQuery) -> bool:
         and not parsed.unparsed_material_spans
         and not parsed.unsupported_constraint_ids
     )
+
+
+def _is_understood_unsupported(parsed: ParsedQuery) -> bool:
+    """Known material semantics belong to capability validation, not re-parsing."""
+    reasons = {item.unsupported_reason for item in parsed.semantic_constraints
+               if item.status.value == "unsupported"}
+    return bool(reasons) and not parsed.unparsed_material_spans and reasons <= {
+        "dataset_unit_mapping_unverified",
+        "historical_metric_series_unavailable",
+        "holdings_weight_projection_unavailable",
+        "peer_selector_unverified",
+    }
 
 
 def _rule_hint(parsed: ParsedQuery) -> dict[str, object]:

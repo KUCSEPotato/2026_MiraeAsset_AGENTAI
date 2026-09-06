@@ -4,8 +4,9 @@ from app.domain.models import (
     QueryStep,
     RetrievalRecord,
     RetrievalSource,
+    StepExecutionStatus,
 )
-from app.retrieval.exceptions import IncompleteCandidateSetError
+from app.retrieval.exceptions import IncompleteCandidateSetError, RetrieverUnavailableError
 
 
 class InternalTransformExecutor:
@@ -21,10 +22,10 @@ class InternalTransformExecutor:
             QueryOperation.RANK_CANDIDATES,
         }:
             raise ValueError(f"unsupported internal operation: {step.operation}")
-        dependency_records = [
-            context.step_results[dependency_id].records
-            for dependency_id in step.depends_on
-        ]
+        dependencies = [context.step_results[dependency_id] for dependency_id in step.depends_on]
+        if any(result.status is not StepExecutionStatus.SUCCESS for result in dependencies):
+            raise IncompleteCandidateSetError("candidate merge requires successful dependencies")
+        dependency_records = [result.records for result in dependencies]
         if not dependency_records:
             return []
         ranking_requested = (
@@ -35,6 +36,10 @@ class InternalTransformExecutor:
                 or step.inputs.get("comparison_contracts")
             )
         )
+        _validate_snapshot_identity(
+            dependency_records,
+            required=bool(ranking_requested or step.inputs.get("require_complete_candidates")),
+        )
         if ranking_requested:
             primary = context.step_results[step.depends_on[0]]
             metadata = primary.retrieval_metadata
@@ -44,13 +49,22 @@ class InternalTransformExecutor:
             if (
                 not isinstance(rankable, int)
                 or not isinstance(returned, int)
-                or rankable > returned
+                or rankable != returned
                 or not isinstance(ranked_ids, list)
                 or len(ranked_ids) != returned
+                or ranked_ids != list(dict.fromkeys(
+                    record.entity_id for record in primary.records if record.entity_id is not None
+                ))
             ):
                 raise IncompleteCandidateSetError(
                     "global ranking requires a complete pre-ranked RDB candidate set"
                 )
+        if ranking_requested or step.inputs.get("require_complete_candidates"):
+            for result in dependencies:
+                if not _complete_candidates(result.retrieval_metadata):
+                    raise IncompleteCandidateSetError(
+                        f"candidate merge requires a complete set from {result.step_id}"
+                    )
 
         entity_sets = [
             {record.entity_id for record in records if record.entity_id is not None}
@@ -79,23 +93,21 @@ class InternalTransformExecutor:
                 raise ValueError("internal transform limit must be positive")
             selected_entity_ids = selected_entity_ids[:limit]
 
-        # A ranked RDB result can contain several projected fact records for one
-        # entity (for example name plus the ranking metric).  Select the Top-N
-        # entity IDs first, then retain every projected record for those IDs so
-        # the intersection cannot discard the metric evidence used to rank it.
-        selected = set(selected_entity_ids)
-        records_to_emit = (
-            [record for record in primary_records if record.entity_id in selected]
-            if step.operation is QueryOperation.RANK_CANDIDATES
-            else [
-                next(
-                    record
-                    for record in primary_records
-                    if record.entity_id == entity_id
-                )
-                for entity_id in selected_entity_ids
-            ]
-        )
+        # Select entity IDs before projecting: every RDB fact and graph path
+        # remains evidence for each selected entity. Semantic hits annotate that
+        # evidence; their similarity score is never treated as a financial value.
+        factual_records = [
+            record for records in dependency_records for record in records
+            if record.source in {RetrievalSource.RDB.value, RetrievalSource.GRAPH.value}
+        ] or primary_records
+        seen: set[tuple[str, str, str | None]] = set()
+        records_to_emit = []
+        for entity_id in selected_entity_ids:
+            for record in factual_records:
+                key = (record.source, record.source_id, record.payload.get("field"))
+                if record.entity_id == entity_id and key not in seen:
+                    seen.add(key)
+                    records_to_emit.append(record)
         for record in records_to_emit:
             entity_id = record.entity_id
             if entity_id is None:
@@ -111,6 +123,8 @@ class InternalTransformExecutor:
                     "step_id": candidate.step_id,
                     "source": candidate.source,
                     "source_id": candidate.source_id,
+                    "dataset_snapshot": candidate.metadata.get("dataset_snapshot"),
+                    "generation": candidate.metadata.get("generation"),
                     "retrieval_score": candidate.metadata.get("retrieval_score"),
                     "retrieval_score_type": candidate.metadata.get(
                         "retrieval_score_type"
@@ -138,11 +152,11 @@ class InternalTransformExecutor:
                     deep=True,
                     update={
                         "step_id": step.step_id,
-                        "source": RetrievalSource.INTERNAL.value,
-                        "source_id": f"{step.step_id}:{entity_id}",
                         "metadata": {
                             **record.metadata,
                             "origin_step_id": record.step_id,
+                            "origin_source": record.source,
+                            "origin_source_id": record.source_id,
                             "dependency_step_ids": step.depends_on,
                             "transform_operation": step.operation.value,
                             "ranking_applied": ranking_requested,
@@ -164,3 +178,42 @@ def _primary_evidence_records(
             if any(record.source == preferred for record in records):
                 return records
     return dependencies[-1]
+
+
+def _complete_candidates(metadata: dict) -> bool:
+    explicit = metadata.get("counts", {}).get("candidate_set_complete")
+    if explicit is not None:
+        return type(explicit) in {bool, int} and explicit == 1
+    total = metadata.get("rankable_total")
+    if total is None:
+        total = metadata.get("total_matches")
+    returned = metadata.get("returned_count")
+    return (
+        type(total) is int and type(returned) is int
+        and 0 <= total <= returned
+    )
+
+
+def _validate_snapshot_identity(
+    dependencies: list[list[RetrievalRecord]], *, required: bool = False,
+) -> None:
+    records = [record for group in dependencies for record in group]
+    if len({record.source for record in records}) < 2:
+        return
+    real_records = any(
+        record.metadata.get("real_rdb") or record.metadata.get("real_graph")
+        or record.metadata.get("repository_version") == "v2"
+        for record in records
+    )
+    for key in ("dataset_snapshot", "generation", "snapshot_identity"):
+        values = {record.metadata[key] for record in records if record.metadata.get(key) is not None}
+        if len(values) > 1:
+            raise RetrieverUnavailableError(f"federated evidence {key} mismatch")
+        if key == "dataset_snapshot" and (required or real_records) and any(
+            not record.metadata.get(key) for record in records
+        ):
+            raise RetrieverUnavailableError("federated evidence snapshot identity is missing")
+        if key == "generation" and values and any(
+            not record.metadata.get(key) for record in records
+        ):
+            raise RetrieverUnavailableError("federated evidence generation is missing")

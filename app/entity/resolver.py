@@ -1,5 +1,6 @@
 from app.domain.models import ParsedQuery, ResolutionStatus, ResolvedQuery
 from app.entity.lookup import EntityLookup
+from app.entity.normalization import normalized_entity_form
 
 
 class RegistryEntityResolver:
@@ -9,10 +10,30 @@ class RegistryEntityResolver:
     async def resolve(self, query: ParsedQuery) -> ResolvedQuery:
         resolved_entities = []
         for mention in query.entities:
-            matches = await self._lookup.lookup(
-                mention.raw_text,
-                mention.entity_type,
+            normalized_form = normalized_entity_form(
+                mention.raw_text, mention.entity_type
             )
+            if not normalized_form:
+                resolved_entities.append(mention.model_copy(update={
+                    "resolution_status": ResolutionStatus.UNRESOLVED,
+                    "resolution_reason": "ENTITY_PARSE_FAILED",
+                    "normalized_form": normalized_form,
+                }))
+                continue
+            diagnostic_lookup = getattr(self._lookup, "lookup_with_diagnostics", None)
+            if diagnostic_lookup is None:
+                matches = await self._lookup.lookup(
+                    mention.raw_text,
+                    mention.entity_type,
+                )
+                diagnostics = []
+            else:
+                outcome = await diagnostic_lookup(
+                    mention.raw_text,
+                    mention.entity_type,
+                )
+                matches = outcome.matches
+                diagnostics = outcome.candidates
             if len(matches) == 1:
                 match = matches[0]
                 resolved_entities.append(
@@ -23,7 +44,16 @@ class RegistryEntityResolver:
                             "confidence": 1.0,
                             "matched_alias": match.matched_alias,
                             "identifier_type": match.identifier_type,
+                            "resolution_method": match.match_method,
+                            "normalized_form": (
+                                match.normalized_form
+                                or normalized_entity_form(
+                                    mention.raw_text, mention.entity_type
+                                )
+                            ),
+                            "resolution_reason": None,
                             "candidate_ids": [match.entity.canonical_id],
+                            "candidate_diagnostics": diagnostics,
                         }
                     )
                 )
@@ -37,6 +67,11 @@ class RegistryEntityResolver:
                             "candidate_ids": [
                                 match.entity.canonical_id for match in matches
                             ],
+                            "normalized_form": normalized_entity_form(
+                                mention.raw_text, mention.entity_type
+                            ),
+                            "resolution_reason": "AMBIGUOUS",
+                            "candidate_diagnostics": diagnostics,
                         }
                     )
                 )
@@ -48,6 +83,15 @@ class RegistryEntityResolver:
                             "resolution_status": ResolutionStatus.UNRESOLVED,
                             "confidence": 0.0,
                             "candidate_ids": [],
+                            "normalized_form": normalized_entity_form(
+                                mention.raw_text, mention.entity_type
+                            ),
+                            "resolution_reason": (
+                                "ENTITY_UNRESOLVED"
+                                if diagnostics
+                                else "ENTITY_NOT_FOUND"
+                            ),
+                            "candidate_diagnostics": diagnostics,
                         }
                     )
                 )
@@ -55,4 +99,3 @@ class RegistryEntityResolver:
             parsed_query=query,
             resolved_entities=resolved_entities,
         )
-

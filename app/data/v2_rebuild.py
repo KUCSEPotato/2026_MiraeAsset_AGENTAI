@@ -123,6 +123,7 @@ EXPECTED_SOURCE_COUNTS = {
     "PREF02N001": (6_037, 6_037, 0),
     "PRFD01N001": (23_676, 23_676, 0),
 }
+CANONICAL_REBUILD_DATASET_IDS = tuple(EXPECTED_SOURCE_COUNTS)
 EXPECTED_CANONICAL_COUNTS = {
     "financial_products": 35_180,
     "bonds": 20_497,
@@ -132,6 +133,138 @@ EXPECTED_CANONICAL_COUNTS = {
     "fund_share_classes": 16_574,
     "unresolved_fund_rows": 7_102,
 }
+
+# SourceRecord entity links describe row grain, not field-level evidence.
+# PRBD rows support their Bond (21,882); resolved PRFD rows support their
+# parent Fund (16,574), for 38,456 SUPPORTS links in total.
+# PREF01/PREF02 rows directly describe their ETP and add no SUPPORTS link.
+EXPECTED_SOURCE_PROVENANCE_COUNTS = {
+    "source_records": 53_374,
+    "quarantine_records": 1,
+    "describes": 25_024,
+    "supports": 38_456,
+}
+
+# Exact accepted-row counts from the authoritative PREF01N001 260824 source.
+# These are canonical metric/fact-evidence contracts and must never be folded
+# into source_record_entities.SUPPORTS.
+EXPECTED_PREF01_RETURN_METRIC_COUNTS = {
+    "ONE_DAY_RETURN": 1_585,
+    "ONE_MONTH_RETURN": 1_584,
+    "THREE_MONTH_RETURN": 1_553,
+    "SIX_MONTH_RETURN": 1_486,
+    "ONE_YEAR_RETURN": 1_416,
+    "YEAR_TO_DATE_RETURN": 1_477,
+}
+PREF01_RETURN_SOURCE_FIELDS = {
+    "ONE_DAY_RETURN": "du_er_1d",
+    "ONE_MONTH_RETURN": "du_er_1m",
+    "THREE_MONTH_RETURN": "du_er_3m",
+    "SIX_MONTH_RETURN": "du_er_6m",
+    "ONE_YEAR_RETURN": "du_er_1y",
+    "YEAR_TO_DATE_RETURN": "du_er_ytd",
+}
+
+
+def _canonical_rebuild_snapshot_ids():
+    """Return the snapshot boundary owned by this four-workbook rebuild."""
+
+    return select(dataset_snapshots.c.snapshot_id).where(
+        dataset_snapshots.c.dataset_id.in_(CANONICAL_REBUILD_DATASET_IDS)
+    )
+
+
+def _canonical_rebuild_provenance_counts(connection) -> dict[str, int]:
+    """Count only organizer-source provenance, excluding external activations."""
+
+    snapshot_ids = _canonical_rebuild_snapshot_ids()
+    owned_source_scope = source_records.c.snapshot_id.in_(snapshot_ids)
+    quarantine_scope = quarantine_records.c.snapshot_id.in_(snapshot_ids)
+
+    return {
+        "source_records": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(source_records)
+                .where(owned_source_scope)
+            )
+            or 0
+        ),
+        "quarantine_records": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(quarantine_records)
+                .where(quarantine_scope)
+            )
+            or 0
+        ),
+        "describes": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    source_record_entities.join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_record_entities.c.source_record_id,
+                    )
+                )
+                .where(
+                    owned_source_scope,
+                    source_record_entities.c.provenance_role == "DESCRIBES",
+                )
+            )
+            or 0
+        ),
+        "supports": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    source_record_entities.join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_record_entities.c.source_record_id,
+                    )
+                )
+                .where(
+                    owned_source_scope,
+                    source_record_entities.c.provenance_role == "SUPPORTS",
+                )
+            )
+            or 0
+        ),
+        "source_field_assertions": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    source_field_assertions.join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_field_assertions.c.source_record_id,
+                    )
+                )
+                .where(owned_source_scope)
+            )
+            or 0
+        ),
+        "fact_evidence_links": int(
+            connection.scalar(
+                select(func.count())
+                .select_from(
+                    fact_evidence_links.join(
+                        source_field_assertions,
+                        source_field_assertions.c.assertion_id
+                        == fact_evidence_links.c.assertion_id,
+                    ).join(
+                        source_records,
+                        source_records.c.source_record_id
+                        == source_field_assertions.c.source_record_id,
+                    )
+                )
+                .where(owned_source_scope)
+            )
+            or 0
+        ),
+    }
 
 TARGET_FIELDS = {
     "PRBD01N001": frozenset(
@@ -149,7 +282,8 @@ TARGET_FIELDS = {
             "cu_base_index", "ref_base_index", "wu_inv_ast_type", "wu_inv_rgn",
             "pd_risk_nm", "pd_curr_cd", "pd_mkt_id", "pd_exg_mkt_cd",
             "du_last_aum", "cu_charge_rt", "du_last_nav", "du_clpr", "du_upt_dt",
-            "du_er_1y", "pd_sale_yn", "pd_tr_yn", "pd_lstg_dt", "pd_lste_dt",
+            "du_er_1d", "du_er_1m", "du_er_3m", "du_er_6m", "du_er_1y",
+            "du_er_ytd", "pd_sale_yn", "pd_tr_yn", "pd_lstg_dt", "pd_lste_dt",
             "ru_mkt_price", "ru_mkt_volume",
             "cu_strtegy",
         }
@@ -214,7 +348,12 @@ METRIC_FIELDS = {
         "du_clpr": ("PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "ru_mkt_price": ("MARKET_PRICE", "CURRENCY_AMOUNT", "SOURCE_RAW", "du_upt_dt"),
         "ru_mkt_volume": ("VOLUME", "COUNT", "SOURCE_RAW", "du_upt_dt"),
+        "du_er_1d": ("ONE_DAY_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_1m": ("ONE_MONTH_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_3m": ("THREE_MONTH_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_6m": ("SIX_MONTH_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
         "du_er_1y": ("ONE_YEAR_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
+        "du_er_ytd": ("YEAR_TO_DATE_RETURN", "PERCENT", "SOURCE_PERCENT", "du_upt_dt"),
     },
     "PREF02N001": {
         "du_last_aum": ("AUM", "CURRENCY_AMOUNT", "CURRENCY_UNIT", "du_upt_dt"),
@@ -861,7 +1000,12 @@ class CanonicalV2Rebuilder:
                     dataset_snapshots.c.semantic_mapping_version,
                     dataset_snapshots.c.transformer_version,
                     dataset_snapshots.c.database_schema_version,
-                ).where(dataset_snapshots.c.snapshot_date == date.fromisoformat(SNAPSHOT))
+                ).where(
+                    dataset_snapshots.c.snapshot_date == date.fromisoformat(SNAPSHOT),
+                    dataset_snapshots.c.dataset_id.in_(
+                        CANONICAL_REBUILD_DATASET_IDS
+                    ),
+                )
             ).all()
         expected = {
             (
@@ -1752,8 +1896,13 @@ class CanonicalV2Rebuilder:
                         and currency in {"KRW", "USD"}
                     )
                     or (
-                        metric_code == "ONE_YEAR_RETURN"
+                        metric_code in {
+                            "ONE_DAY_RETURN", "ONE_MONTH_RETURN",
+                            "THREE_MONTH_RETURN", "SIX_MONTH_RETURN",
+                            "ONE_YEAR_RETURN", "YEAR_TO_DATE_RETURN",
+                        }
                         and prefix in {"PREF01N001", "PRFD01N001"}
+                        and observed is not None
                     )
                     else "NOT_COMPARABLE"
                 ),
@@ -1883,7 +2032,12 @@ class CanonicalV2Rebuilder:
             ("MARKET_PRICE", "product.market_price", "Observed market price"),
             ("VOLUME", "product.market_volume", "Observed market volume"),
             ("BOND_BUY_YIELD", "bond.buy_yield", "Bond buy yield"),
+            ("ONE_DAY_RETURN", "product.one_day_return", "Exact one-day source return"),
+            ("ONE_MONTH_RETURN", "product.one_month_return", "Exact one-month source return"),
+            ("THREE_MONTH_RETURN", "product.three_month_return", "Exact three-month source return"),
+            ("SIX_MONTH_RETURN", "product.six_month_return", "Exact six-month source return"),
             ("ONE_YEAR_RETURN", "product.one_year_return", "Exact one-year source return"),
+            ("YEAR_TO_DATE_RETURN", "product.year_to_date_return", "Exact year-to-date source return"),
             ("CREDIT_RATING_ORDER", "product.credit_rating", "Ordered credit rating"),
         )
         connection.execute(
@@ -1916,12 +2070,20 @@ class CanonicalV2Rebuilder:
         }
         if counts != expected_counts:
             raise ValueError(f"canonical reconciliation mismatch: {counts}")
-        source_count = connection.scalar(select(func.count()).select_from(source_records))
-        quarantine_count = connection.scalar(select(func.count()).select_from(quarantine_records))
-        described = connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "DESCRIBES"))
-        supports = connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "SUPPORTS"))
-        if (source_count, quarantine_count, described, supports) != (53_374, 1, 25_024, 38_456):
-            raise ValueError("source/provenance reconciliation mismatch")
+        scoped_provenance = _canonical_rebuild_provenance_counts(connection)
+        actual_source_provenance = {
+            key: scoped_provenance[key]
+            for key in EXPECTED_SOURCE_PROVENANCE_COUNTS
+        }
+        expected_source_provenance = EXPECTED_SOURCE_PROVENANCE_COUNTS
+        if actual_source_provenance != expected_source_provenance:
+            raise ValueError(
+                "source/provenance reconciliation mismatch: "
+                f"actual={actual_source_provenance}, "
+                f"expected={expected_source_provenance}, "
+                f"scope=dataset_ids:{list(CANONICAL_REBUILD_DATASET_IDS)}"
+            )
+        self._reconcile_pref01_return_metrics(connection)
         orphan_classes = connection.scalar(select(func.count()).select_from(fund_share_classes).outerjoin(funds, fund_share_classes.c.parent_fund_id == funds.c.fund_id).where(funds.c.fund_id.is_(None)))
         orphan_lots = connection.scalar(select(func.count()).select_from(sale_lots).outerjoin(bonds, sale_lots.c.bond_id == bonds.c.bond_id).where(bonds.c.bond_id.is_(None)))
         evidence_free = connection.scalar(select(func.count()).select_from(canonical_facts).outerjoin(fact_evidence_links, canonical_facts.c.fact_id == fact_evidence_links.c.fact_id).where(canonical_facts.c.resolution_status == "RESOLVED", fact_evidence_links.c.fact_id.is_(None)))
@@ -1935,6 +2097,88 @@ class CanonicalV2Rebuilder:
                 + json.dumps(rendered, ensure_ascii=False, sort_keys=True)
             )
         return {key: int(value or 0) for key, value in counts.items()}
+
+    @staticmethod
+    def _reconcile_pref01_return_metrics(connection) -> None:
+        metric_codes = tuple(EXPECTED_PREF01_RETURN_METRIC_COUNTS)
+        metric_counts = {
+            str(metric_code): int(count)
+            for metric_code, count in connection.execute(
+                select(metric_observations.c.metric_code, func.count())
+                .select_from(
+                    metric_observations
+                    .join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code.in_(metric_codes),
+                )
+                .group_by(metric_observations.c.metric_code)
+            )
+        }
+        if metric_counts != EXPECTED_PREF01_RETURN_METRIC_COUNTS:
+            raise ValueError(
+                "PREF01 return metric reconciliation mismatch: "
+                f"actual={metric_counts}, "
+                f"expected={EXPECTED_PREF01_RETURN_METRIC_COUNTS}"
+            )
+
+        evidence_counts = {
+            (str(metric_code), str(source_column)): int(count)
+            for metric_code, source_column, count in connection.execute(
+                select(
+                    metric_observations.c.metric_code,
+                    source_field_assertions.c.source_column,
+                    func.count(func.distinct(metric_observations.c.fact_id)),
+                )
+                .select_from(
+                    metric_observations
+                    .join(
+                        canonical_facts,
+                        canonical_facts.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        dataset_snapshots,
+                        dataset_snapshots.c.snapshot_id
+                        == canonical_facts.c.snapshot_id,
+                    )
+                    .join(
+                        fact_evidence_links,
+                        fact_evidence_links.c.fact_id == metric_observations.c.fact_id,
+                    )
+                    .join(
+                        source_field_assertions,
+                        source_field_assertions.c.assertion_id
+                        == fact_evidence_links.c.assertion_id,
+                    )
+                )
+                .where(
+                    dataset_snapshots.c.dataset_id == "PREF01N001",
+                    metric_observations.c.metric_code.in_(metric_codes),
+                )
+                .group_by(
+                    metric_observations.c.metric_code,
+                    source_field_assertions.c.source_column,
+                )
+            )
+        }
+        expected_evidence = {
+            (metric_code, PREF01_RETURN_SOURCE_FIELDS[metric_code]): count
+            for metric_code, count in EXPECTED_PREF01_RETURN_METRIC_COUNTS.items()
+        }
+        if evidence_counts != expected_evidence:
+            raise ValueError(
+                "PREF01 return metric provenance reconciliation mismatch: "
+                f"actual={evidence_counts}, expected={expected_evidence}"
+            )
 
     def _mark_ready(self, connection, audit: Audit, snapshot_ids: dict[str, str], counts: dict[str, int]) -> None:
         classification = _classification_json(self.classification_counts)
@@ -1989,7 +2233,16 @@ class CanonicalV2Rebuilder:
                 *classification_relations.values(),
             ):
                 relation_counts.setdefault(relation, 0)
-            provenance = {"SourceRecords": count(source_records), "DESCRIBES": int(connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "DESCRIBES")) or 0), "SUPPORTS": int(connection.scalar(select(func.count()).select_from(source_record_entities).where(source_record_entities.c.provenance_role == "SUPPORTS")) or 0), "SourceFieldAssertions": count(source_field_assertions), "fact_evidence_links": count(fact_evidence_links)}
+            scoped_provenance = _canonical_rebuild_provenance_counts(connection)
+            provenance = {
+                "SourceRecords": scoped_provenance["source_records"],
+                "DESCRIBES": scoped_provenance["describes"],
+                "SUPPORTS": scoped_provenance["supports"],
+                "SourceFieldAssertions": scoped_provenance[
+                    "source_field_assertions"
+                ],
+                "fact_evidence_links": scoped_provenance["fact_evidence_links"],
+            }
             identifiers = {"observations": count(entity_identifiers), "collision_cases": count(identifier_collision_cases), "validated": int(connection.scalar(select(func.count()).select_from(entity_identifiers).where(entity_identifiers.c.validation_status == "VALIDATED")) or 0), "conflicts": int(connection.scalar(select(func.count()).select_from(entity_identifiers).where(entity_identifiers.c.conflict_status == "OPEN")) or 0)}
             crosswalk = {str(key): int(value) for key, value in connection.execute(select(entity_id_crosswalk.c.mapping_status, func.count()).group_by(entity_id_crosswalk.c.mapping_status))}
             conflicts = {"fact_conflict_cases": count(fact_conflict_cases)}
@@ -2012,7 +2265,12 @@ class CanonicalV2Rebuilder:
             if not classification:
                 metadata_json = connection.scalar(
                     select(dataset_snapshots.c.metadata_json)
-                    .where(dataset_snapshots.c.status == "READY")
+                    .where(
+                        dataset_snapshots.c.status == "READY",
+                        dataset_snapshots.c.dataset_id.in_(
+                            CANONICAL_REBUILD_DATASET_IDS
+                        ),
+                    )
                     .limit(1)
                 ) or {}
                 classification = metadata_json.get("classification_accounting", {})

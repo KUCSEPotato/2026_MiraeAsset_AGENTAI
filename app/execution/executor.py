@@ -176,7 +176,7 @@ class QueryExecutor:
             deep=True,
             update={
                 "step_id": step.step_id,
-                "source": step.source.value,
+                "source": record.source if step.source is RetrievalSource.INTERNAL else step.source.value,
                 "metadata": {
                     **record.metadata,
                     "execution_step_id": step.step_id,

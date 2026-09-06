@@ -9,6 +9,10 @@ from app.domain.models import (
 )
 from app.planning.metadata import RoutingMetadataRegistry
 from app.planning.exceptions import UnsupportedQuerySemanticsError
+from app.planning.serialization import (
+    BASIC_PRODUCT_FIELDS,
+    BASIC_PRODUCT_PROJECTION,
+)
 
 
 class QueryPlanValidationError(ValueError):
@@ -22,6 +26,11 @@ class StructuredQueryPlanValidator:
         self._metadata = metadata
 
     def validate(self, plan: QueryPlan, query: GroundedQuery) -> QueryPlan:
+        from app.planning.output_requirements import prepare_outputs
+        prepared = prepare_outputs(query)
+        if plan.output_disclosures != prepared.disclosures:
+            raise QueryPlanValidationError(["changed_output_disclosures"])
+        query = prepared.query
         errors: list[str] = []
         planner = self._as_planner_type(plan.planner)
         if planner is None:
@@ -59,7 +68,15 @@ class StructuredQueryPlanValidator:
         errors.extend(self._semantic_safety_errors(plan, query, planner))
         if errors:
             raise QueryPlanValidationError(_deduplicate(errors))
-        if plan.constraint_coverage_required:
+        comparison_errors = [
+            f"unsupported_comparison:{reason}"
+            for step in plan.steps
+            for reason in step.inputs.get("comparison_unsupported_reasons", [])
+            if isinstance(reason, str) and reason
+        ]
+        if comparison_errors:
+            raise UnsupportedQuerySemanticsError(comparison_errors)
+        if plan.constraint_coverage_required or query.semantic_constraints:
             semantic_errors = self._constraint_coverage_errors(plan, query)
             if semantic_errors:
                 raise UnsupportedQuerySemanticsError(semantic_errors)
@@ -114,7 +131,9 @@ class StructuredQueryPlanValidator:
         planner: PlannerType | None,
     ) -> list[str]:
         errors: list[str] = []
-        allowed_fields = set(query.canonical_fields.values())
+        from app.planning.serialization import structured_query_inputs
+        expected_inputs = structured_query_inputs(query)
+        canonical_allowed_fields = set(query.canonical_fields.values())
         allowed_concepts = {concept.value for concept in query.canonical_concepts}
         allowed_entity_ids = {
             entity.canonical_id
@@ -123,6 +142,34 @@ class StructuredQueryPlanValidator:
             and entity.canonical_id is not None
         }
         for step in plan.steps:
+            if step.source is RetrievalSource.RDB and step.operation is QueryOperation.SEARCH_PRODUCTS:
+                for key in ("filters", "sort", "comparison", "boolean_expression", "product_universe"):
+                    expected = expected_inputs.get(key)
+                    actual = step.inputs.get(key)
+                    if (actual or expected) and actual != expected:
+                        errors.append(f"changed_query_operator:{step.step_id}:{key}")
+                if not set(expected_inputs["requested_fields"]).issubset(step.inputs.get("requested_fields", [])):
+                    errors.append(f"omitted_projection:{step.step_id}")
+                if set(expected_inputs["entity_ids"]) != set(step.inputs.get("entity_ids", [])):
+                    errors.append(f"changed_entity_selection:{step.step_id}")
+            allowed_fields = set(canonical_allowed_fields)
+            projection_profile = step.inputs.get("projection_profile")
+            if projection_profile is not None:
+                valid_basic_projection = bool(
+                    projection_profile == BASIC_PRODUCT_PROJECTION
+                    and len(allowed_entity_ids) == 1
+                    and not query.grounded_requested_fields
+                    and not query.grounded_filters
+                    and not query.grounded_sort
+                    and not query.grounded_relations
+                    and not query.parsed_query.requires_semantic_search
+                    and step.inputs.get("requested_fields")
+                    == list(BASIC_PRODUCT_FIELDS)
+                )
+                if not valid_basic_projection:
+                    errors.append("invalid_default_projection_profile")
+                else:
+                    allowed_fields.update(BASIC_PRODUCT_FIELDS)
             used_fields = _extract_canonical_fields(step.inputs)
             unknown_fields = used_fields - allowed_fields
             if unknown_fields:
@@ -144,6 +191,24 @@ class StructuredQueryPlanValidator:
                 errors.append(
                     "invented_entity_id:" + ",".join(sorted(unknown_entity_ids))
                 )
+            candidate_dependencies = step.inputs.get("candidate_ids_from", [])
+            if not isinstance(candidate_dependencies, list) or any(
+                dependency not in step.depends_on for dependency in candidate_dependencies
+            ):
+                errors.append(f"undeclared_candidate_dependency:{step.step_id}")
+            if step.inputs.get("comparison") is not None:
+                if step.inputs["comparison"] != structured_query_inputs(query).get("comparison"):
+                    errors.append("invented_comparison_specification")
+            if step.inputs.get("boolean_expression") is not None:
+                from app.planning.predicates import structured_predicate
+                predicate = structured_predicate(query)
+                if predicate is None or step.inputs["boolean_expression"] != predicate.model_dump(mode="json"):
+                    errors.append("invented_boolean_expression")
+            if step.inputs.get("paths"):
+                from app.planning.supervisor import _graph_paths
+                expected_paths = _graph_paths(query, allow_holdings=True)
+                if any(path not in expected_paths for path in step.inputs["paths"]):
+                    errors.append("invented_relation_path")
 
         if planner is PlannerType.RULE:
             unresolved_grounding = (
@@ -218,6 +283,12 @@ def _extract_canonical_fields(inputs: dict) -> set[str]:
         if isinstance(item, dict) and item.get("canonical_field") is not None:
             fields.add(item["canonical_field"])
     fields.update(inputs.get("requested_fields", []))
+    comparison = inputs.get("comparison")
+    if isinstance(comparison, dict):
+        fields.update(comparison.get("fields", []))
+    for metric in inputs.get("metrics", []):
+        if isinstance(metric, dict) and metric.get("canonical_field"):
+            fields.add(metric["canonical_field"])
     return fields
 
 

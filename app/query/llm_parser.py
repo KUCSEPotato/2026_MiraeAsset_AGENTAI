@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Protocol
 from urllib.parse import quote
 from uuid import uuid4
@@ -8,16 +9,23 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from app.hyperclova import (
+    log_hyperclova_http_error,
+    sanitize_hyperclova_diagnostic,
+)
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParserError
 from app.query.semantic_models import (
+    ALLOWED_RELATION_SUBJECT_TYPES,
+    ALLOWED_RELATION_TARGET_TYPES,
     LLMSemanticParseCandidate,
     SemanticParserRequest,
 )
 
 
-PROMPT_VERSION = "m10.6-hcx-semantic-v1"
-SEMANTIC_SCHEMA_VERSION = "m10.6-semantic-v1"
+PROMPT_VERSION = "composition-hcx-semantic-v2"
+SEMANTIC_SCHEMA_VERSION = "composition-semantic-v1"
+logger = logging.getLogger(__name__)
 
 
 class SemanticParserLLM(Protocol):
@@ -60,6 +68,7 @@ class HyperCLOVASemanticParserClient:
             f"{self._settings.base_url}/v3/chat-completions/"
             f"{quote(self._settings.model, safe='')}"
         )
+        raw_candidate: object = None
         payload = {
             "messages": [
                 {"role": "system", "content": _system_prompt()},
@@ -71,35 +80,105 @@ class HyperCLOVASemanticParserClient:
             "temperature": 0.0,
             "repetitionPenalty": 1.0,
             "stop": [],
-            "responseFormat": {
-                "type": "json",
-                "schema": hyperclova_candidate_schema(),
-            },
         }
+        request_id = str(uuid4())
         try:
             response = await self._client.post(
                 endpoint,
                 headers={
                     "Authorization": f"Bearer {self._settings.api_key}",
-                    "X-NCP-CLOVASTUDIO-REQUEST-ID": str(uuid4()),
+                    "X-NCP-CLOVASTUDIO-REQUEST-ID": request_id,
                     "Content-Type": "application/json",
                 },
                 json=payload,
             )
             response.raise_for_status()
+            logger.info("HyperCLOVA response received", extra={
+                "request_purpose": "semantic_parse", "request_id": request_id,
+                "http_status": response.status_code,
+            })
             envelope = response.json()
             content = envelope["result"]["message"]["content"]
             raw_candidate = json.loads(content)
             return LLMSemanticParseCandidate.model_validate(raw_candidate)
-        except (
-            httpx.HTTPError,
-            json.JSONDecodeError,
-            KeyError,
-            TypeError,
-            ValidationError,
-        ) as exc:
-            # Never include response bodies, prompts, or credentials in the error.
-            raise SemanticParserError("HyperCLOVA semantic parse failed") from exc
+        except httpx.HTTPStatusError as exc:
+            details = log_hyperclova_http_error(
+                logger,
+                exc.response,
+                request_purpose="semantic_parse",
+                request_id=request_id,
+            )
+            raise SemanticParserError(
+                http_status=exc.response.status_code,
+                provider_code=details.code,
+                request_id=request_id,
+            ) from exc
+        except httpx.HTTPError as exc:
+            timed_out = isinstance(exc, httpx.TimeoutException)
+            logger.error(
+                "HyperCLOVA request failed",
+                extra={
+                    "request_purpose": "semantic_parse",
+                    "request_id": request_id,
+                    "error_class": type(exc).__name__,
+                    "failure_stage": "timeout" if timed_out else "transport",
+                },
+            )
+            raise SemanticParserError(request_id=request_id, failure_reason=(
+                "semantic_parse_timeout" if timed_out else "semantic_parse_dependency_failure"
+            )) from exc
+        except ValidationError as exc:
+            validation_errors = [
+                {
+                    "loc": [
+                        sanitize_hyperclova_diagnostic(part)
+                        for part in item.get("loc", ())
+                    ],
+                    "type": sanitize_hyperclova_diagnostic(
+                        item.get("type")
+                    ),
+                    "msg": sanitize_hyperclova_diagnostic(item.get("msg")),
+                }
+                for item in exc.errors(include_url=False, include_input=False, include_context=False)[:20]
+            ]
+            parsed_keys = (
+                [
+                    sanitize_hyperclova_diagnostic(key)
+                    for key in sorted(raw_candidate)[:50]
+                ]
+                if isinstance(raw_candidate, dict)
+                else []
+            )
+            logger.error(
+                "HyperCLOVA semantic response validation failed",
+                extra={
+                    "request_purpose": "semantic_parse",
+                    "request_id": request_id,
+                    "error_class": type(exc).__name__,
+                    "validation_errors": validation_errors,
+                    "failure_stage": "response_schema",
+                    "parsed_top_level_keys": parsed_keys,
+                },
+            )
+            raise SemanticParserError(
+                failure_reason="semantic_parse_response_invalid",
+                request_id=request_id,
+            ) from exc
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.error(
+                "HyperCLOVA semantic response validation failed",
+                extra={
+                    "request_purpose": "semantic_parse",
+                    "request_id": request_id,
+                    "error_class": type(exc).__name__,
+                    "parsed_top_level_keys": [],
+                    "failure_stage": "response_json",
+                },
+            )
+            raise SemanticParserError(
+                failure_reason="semantic_parse_response_invalid",
+                request_id=request_id,
+            ) from exc
 
 
 def _system_prompt() -> str:
@@ -125,7 +204,14 @@ def _request_content(request: SemanticParserRequest) -> str:
                 "Use raw aliases; downstream ontology performs canonical grounding.",
                 "Do not blindly append to the rule result; review the entire question.",
                 "Do not turn subjective phrases into objective fields.",
+                "Use only keys declared in candidate_schema.",
+                "Omit unused optional keys instead of emitting null values.",
+                "Represent coordinated products as separate entities and all requested fields as separate projections.",
+                "Preserve explicit return periods in raw field aliases; the application resolves metrics and default periods.",
+                "Use group_by for explicit grouping; do not convert historical change into a current snapshot field.",
+                "Calendar-year maturity is a maturity field filter with operator eq and the exact raw year string (e.g. 2027년), not temporal_condition. The application derives date bounds; do not invent dates absent from the source span.",
             ],
+            "candidate_schema": hyperclova_candidate_schema(),
             "semantic_schema_version": request.semantic_schema_version,
             "prompt_version": request.prompt_version,
         },
@@ -139,6 +225,7 @@ def hyperclova_candidate_schema() -> dict[str, object]:
 
     span = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "start": {"type": "integer", "minimum": 0},
             "end": {"type": "integer", "minimum": 1},
@@ -148,11 +235,13 @@ def hyperclova_candidate_schema() -> dict[str, object]:
     }
     term = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {"source_span": span, "value": {"type": "string"}},
         "required": ["source_span", "value"],
     }
     typed = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "raw": {"type": "string"},
             "unit": {
@@ -166,12 +255,13 @@ def hyperclova_candidate_schema() -> dict[str, object]:
     }
     filter_item = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "source_span": span,
             "field": {"type": "string"},
             "operator": {
                 "type": "string",
-                "enum": ["eq", "ne", "lt", "lte", "gt", "gte", "in", "between"],
+                "enum": ["eq", "ne", "lt", "lte", "gt", "gte", "in", "between", "contains"],
             },
             "value": {
                 "anyOf": [
@@ -200,19 +290,27 @@ def hyperclova_candidate_schema() -> dict[str, object]:
             }
         return {
             "type": "object",
+            "additionalProperties": False,
             "properties": properties,
             "required": ["node_type"],
         }
 
     relation = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "source_span": span,
             "raw_relation": {"type": "string"},
             "direction": {"type": "string", "enum": ["outgoing", "incoming"]},
-            "subject_type": {"type": "string"},
+            "subject_type": {
+                "type": "string",
+                "enum": list(ALLOWED_RELATION_SUBJECT_TYPES),
+            },
             "target_raw_text": {"type": "string"},
-            "target_type": {"type": "string"},
+            "target_type": {
+                "type": "string",
+                "enum": list(ALLOWED_RELATION_TARGET_TYPES),
+            },
             "negated": {"type": "boolean"},
             "chain_id": {"type": "string"},
             "path_position": {"type": "integer", "minimum": 0},
@@ -221,6 +319,7 @@ def hyperclova_candidate_schema() -> dict[str, object]:
     }
     schema: dict[str, object] = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "intent": {
                 "type": "string",
@@ -234,11 +333,19 @@ def hyperclova_candidate_schema() -> dict[str, object]:
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "source_span": span,
                         "entity_type": {
                             "type": "string",
-                            "enum": ["product", "management_company", "issuer", "index", "fund"],
+                            "enum": [
+                                "product", "financial_product", "fund",
+                                "fund_share_class", "sale_lot",
+                                "management_company", "asset_manager",
+                                "organization", "company", "issuer",
+                                "portfolio_company", "subsidiary",
+                                "institution", "index", "security", "holding",
+                            ],
                         },
                     },
                     "required": ["source_span", "entity_type"],
@@ -250,6 +357,7 @@ def hyperclova_candidate_schema() -> dict[str, object]:
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "source_span": span,
                         "field": {"type": "string"},
@@ -260,17 +368,20 @@ def hyperclova_candidate_schema() -> dict[str, object]:
                 "maxItems": 8,
             },
             "requested_fields": {"type": "array", "items": term, "maxItems": 12},
+            "group_by": {"type": "array", "items": term, "maxItems": 8},
             "semantic_texts": {"type": "array", "items": term, "maxItems": 12},
             "subjective_conditions": {"type": "array", "items": term, "maxItems": 8},
             "relations": {"type": "array", "items": relation, "maxItems": 8},
             "boolean_expression": boolean_schema(3),
             "result_limit": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {"source_span": span, "value": {"type": "integer", "minimum": 1}},
                 "required": ["source_span", "value"],
             },
             "aggregation": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "source_span": span,
                     "operator": {"type": "string", "enum": ["count"]},
@@ -279,6 +390,7 @@ def hyperclova_candidate_schema() -> dict[str, object]:
             },
             "temporal_condition": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {"source_span": span, "requested_snapshot": {"type": "string"}},
                 "required": ["source_span"],
             },
