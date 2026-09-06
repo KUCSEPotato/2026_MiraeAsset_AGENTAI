@@ -10,6 +10,7 @@ import re
 from datetime import date
 
 from app.data.metric_capabilities import MetricCapabilityRegistry, PREF01_RETURN_CONTRACTS
+from app.query.default_policies import apply_default_policies
 from app.domain.models import (
     ComparisonSpec, ConstraintSemanticType, ConstraintStatus, FilterOperator, MetricSpec,
     GroupBySpec, ParsedQuery, QueryIntent, SemanticConstraint, SemanticCoverageStatus,
@@ -176,8 +177,8 @@ def normalize_query_semantics(parsed: ParsedQuery) -> ParsedQuery:
         *parsed.unsupported_constraint_ids,
         *(item.constraint_id for item in constraints if item.status is ConstraintStatus.UNSUPPORTED),
     ]))
-    return parsed.model_copy(update={
+    return apply_default_policies(parsed.model_copy(update={
         "metrics": metrics, "comparison": comparison, "group_by": group_by, "semantic_constraints": constraints,
         "unsupported_constraint_ids": unsupported,
         "semantic_coverage": SemanticCoverageStatus.INCOMPLETE if unsupported else parsed.semantic_coverage,
-    })
+    }))

@@ -1106,7 +1106,9 @@ class _RejectingSemanticParserLLM:
                     source_span=LLMCandidateSpan(
                         start=0,
                         end=3,
-                        raw_text="ETF",
+                        # Absent text cannot be repaired by relocating an
+                        # otherwise exact, unique substring.
+                        raw_text="ETN",
                     ),
                     value="ETF",
                 )

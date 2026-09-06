@@ -154,7 +154,7 @@ class RuleBasedQueryAnalyzer:
         "상품명", "이름", "단축명", "약칭", "표준코드", "지역", "region",
         "운용규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
         "위험 정보", "위험정보", "위험등급", "위험도", "리스크", "위험",
-        "기준가격", "NAV", "가격", "종가", "티커",
+        "기준가격", "NAV", "가격", "종가", "티커", "관측일", "기준일",
         "ticker", "ISIN", "신용등급", "편입 비중", "보유 비중",
         "상품유형", "상품종류", "자산유형", "자산군", "투자지역", "노출지역",
         "상장국가", "거래통화", "통화", "시장범위", "국내외구분",
@@ -244,6 +244,10 @@ class RuleBasedQueryAnalyzer:
         aggregation, aggregation_span = self._extract_aggregation(question)
         temporal, temporal_span = self._extract_temporal(question)
         intent = self._classify_intent(question, entities)
+        # An explicit metric order is a lookup request even when phrased as
+        # "추천". Other selection clauses remain required and can still fail.
+        if intent is QueryIntent.RECOMMEND_PRODUCT and sort:
+            intent = QueryIntent.SEARCH_PRODUCT
         semantic_search = any(
             marker.casefold() in question.casefold() for marker in self._semantic_markers
         )
@@ -338,12 +342,14 @@ class RuleBasedQueryAnalyzer:
         for index, value in enumerate(requested_fields):
             start, end = self._requested_field_span(question, value)
             path_weight = value in {"편입 비중", "보유 비중"}
+            unavailable_date = value in {"관측일", "기준일"}
             add(start, end, ConstraintSemanticType.REQUESTED_FIELD,
                 payload={"field": value, **({"projection_scope": "path", "relation": "holds",
                                             "property": "weight"} if path_weight else {})},
                 ref=("requested_field", index),
-                status=ConstraintStatus.UNSUPPORTED if path_weight else ConstraintStatus.PARSED,
-                reason="holdings_weight_projection_unavailable" if path_weight else None)
+                status=ConstraintStatus.UNSUPPORTED if path_weight or unavailable_date else ConstraintStatus.PARSED,
+                reason=("holdings_weight_projection_unavailable" if path_weight
+                        else "projection_unavailable" if unavailable_date else None))
 
         for index, item in enumerate(entities):
             start, end = _find_span(question, item.raw_text)
@@ -465,13 +471,17 @@ class RuleBasedQueryAnalyzer:
             question, occupied
         )
         for residual in residuals:
+            subjective = bool(re.fullmatch(r"안전(?:한|하고|하게)?|좋은|좋고|유망(?:한|하고)?", residual.raw_text))
             add(
                 residual.source_span.start, residual.source_span.end,
-                ConstraintSemanticType.SEMANTIC, raw_text=residual.raw_text,
+                ConstraintSemanticType.SUBJECTIVE if subjective else ConstraintSemanticType.SEMANTIC,
+                raw_text=residual.raw_text,
                 payload={"query_text": residual.raw_text},
                 status=ConstraintStatus.UNSUPPORTED,
-                reason="unparsed_material_clause",
+                reason="subjective_execution_unsupported" if subjective else "unparsed_material_clause",
             )
+        residuals = [item for item in residuals if not re.fullmatch(
+            r"안전(?:한|하고|하게)?|좋은|좋고|유망(?:한|하고)?", item.raw_text)]
 
         constraints, ref_ids = _materialize_constraints(drafts)
         filters = [item.model_copy(update={"constraint_id": ref_ids.get(("filter", i))})
@@ -1057,6 +1067,8 @@ class RuleBasedQueryAnalyzer:
         adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
         for alias in sorted(self._ranking_field_aliases, key=len, reverse=True):
             adjectives = "빠른|늦은|이른" if alias in {"만기", "만기일"} else adjective_pattern
+            if "수익률" in alias:
+                adjectives += "|좋은|좋고|나쁜|나쁘고"
             # In return comparisons, ``최근`` qualifies the trailing-period
             # metric (for example, 최근 6개월 수익률).  Consume it with the
             # structured sort span so it cannot become an unrelated temporal
@@ -1070,7 +1082,7 @@ class RuleBasedQueryAnalyzer:
                 direction = (
                     "desc"
                     if match.group(2) in self._descending_words
-                    or match.group(2) in {"크고", "높고", "많고", "늦은"}
+                    or match.group(2) in {"크고", "높고", "많고", "늦은", "좋은", "좋고"}
                     else "asc"
                 )
                 found.append((match.start(), SortSpec(field=match.group(1), direction=direction),
@@ -1172,8 +1184,11 @@ class RuleBasedQueryAnalyzer:
         # Generic return uses the same reviewed default-period policy in a
         # possessive lookup or coordinated comparison projection.
         for match in re.finditer(r"수익률", question):
-            projection_context = "비교" in question or bool(re.search(r"의\s*", question[:match.start()]))
-            if (projection_context and not any(match.start() in span for span in sort_spans)
+            projection_context = ("비교" in question
+                                  or bool(re.search(r"의\s*", question[:match.start()]))
+                                  or bool(requested) and bool(re.search(r"과|와|,", question)))
+            availability = re.match(r"(?:이|가)?\s*제공된", question[match.end():])
+            if (projection_context and not availability and not any(match.start() in span for span in sort_spans)
                     and not any(start <= match.start() < end for start, end, _ in requested)
                     and not self._inside_numeric_condition(question, match.start())):
                 requested.append((match.start(), match.end(), match.group()))
@@ -1353,11 +1368,13 @@ class RuleBasedQueryAnalyzer:
             # fail-closed residual tracking instead of disappearing into an
             # unresolved entity mention.
             return True
-        if self._find_aliases(raw_text, self._field_aliases) or re.search(
+        if self._find_aliases(raw_text, self._ranking_field_aliases) or re.search(
             r"(?:편입한|편입된|보유한|추종하는|운용하는|발행한|상장된|상장한|\s중(?:에서)?\b)",
             raw_text,
             re.IGNORECASE,
         ):
+            return True
+        if re.search(r"(?:^|\s)(?:안전한|좋은|유망한)\s+(?:ETF|ETN|펀드|상품)", raw_text, re.IGNORECASE):
             return True
         product_types = self._extract_product_types(raw_text)
         if not product_types:
@@ -1886,6 +1903,11 @@ class RuleBasedQueryAnalyzer:
         ignored = {value.casefold() for value in self._non_material_tokens}
         for match in token_pattern.finditer(remainder):
             if match.group(0).casefold() in ignored:
+                continue
+            if re.fullmatch(
+                r"것|함께|(?:과|와)함께|(?:을|를|은|는|이|가|도)?(?:알려줘|보여줘|찾아줘|추천해줘)",
+                match.group(),
+            ):
                 continue
             results.append(UnparsedMaterialSpan(
                 source_span=SourceSpan(start=match.start(), end=match.end()),

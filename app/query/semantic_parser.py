@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticParserCoordinator:
-    """Rule-first analyzer with one fail-closed LLM fallback attempt."""
+    """Rule-first analyzer with a validated LLM candidate and at most one repair."""
 
     def __init__(
         self,
@@ -57,6 +57,7 @@ class SemanticParserCoordinator:
                     "parser_source": ParserSource.RULE,
                     "parse_provenance": ParseProvenance(
                         parser_source=ParserSource.RULE,
+                        default_policies=rule_result.parse_provenance.default_policies,
                         semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
                         rule_latency_ms=rule_latency,
                         validation_status="not_required",
@@ -94,46 +95,56 @@ class SemanticParserCoordinator:
             "unparsed_count": len(rule_result.unparsed_material_spans),
         })
         llm_started = perf_counter()
-        try:
-            candidate = await self._llm_parser.parse(request)
-            llm_latency = _milliseconds(llm_started)
-            parsed = self._candidate_validator.validate(
-                question,
-                rule_result,
-                candidate,
-                model=self._llm_parser.model_name,
-                rule_latency_ms=rule_latency,
-                llm_latency_ms=llm_latency,
-                prompt_version=PROMPT_VERSION,
-                schema_version=SEMANTIC_SCHEMA_VERSION,
-            )
-        except SemanticParserError as exc:
-            raise SemanticParseSafetyError(
-                exc.failure_reason,
-                rule_latency_ms=rule_latency,
-                llm_latency_ms=_milliseconds(llm_started),
-            ) from exc
-        except SemanticCandidateValidationError as exc:
-            logger.warning(
-                "semantic parse candidate rejected",
-                extra={
-                    "request_purpose": "semantic_parse",
-                    "parser_path": "LLM_FALLBACK",
-                    "failure_stage": "candidate_validation",
-                    "validation_status": "rejected",
-                    "candidate_rejection_reasons": exc.reasons,
-                    "validation_reasons": exc.reasons,
-                    "validation_reason_count": len(exc.reasons),
-                    "rule_latency_ms": rule_latency,
-                    "llm_latency_ms": _milliseconds(llm_started),
-                },
-            )
-            raise SemanticParseSafetyError(
-                "llm_candidate_rejected",
-                rule_latency_ms=rule_latency,
-                llm_latency_ms=_milliseconds(llm_started),
-                validation_reasons=exc.reasons,
-            ) from exc
+        rejected = None
+        errors = []
+        repair = getattr(self._llm_parser, "repair", None)
+        for attempt in range(2):
+            candidate = None
+            try:
+                candidate = (await self._llm_parser.parse(request) if attempt == 0
+                             else await repair(request, rejected, errors))
+                parsed = self._candidate_validator.validate(
+                    question, rule_result, candidate,
+                    model=self._llm_parser.model_name,
+                    rule_latency_ms=rule_latency,
+                    llm_latency_ms=_milliseconds(llm_started),
+                    prompt_version=PROMPT_VERSION, schema_version=SEMANTIC_SCHEMA_VERSION,
+                )
+                parsed = parsed.model_copy(update={"parse_provenance": parsed.parse_provenance.model_copy(
+                    update={"llm_calls": attempt + 1, "repair_attempts": attempt},
+                )})
+                break
+            except (SemanticParserError, SemanticCandidateValidationError) as exc:
+                if isinstance(exc, SemanticCandidateValidationError):
+                    reason = "llm_candidate_rejected"
+                    rejected = candidate.model_dump(mode="json", exclude_none=True)
+                    errors = exc.reasons
+                    logger.warning("semantic parse candidate rejected", extra={
+                        "request_purpose": "semantic_parse", "parser_path": "LLM_FALLBACK",
+                        "failure_stage": "candidate_validation", "validation_status": "rejected",
+                        "candidate_rejection_reasons": errors,
+                        "validation_reasons": errors,
+                        "validation_reason_count": len(errors),
+                        "rule_latency_ms": rule_latency,
+                        "llm_latency_ms": _milliseconds(llm_started),
+                    })
+                else:
+                    reason = exc.failure_reason
+                    rejected, errors = exc.rejected_candidate, exc.validation_errors
+                if attempt == 0 and callable(repair) and reason in {
+                    "llm_candidate_rejected", "semantic_parse_response_invalid",
+                }:
+                    logger.info("semantic repair required", extra={
+                        "request_purpose": "semantic_parse", "parser_path": "LLM_REPAIR",
+                        "candidate_rejection_reasons": errors,
+                    })
+                    continue
+                raise SemanticParseSafetyError(
+                    reason, rule_latency_ms=rule_latency,
+                    llm_latency_ms=_milliseconds(llm_started),
+                    llm_calls=attempt + 1, repair_attempts=attempt,
+                    validation_reasons=errors,
+                ) from exc
 
         logger.info(
             "semantic parse complete",
@@ -166,6 +177,9 @@ def _is_understood_unsupported(parsed: ParsedQuery) -> bool:
         "historical_metric_series_unavailable",
         "holdings_weight_projection_unavailable",
         "peer_selector_unverified",
+        "projection_unavailable",
+        "subjective_execution_unsupported",
+        "intent_execution_not_implemented",
         "true_ambiguity:comparison_metric_missing",
     }
 
@@ -180,6 +194,7 @@ def _rule_hint(parsed: ParsedQuery) -> dict[str, object]:
                 "end": item.source_span.end,
                 "semantic_type": item.semantic_type.value,
                 "status": item.status.value,
+                "payload": item.payload,
             }
             for item in parsed.semantic_constraints
         ],
@@ -191,6 +206,7 @@ def _rule_hint(parsed: ParsedQuery) -> dict[str, object]:
             }
             for item in parsed.unparsed_material_spans
         ],
+        "applied_default_policies": [item.model_dump(mode="json") for item in parsed.parse_provenance.default_policies],
     }
 
 
