@@ -23,11 +23,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.data.catalog import DatasetFiles, discover_dataset_files
 from app.data.cleaning import (
+    PRBD_SALE_LOT_EVIDENCE_FIELDS,
     canonical_mirae_sale_flag,
     clean_source_row,
     has_prbd_sale_lot_evidence,
     json_value,
     normalize_lookup_value,
+    source_assertion_semantics,
 )
 from app.data.database import DatabaseSettings, create_database_engine
 from app.data.loader import iter_source_rows, load_source_schema
@@ -107,6 +109,9 @@ ETP_MISSING_ASSERTION_FIELDS = frozenset(
         "ru_mkt_volume",
     }
 )
+PRFD_MISSING_ASSERTION_FIELDS = frozenset(
+    {"rptt_ksd_itm_no", "thco_sale_yn"}
+)
 ETP_PRICE_DATE_FIELDS = {
     "PREF01N001": "du_upt_dt",
     "PREF02N001": "du_clpr_base_dt",
@@ -125,7 +130,6 @@ EXPECTED_CANONICAL_COUNTS = {
     "etn": 610,
     "funds": 6_867,
     "fund_share_classes": 16_574,
-    "sale_lots": 634,
     "unresolved_fund_rows": 7_102,
 }
 
@@ -135,9 +139,9 @@ TARGET_FIELDS = {
             "pd_no", "pd_nm", "pd_abrv_nm", "pd_pbcm", "isu_dt", "mat_dt",
             "isu_bal_amt", "pd_risk_gcd", "pd_risk_nm", "bd_knd", "bd_ofr_tcd",
             "curr_cd", "pd_ctry_cd", "pd_exg_mkt", "info_base_dt", "info_seq",
-            "eval_price", "buy_yield", "crd_grd", "crd_grd_dt",
+            "eval_price", "buyable_quantity", "crd_grd", "crd_grd_dt",
         }
-    ),
+    ) | PRBD_SALE_LOT_EVIDENCE_FIELDS,
     "PREF01N001": frozenset(
         {
             "pd_itm_no", "pd_isin_cd", "pd_itm_no_ma", "pd_ticker", "pd_ric",
@@ -741,7 +745,9 @@ class CanonicalV2Rebuilder:
                 rows.flush(connection)
                 if force_failure_stage == "before_reconciliation":
                     raise RuntimeError("forced M10.8-B failure before reconciliation")
-                counts = self._reconcile(connection)
+                counts = self._reconcile(
+                    connection, expected_sale_lots=len(audit.sale_lot_ids)
+                )
                 self._mark_ready(connection, audit, snapshot_ids, counts)
             return self._report(audit, status="READY", skipped=False)
         except Exception as exc:
@@ -1043,7 +1049,14 @@ class CanonicalV2Rebuilder:
             value = cleaned.get(field_name)
             missing = value is None or value == ""
             preserve_missing = (
-                prefix in ETP_PREFIXES and field_name in ETP_MISSING_ASSERTION_FIELDS
+                prefix in ETP_PREFIXES
+                and field_name in ETP_MISSING_ASSERTION_FIELDS
+            ) or (
+                prefix == "PREF02N001"
+                and field_name == "cu_base_index"
+            ) or (
+                prefix == "PRFD01N001"
+                and field_name in PRFD_MISSING_ASSERTION_FIELDS
             )
             if missing and not preserve_missing:
                 continue
@@ -1060,11 +1073,12 @@ class CanonicalV2Rebuilder:
             )
             target_semantic_key = _target_key(prefix, field_name, value)
             transformation_rule = "M10.8-B.2 reviewed deterministic mapping"
-            quality_status = "VALID"
-            if missing:
-                quality_status = "MISSING"
-                transformation_rule = "source field is structurally present but blank/null; preserve as unknown"
-            elif organization_rejection:
+            quality_status, assertion_value, quality_rule = source_assertion_semantics(
+                prefix, field_name, raw.get(field_name), value
+            )
+            if quality_rule:
+                transformation_rule = quality_rule
+            if organization_rejection:
                 quality_status = "INVALID"
                 target_semantic_key = "organization:INVALID_TARGET"
                 transformation_rule = organization_rejection
@@ -1077,7 +1091,7 @@ class CanonicalV2Rebuilder:
             rows.add(source_field_assertions, {
                 "assertion_id": assertion_id, "source_record_id": record_id,
                 "source_column": field_name, "raw_value": _text(raw.get(field_name)),
-                "normalized_value": _text(value), "mapping_category": _field_category(prefix, field_name),
+                "normalized_value": _text(assertion_value), "mapping_category": _field_category(prefix, field_name),
                 "target_semantic_key": target_semantic_key,
                 "quality_status": quality_status,
                 "transformation_rule": transformation_rule,
@@ -1879,7 +1893,9 @@ class CanonicalV2Rebuilder:
             ]).on_conflict_do_nothing()
         )
 
-    def _reconcile(self, connection) -> dict[str, int]:
+    def _reconcile(
+        self, connection, *, expected_sale_lots: int | None = None
+    ) -> dict[str, int]:
         counts = {
             "financial_products": connection.scalar(select(func.count()).select_from(financial_products)),
             "bonds": connection.scalar(select(func.count()).select_from(bonds)),
@@ -1890,7 +1906,15 @@ class CanonicalV2Rebuilder:
             "etn": connection.scalar(select(func.count()).select_from(exchange_traded_products).where(exchange_traded_products.c.product_type_code == "ETN")),
             "unresolved_fund_rows": connection.scalar(select(func.count()).select_from(identity_resolution_cases).where(identity_resolution_cases.c.reason_code == "UNRESOLVED_PARENT")),
         }
-        if counts != EXPECTED_CANONICAL_COUNTS:
+        expected_counts = {
+            **EXPECTED_CANONICAL_COUNTS,
+            "sale_lots": (
+                counts["sale_lots"]
+                if expected_sale_lots is None
+                else expected_sale_lots
+            ),
+        }
+        if counts != expected_counts:
             raise ValueError(f"canonical reconciliation mismatch: {counts}")
         source_count = connection.scalar(select(func.count()).select_from(source_records))
         quarantine_count = connection.scalar(select(func.count()).select_from(quarantine_records))

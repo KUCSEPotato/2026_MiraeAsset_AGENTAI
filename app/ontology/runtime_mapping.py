@@ -15,7 +15,7 @@ from app.ontology.index import normalize_ontology_text
 ONTOLOGY_URI = "https://miraeasset.com/ontology/financial-product"
 ONTOLOGY_NAMESPACE = f"{ONTOLOGY_URI}#"
 ONTOLOGY_VERSION = "merged-optical-1.4"
-SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-09-03.1"
+SEMANTIC_MAPPING_VERSION = "team-v1-runtime-2026-09-03.3"
 DATASET_SNAPSHOT = "2026-08-24"
 
 BOND_TYPE_RESOURCES = {
@@ -329,7 +329,12 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         FieldMapping("product.observed_at", "observedAt", ("관측일", "기준일"), "rdb", "canonical_products.observed_at", exact_ops),
         FieldMapping("product.strategy_description", "investmentStrategyDescription", ("전략", "투자전략"), "vector_bm25", "etf_attributes.strategy", project),
         FieldMapping("product.credit_rating", "hasCreditRating", ("신용등급", "credit_rating"), "rdb", "canonical_v2.metric_observations", frozenset({"filter", "project", "ordered_comparison"}), active, "ordinal", "ordinal", "CREDIT_RATING_V1"),
-        FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available", "구매 가능"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),
+        FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),
+        FieldMapping("product.current_bond_purchase_eligible", "OperationalConstraint", ("현재 구매 가능한 채권", "구매 가능한 채권", "current_bond_purchase_eligible"), "rdb", "derived NOT EXISTS confirmed bond delisting/listing-end rule", frozenset({"filter"}), active, "derived organizer rule", "boolean", "BOND_PURCHASE_ELIGIBILITY_V1"),
+        FieldMapping("product.bond_market_presence", "OperationalConstraint", ("채권 시장 존재", "bond_market_presence"), "rdb", "snapshot-bound pd_exg_mkt source assertion EXISTS", frozenset({"filter"}), active, "source assertion", "multi-valued enum", "BOND_MARKET_PRESENCE_V1"),
+        FieldMapping("product.has_sale_lot", "OperationalConstraint", ("판매 LOT 존재", "has_sale_lot"), "rdb", "snapshot-bound HAS_SALE_LOT relation EXISTS/NOT EXISTS", frozenset({"filter"}), active, "derived relation rule", "boolean", "BOND_SALE_LOT_EXISTENCE_V1"),
+        FieldMapping("product.has_multiple_sale_lots", "OperationalConstraint", ("복수 판매 LOT", "has_multiple_sale_lots"), "rdb", "snapshot-bound distinct HAS_SALE_LOT count greater than one", frozenset({"filter"}), active, "derived relation rule", "boolean", "BOND_MULTIPLE_SALE_LOTS_V1"),
+        FieldMapping("product.has_trade_price_and_buy_yield_sale_lot", "OperationalConstraint", ("동일 판매 LOT 매매단가 수익률", "has_trade_price_and_buy_yield_sale_lot"), "rdb", "same source-record-described SaleLot has trade_price and buy_yield assertions", frozenset({"filter"}), active, "derived provenance rule", "boolean", "BOND_SALE_LOT_PRICE_YIELD_V1"),
         FieldMapping("product.subscription_status", "subscriptionStatus", ("가입 상태", "추가매수 상태", "subscription_status"), "rdb", "canonical_v2.entity_classifications", exact_ops),
         FieldMapping("product.is_sold_by_mirae_asset", "isSoldByMiraeAsset", ("미래에셋 판매 대상", "당사판매여부"), "rdb", "canonical_v2.canonical_scalar_facts", frozenset({"filter"})),
         FieldMapping("product.current_fund_subscription_eligible", "OperationalConstraint", ("현재 미래에셋 가입 가능", "추가매수 가능", "미래에셋 판매 중"), "rdb", "derived public+open subscription+Mirae sale rule", frozenset({"filter"}), active, "derived organizer rule", "boolean", "FUND_SUBSCRIPTION_RULE_V1"),

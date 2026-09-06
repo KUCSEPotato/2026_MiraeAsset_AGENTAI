@@ -11,15 +11,19 @@ def test_docker_build_context_excludes_secrets_and_runtime_data() -> None:
     assert "!.env.example" in dockerignore
 
 
-def test_compose_only_publishes_api_and_persists_state() -> None:
+def test_compose_only_publishes_frontend_and_persists_state() -> None:
     compose = (ROOT / "docker-compose.prod.yml").read_text()
     postgres = compose.split("  postgres:", 1)[1].split("  neo4j:", 1)[0]
     neo4j = compose.split("  neo4j:", 1)[1].split("  agent-api:", 1)[0]
-    api = compose.split("  agent-api:", 1)[1].split("\nvolumes:\n", 1)[0]
+    api = compose.split("  agent-api:", 1)[1].split("  frontend:", 1)[0]
 
     assert "ports:" not in postgres
     assert "ports:" not in neo4j
-    assert "ports:" in api
+    assert "ports:" not in api
+    frontend = compose.split("  frontend:", 1)[1].split("\nvolumes:\n", 1)[0]
+    assert "ports:" in frontend
+    assert "env_file:" not in frontend
+    assert "8080" in frontend
     assert "postgres-data:/var/lib/postgresql/data" in postgres
     assert "neo4j-data:/data" in neo4j
     assert "read_only: true" in api

@@ -51,7 +51,7 @@ services:
       - no-new-privileges:true
 
   agent-api:
-    image: ${AGENT_IMAGE:-financial-semantic-agent}:${AGENT_IMAGE_TAG:-m10.9}
+    image: ${AGENT_IMAGE:?AGENT_IMAGE is required}:${AGENT_IMAGE_TAG:?AGENT_IMAGE_TAG is required}
     build:
       context: .
       dockerfile: Dockerfile
@@ -70,6 +70,7 @@ services:
       TRUSTED_HOLDINGS_RUNTIME_ENABLED: ${TRUSTED_HOLDINGS_RUNTIME_ENABLED:-0}
       PRODUCTION_ARTIFACT_ROOT: /var/lib/financial-semantic-agent
       PRODUCTION_ARTIFACT_MANIFEST: /var/lib/financial-semantic-agent/release.json
+      AGENT_IMAGE_TAG: ${AGENT_IMAGE_TAG:?AGENT_IMAGE_TAG is required}
       APP_GIT_COMMIT: ${APP_GIT_COMMIT:?APP_GIT_COMMIT is required}
       ARTIFACT_RELEASE_ID: ${ARTIFACT_RELEASE_ID:?ARTIFACT_RELEASE_ID is required}
       SEMANTIC_INDEX_PATH: /var/lib/financial-semantic-agent/v1/semantic_search.json
@@ -86,8 +87,8 @@ services:
         read_only: true
         bind:
           create_host_path: false
-    ports:
-      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
+    expose:
+      - "8000"
     healthcheck:
       test:
         [
@@ -108,6 +109,28 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 30s
+    networks:
+      - backend
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}:${FRONTEND_IMAGE_TAG:?FRONTEND_IMAGE_TAG is required}
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/frontend-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - backend
 

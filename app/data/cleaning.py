@@ -5,10 +5,24 @@ from decimal import Decimal, InvalidOperation
 import math
 from typing import Any
 
-DATE_SENTINELS = {"0", "99991231"}
+DATE_SENTINELS = {"0", "00000000", "10001231", "99991231"}
 INDEX_SENTINELS = {
     "Index is not provided by Management Company",
     "Index is not available on Lipper Database",
+}
+KNOWN_DATE_SENTINELS = {
+    ("PRBD01N001", "isu_dt"): frozenset({"00000000"}),
+    ("PRBD01N001", "mat_dt"): frozenset({"00000000"}),
+    ("PREF01N001", "pd_lste_dt"): frozenset({"99991231"}),
+    ("PREF01N001", "pd_lstg_dt"): frozenset({"10001231"}),
+    ("PREF02N001", "pd_lstg_dt"): frozenset({"00000000"}),
+}
+REPRESENTATIVE_FUND_ID_SENTINELS = frozenset(
+    {"KR0000000000", "000000000000"}
+)
+FOREIGN_INDEX_PLACEHOLDER_QUALITY = {
+    "Index is not provided by Management Company": "SOURCE_NOT_PROVIDED",
+    "Index is not available on Lipper Database": "VENDOR_NOT_AVAILABLE",
 }
 PRBD_SALE_LOT_EVIDENCE_FIELDS = frozenset(
     {
@@ -102,8 +116,13 @@ def normalized_date(
     if isinstance(value, date):
         return value.isoformat(), None
     if re.fullmatch(r"\d{8}", raw):
-        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}", None
-    return raw, None
+        candidate = f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    else:
+        candidate = raw.replace(".", "-").replace("/", "-")
+    try:
+        return date.fromisoformat(candidate[:10]).isoformat(), None
+    except ValueError:
+        return None, "INVALID_DATE"
 
 
 def normalized_base_index(value: Any) -> tuple[str | None, str | None]:
@@ -115,6 +134,55 @@ def normalized_base_index(value: Any) -> tuple[str | None, str | None]:
     if raw in INDEX_SENTINELS:
         return None, "UNKNOWN_BASE_INDEX"
     return raw, None
+
+
+def source_assertion_semantics(
+    dataset: str,
+    field: str,
+    raw_value: Any,
+    normalized_value: Any,
+) -> tuple[str, Any, str | None]:
+    """Classify reviewed source-field exceptions without changing row identity.
+
+    The returned normalized value is assertion-specific.  Cleaned source
+    payloads retain sentinel/placeholder text so downstream fail-closed rules
+    and the raw payload remain independently auditable.
+    """
+    if not _has_source_value(normalized_value):
+        return "MISSING", None, "source field is structurally present but blank/null"
+
+    text = str(normalized_value).strip()
+    compact_date = text.replace("-", "").replace(".", "").replace("/", "")
+    if compact_date in KNOWN_DATE_SENTINELS.get((dataset, field), frozenset()):
+        return "SENTINEL", None, "known source date sentinel; canonical date suppressed"
+
+    if (dataset, field) in KNOWN_DATE_SENTINELS:
+        parsed, date_quality = normalized_date(normalized_value)
+        if date_quality == "INVALID_DATE":
+            return "INVALID", None, "malformed source date; canonical date suppressed"
+        return "VALID", parsed, None
+
+    if dataset == "PRFD01N001" and field == "rptt_ksd_itm_no":
+        if text in REPRESENTATIVE_FUND_ID_SENTINELS:
+            return "SENTINEL", None, "known representative Fund identifier sentinel"
+        if text.upper() in REPRESENTATIVE_FUND_ID_SENTINELS:
+            return "INVALID", None, "malformed representative Fund identifier"
+        if not re.fullmatch(r"[A-Za-z0-9]{12}", text):
+            return "INVALID", None, "malformed representative Fund identifier"
+
+    if dataset == "PRBD01N001" and field == "buyable_quantity":
+        return (
+            "UNUSABLE_BY_POLICY",
+            normalized_value,
+            "organizer-invalid purchase indicator; provenance only",
+        )
+
+    if dataset == "PREF02N001" and field == "cu_base_index":
+        quality = FOREIGN_INDEX_PLACEHOLDER_QUALITY.get(text)
+        if quality is not None:
+            return quality, None, "source index placeholder; Index relation suppressed"
+
+    return "VALID", normalized_value, None
 
 
 def canonical_subscription_status(value: Any) -> str | None:

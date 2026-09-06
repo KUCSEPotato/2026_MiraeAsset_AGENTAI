@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, func, insert, select
 from sqlalchemy.engine import make_url
 
 from app.data.v2_schema import (
+    bonds,
     canonical_entities,
     canonical_facts,
     canonical_scalar_facts,
@@ -139,6 +140,30 @@ def test_full_data_bond_rating_and_current_availability(runtime) -> None:
     assert all(record.metadata["field_evidence_assertion_ids"] for record in ratings)
 
 
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("현재 구매 가능한 채권", 20_497),
+        ("현재 구매 가능한 장내채권", 17_746),
+        ("현재 구매 가능한 장외채권", 3_828),
+        ("미래에셋 판매조건이 있는 채권", 326),
+        ("매매단가와 수익률이 제공된 장외채권", 326),
+        ("판매 LOT은 없지만 구매 가능한 채권", 20_171),
+        ("하나의 종목에 여러 판매조건이 있는 채권", 307),
+        ("상장폐지 또는 리스팅 종료 채권 제외", 20_497),
+    ],
+)
+def test_full_data_bond_query_contract_cardinality(
+    runtime, question: str, expected: int
+) -> None:
+    _, result = asyncio.run(_execute(runtime, question))
+    assert result.total_matches == result.filtered_total == expected
+    assert all(
+        record.metadata["entity_kind"] == "FINANCIAL_PRODUCT"
+        for record in result.records
+    )
+
+
 def test_public_fund_subscription_and_freshness_cardinality(runtime) -> None:
     _, eligible = asyncio.run(
         _execute(runtime, "현재 미래에셋에서 가입할 수 있는 공모펀드")
@@ -230,6 +255,51 @@ def test_multiple_sale_lots_do_not_duplicate_or_define_purchasability(
         connection.execute(insert(sale_lots).values(
             sale_lot_id=lot_id, bond_id=bond_id, trading_market_raw="TEST",
             information_date=date(2026, 8, 24), lot_sequence=999,
+        ))
+        assert int(connection.scalar(compiled.filtered_count_statement) or 0) == before
+        transaction.rollback()
+
+
+def test_past_maturity_does_not_define_bond_purchasability(engine, runtime) -> None:
+    _, _, selector, compiler, _ = runtime
+    plan, _ = asyncio.run(_execute(runtime, "현재 구매 가능한 채권"))
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        snapshot = selector.select(connection)
+        compiled = compiler.compile(plan.steps[0], snapshot)
+        before = int(connection.scalar(compiled.filtered_count_statement) or 0)
+        bond_id = connection.execute(compiled.statement).mappings().first()["entity_id"]
+        connection.execute(
+            bonds.update().where(bonds.c.bond_id == bond_id).values(
+                maturity_date=date(2000, 1, 1)
+            )
+        )
+        assert int(connection.scalar(compiled.filtered_count_statement) or 0) == before
+        transaction.rollback()
+
+
+def test_zero_remaining_days_does_not_define_bond_purchasability(
+    engine, runtime
+) -> None:
+    _, _, selector, compiler, _ = runtime
+    plan, _ = asyncio.run(_execute(runtime, "현재 구매 가능한 채권"))
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        snapshot = selector.select(connection)
+        compiled = compiler.compile(plan.steps[0], snapshot)
+        before = int(connection.scalar(compiled.filtered_count_statement) or 0)
+        bond_id = connection.execute(compiled.statement).mappings().first()["entity_id"]
+        snapshot_id = next(
+            value for value in snapshot.snapshot_ids if "PRBD01N001" in value
+        )
+        fact_id = "fact:c1-ignored-remaining-days"
+        connection.execute(insert(canonical_facts).values(
+            fact_id=fact_id, subject_entity_id=bond_id, snapshot_id=snapshot_id,
+            fact_kind="SCALAR", semantic_key="remaining_days",
+            resolution_status="RESOLVED",
+        ))
+        connection.execute(insert(canonical_scalar_facts).values(
+            fact_id=fact_id, value_type="NUMERIC", numeric_value=Decimal(0),
         ))
         assert int(connection.scalar(compiled.filtered_count_statement) or 0) == before
         transaction.rollback()

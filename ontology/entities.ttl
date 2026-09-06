@@ -21,7 +21,10 @@ fin:RawCodeValue a owl:Class ; rdfs:label "Raw code value"@en, "원본 코드값
 fin:managedBy a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:AssetManager ; fin:canonicalName "managedBy" ; fin:conceptCategory "relation" ; fin:alias "운용사", "운용하는" .
 fin:issuedBy a owl:ObjectProperty ; rdfs:domain fin:FinancialProduct ; rdfs:range fin:Issuer ; fin:canonicalName "issuedBy" ; fin:conceptCategory "relation" ; fin:alias "발행사", "발행한" .
 fin:heldInTrustBy a owl:ObjectProperty ; rdfs:domain fin:FundProduct ; rdfs:range fin:Trustee .
-fin:hasListing a owl:ObjectProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range fin:Listing .
+fin:hasListing a owl:ObjectProperty ;
+    rdfs:domain fin:ExchangeTradedProduct ;
+    rdfs:range fin:Listing ;
+    rdfs:comment "Optional 0..N relation. ISIN identifies a financial instrument, while a RIC may include trading-route or venue context. Multiple RICs sharing an ISIN in the current snapshot do not by themselves confirm concurrent listings, so no automatic entity merge or Listing assertion is implied. This cardinality only permits future multiple-Listing representation; the current runtime remains RIC-grain FinancialProduct materialization and preserves shared-ISIN conflicts in identifier_collision_cases."@en .
 fin:listedOn a owl:ObjectProperty ; rdfs:domain fin:Listing ; rdfs:range fin:Exchange .
 fin:tracks a owl:ObjectProperty ; rdfs:domain fin:ExchangeTradedProduct ; rdfs:range fin:Index ; fin:canonicalName "tracks" ; fin:conceptCategory "relation" ; fin:alias "추종지수", "기초지수", "추종하는" .
 fin:referencesBenchmark a owl:ObjectProperty ; rdfs:domain fin:Fund ; rdfs:range fin:Benchmark ; fin:canonicalName "referencesBenchmark" ; fin:conceptCategory "relation" ; fin:alias "벤치마크" .
