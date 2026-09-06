@@ -96,7 +96,7 @@ def test_snapshot_preserves_raw_before_record_and_deduplicates(tmp_path: Path) -
     record = _record(workspace.snapshot_id, first.relative_path, content)
     output = workspace.write_source_records(category="foundation", records=[record, record])
     assert output.row_count == 1
-    assert len((workspace.path / output.relative_path).read_text().splitlines()) == 1
+    assert len((workspace.path / output.relative_path).read_text(encoding="utf-8").splitlines()) == 1
     manifest = workspace.finalize(SnapshotStatus.READY, validation={"validated": True})
     assert manifest.status is SnapshotStatus.READY
     assert manifest.parser_versions == {"foundation": "fixture-v1"}
@@ -287,6 +287,6 @@ def test_fetch_failure_is_recorded_without_artifact(tmp_path: Path) -> None:
 
 
 def test_fixture_formats_are_available_offline() -> None:
-    assert "공식" in (FIXTURES / "sample.html").read_text()
-    assert json.loads((FIXTURES / "sample.json").read_text())["items"]
-    assert "effective_date" in (FIXTURES / "sample.csv").read_text()
+    assert "공식" in (FIXTURES / "sample.html").read_text(encoding="utf-8")
+    assert json.loads((FIXTURES / "sample.json").read_text(encoding="utf-8"))["items"]
+    assert "effective_date" in (FIXTURES / "sample.csv").read_text(encoding="utf-8")

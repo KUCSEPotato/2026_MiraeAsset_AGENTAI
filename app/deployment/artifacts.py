@@ -115,9 +115,17 @@ def load_and_verify_production_manifest(
     if mismatches:
         raise RuntimeError("production artifact versions are incompatible: " + "; ".join(mismatches))
 
-    root = artifact_root.resolve(strict=True)
+    try:
+        root = artifact_root.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"artifact root does not exist: {artifact_root}") from exc
     for artifact in manifest.artifacts:
-        candidate = (root / artifact.relative_path).resolve(strict=True)
+        try:
+            candidate = (root / artifact.relative_path).resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"required artifact does not exist: {artifact.role}"
+            ) from exc
         if not candidate.is_relative_to(root):
             raise RuntimeError(f"artifact escapes configured root: {artifact.role}")
         if artifact.kind == "file" and not candidate.is_file():

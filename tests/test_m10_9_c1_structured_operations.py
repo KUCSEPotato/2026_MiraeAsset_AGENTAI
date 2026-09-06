@@ -660,16 +660,37 @@ def test_llm_candidate_rejection_preserves_reasons_in_error_and_logs(
         compact_vocabulary={},
     )
 
-    with caplog.at_level(logging.WARNING, logger="app.query.semantic_parser"):
-        with pytest.raises(SemanticParseSafetyError) as caught:
-            asyncio.run(coordinator.analyze("AI 관련 ETF 5개 보여줘."))
+    records: list[logging.LogRecord] = []
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    parser_logger = logging.getLogger("app.query.semantic_parser")
+    handler = CaptureHandler(level=logging.WARNING)
+    previous_level = parser_logger.level
+    previous_disabled = parser_logger.disabled
+    previous_global_disable = parser_logger.manager.disable
+    logging.disable(logging.NOTSET)
+    parser_logger.disabled = False
+    parser_logger.setLevel(logging.WARNING)
+    parser_logger.addHandler(handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.query.semantic_parser"):
+            with pytest.raises(SemanticParseSafetyError) as caught:
+                asyncio.run(coordinator.analyze("AI 관련 ETF 5개 보여줘."))
+    finally:
+        parser_logger.removeHandler(handler)
+        parser_logger.setLevel(previous_level)
+        parser_logger.disabled = previous_disabled
+        logging.disable(previous_global_disable)
 
     assert caught.value.reason == "llm_candidate_rejected"
     assert "invalid_source_span" in caught.value.validation_reasons
     assert any(
         record.validation_reasons == caught.value.validation_reasons
-        for record in caplog.records
-        if record.message == "semantic parse candidate rejected"
+        for record in records
+        if record.getMessage() == "semantic parse candidate rejected"
     )
 
 
