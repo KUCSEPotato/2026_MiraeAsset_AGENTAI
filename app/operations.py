@@ -15,6 +15,10 @@ class OperationalSettings:
     request_timeout_seconds: float = 240.0
     log_level: str = "INFO"
     runtime_environment: str = "development"
+    cors_allowed_origins: tuple[str, ...] = (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    )
 
     @classmethod
     def from_env(cls) -> "OperationalSettings":
@@ -28,6 +32,9 @@ class OperationalSettings:
             request_timeout_seconds=timeout,
             log_level=level,
             runtime_environment=os.getenv("RUNTIME_ENVIRONMENT", "development"),
+            cors_allowed_origins=_parse_cors_origins(
+                os.getenv("FRONTEND_ORIGINS")
+            ),
         )
 
 
@@ -85,3 +92,14 @@ def _redact(value: str) -> str:
         else:
             redacted = pattern.sub(r"\1[REDACTED]", redacted)
     return redacted
+
+
+def _parse_cors_origins(raw_origins: str | None) -> tuple[str, ...]:
+    if raw_origins is None:
+        return OperationalSettings.cors_allowed_origins
+    origins = tuple(
+        origin.strip().rstrip("/")
+        for origin in raw_origins.split(",")
+        if origin.strip()
+    )
+    return origins or OperationalSettings.cors_allowed_origins

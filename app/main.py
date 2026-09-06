@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
 import os
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.agent.service import get_answer_service
 from app.api.answer import router as answer_router
@@ -11,6 +14,11 @@ from app.data.database import DATABASE_BACKEND, DATABASE_SCHEMA_VERSION
 from app.data.v2_schema import CANONICAL_V2_SCHEMA_VERSION
 from app.ontology.runtime_mapping import SEMANTIC_MAPPING_VERSION
 from app.operations import OperationalSettings, configure_logging
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_EXPORT_DIR = FRONTEND_DIR / "out"
+FRONTEND_INDEX = FRONTEND_EXPORT_DIR / "index.html"
+LEGACY_FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 
 
 @asynccontextmanager
@@ -46,9 +54,37 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(operational_settings.cors_allowed_origins),
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
     application.state.operational_settings = operational_settings
     application.state.ready = False
     application.include_router(answer_router)
+    if FRONTEND_EXPORT_DIR.exists():
+        exported_assets = FRONTEND_EXPORT_DIR / "assets"
+        exported_next_assets = FRONTEND_EXPORT_DIR / "_next"
+        if exported_assets.exists():
+            application.mount(
+                "/assets",
+                StaticFiles(directory=exported_assets),
+                name="frontend-assets",
+            )
+        if exported_next_assets.exists():
+            application.mount(
+                "/_next",
+                StaticFiles(directory=exported_next_assets),
+                name="next-assets",
+            )
+    elif LEGACY_FRONTEND_INDEX.exists():
+        application.mount(
+            "/assets",
+            StaticFiles(directory=FRONTEND_DIR / "assets"),
+            name="frontend-assets",
+        )
+
     @application.exception_handler(Exception)
     async def controlled_internal_error(
         request: Request, exc: Exception
@@ -105,6 +141,34 @@ def create_app() -> FastAPI:
             base["graph_version"] = runtime["graph_projection_version"]
         payload = {**base, **runtime}
         return JSONResponse(status_code=200 if ready else 503, content=payload)
+
+    if FRONTEND_INDEX.exists():
+
+        @application.get("/", include_in_schema=False)
+        async def frontend_landing() -> FileResponse:
+            return FileResponse(FRONTEND_INDEX)
+
+        @application.get("/chat", include_in_schema=False)
+        async def frontend_chat() -> FileResponse:
+            return FileResponse(FRONTEND_EXPORT_DIR / "chat" / "index.html")
+
+        @application.get("/chat/", include_in_schema=False)
+        async def frontend_chat_slash() -> FileResponse:
+            return FileResponse(FRONTEND_EXPORT_DIR / "chat" / "index.html")
+
+    elif LEGACY_FRONTEND_INDEX.exists():
+
+        @application.get("/", include_in_schema=False)
+        async def frontend_landing() -> FileResponse:
+            return FileResponse(LEGACY_FRONTEND_INDEX)
+
+        @application.get("/chat", include_in_schema=False)
+        async def frontend_chat() -> FileResponse:
+            return FileResponse(LEGACY_FRONTEND_INDEX)
+
+        @application.get("/chat/", include_in_schema=False)
+        async def frontend_chat_slash() -> FileResponse:
+            return FileResponse(LEGACY_FRONTEND_INDEX)
 
     return application
 
