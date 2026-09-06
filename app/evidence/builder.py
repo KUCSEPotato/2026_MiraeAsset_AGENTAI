@@ -27,8 +27,30 @@ class GenericEvidenceBuilder:
         records: list[RetrievalRecord],
         execution_result: ExecutionResult | None = None,
     ) -> EvidenceBundle:
-        normalized = [
-            Evidence(
+        normalized = []
+        for record in records:
+            metadata = record.metadata.copy()
+            display_name = next(
+                (
+                    value.strip()
+                    for value in (
+                        metadata.get("display_name"),
+                        metadata.get("canonical_name"),
+                        metadata.get("preferred_name"),
+                        metadata.get("source_display_name"),
+                        metadata.get("source_product_name"),
+                        metadata.get("product_name"),
+                        record.payload.get("text") if record.source == "rdb" else None,
+                    )
+                    if isinstance(value, str)
+                    and value.strip()
+                    and value.strip() != record.entity_id
+                ),
+                None,
+            )
+            if display_name is not None:
+                metadata["display_name"] = display_name
+            normalized.append(Evidence(
                 step_id=record.step_id,
                 source_type=record.source,
                 source_id=record.source_id,
@@ -40,10 +62,8 @@ class GenericEvidenceBuilder:
                     record.metadata.get("dataset_snapshot")
                 ),
                 observed_at=_to_string(record.metadata.get("observed_at")),
-                metadata=record.metadata.copy(),
-            )
-            for record in records
-        ]
+                metadata=metadata,
+            ))
         return EvidenceBundle(
             question=query.parsed_query.original_question,
             resolved_entities=query.resolved_entities,

@@ -20,6 +20,7 @@ from app.domain.models import (
     ValidationResult,
 )
 from app.evidence.quality import FieldQualityProvider
+from app.evidence.display import evidence_entity_labels
 from app.planning.predicates import structured_predicate
 from app.planning.exceptions import UnsupportedQuerySemanticsError
 from app.planning.serialization import structured_query_inputs
@@ -69,23 +70,29 @@ class QualityAwareEvidenceValidator:
         global_failure = any(item.severity is FindingSeverity.BLOCKING and not (
             item.code in local_codes and item.field is not None and item.field not in hard_fields
         ) for item in result.findings)
+        labels = evidence_entity_labels(evidence.evidence)
         expected = {
-            item.canonical_id: item.raw_text for item in factual.resolved_entities
+            item.canonical_id: labels.get(item.canonical_id, item.raw_text)
+            for item in factual.resolved_entities
             if item.resolution_status is ResolutionStatus.RESOLVED and item.entity_type == "product" and item.canonical_id
         }
         if not expected or query.grounded_sort:
-            expected = {item.entity_id: item.entity_id for item in evidence.evidence if item.entity_id}
+            expected = {
+                item.entity_id: labels.get(item.entity_id, item.entity_id)
+                for item in evidence.evidence
+                if item.entity_id
+            }
             names = defaultdict(set)
             for item in evidence.evidence:
                 if (item.entity_id in expected and item.field == "product.name"
                         and not self._is_missing(item.value) and not self._is_sentinel(item)):
                     names[item.entity_id].add(item.value)
             for entity_id, values in names.items():
-                if len(values) == 1 and not any(
+                if len(values) != 1 or any(
                     finding.field == "product.name" and finding.entity_id in {None, entity_id}
                     and finding.severity is FindingSeverity.BLOCKING for finding in result.findings
                 ):
-                    expected[entity_id] = next(iter(values))
+                    expected[entity_id] = entity_id
         if not expected:
             expected = {None: None}
         clauses = [cell for item in clauses for cell in (

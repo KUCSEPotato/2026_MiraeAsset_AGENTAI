@@ -1,4 +1,5 @@
 from app.domain.models import AnswerabilityStatus, ClauseStatus, EvidenceBundle, ValidationResult
+from app.evidence.display import bundle_entity_labels, format_evidence_value
 
 
 VALUE_ONLY_FIELDS = frozenset({"product.risk_grade"})
@@ -20,7 +21,13 @@ def satisfies_answer_contract(candidate: str, reference: str, evidence: Evidence
     # An unrestricted paraphrase cannot prove absence of an ordinal inference.
     # For audited value-only facts admit only the evidence-derived rendering;
     # do not try to enumerate every Korean/English hallucination with a regex.
-    return not answer_contract(evidence)["value_only_fields"] or candidate == reference
+    if answer_contract(evidence)["value_only_fields"] and candidate != reference:
+        return False
+    labels = bundle_entity_labels(evidence)
+    return not any(
+        entity_id in candidate and label != entity_id
+        for entity_id, label in labels.items()
+    )
 
 _FIELD_LABELS = {
     "product.name": "상품명",
@@ -63,6 +70,7 @@ class DeterministicEvidenceAnswerGenerator:
         del question, validation
         lines: list[str] = []
         disclosures: list[str] = []
+        entity_labels = bundle_entity_labels(evidence)
         for item in evidence.evidence:
             value_only = item.field in VALUE_ONLY_FIELDS
             for contract in ([] if value_only else item.metadata.get("comparison_contracts", [])):
@@ -80,17 +88,18 @@ class DeterministicEvidenceAnswerGenerator:
             value = item.value if item.value is not None else item.text
             if value is None:
                 continue
+            value = format_evidence_value(item.field, value)
             if (
                 not value_only and item.metadata.get("metric_unit") == "PERCENT"
                 and item.value is not None
                 and not value.rstrip().endswith("%")
             ):
                 value = f"{value}%"
-            product = (item.entity_id or "상품") if value_only else (
-                item.metadata.get("product_name")
-                if item.field == "product.strategy_description"
-                else item.text
-            ) or item.entity_id or "상품"
+            product = (
+                entity_labels.get(item.entity_id, item.entity_id)
+                if item.entity_id
+                else None
+            ) or "상품"
             lines.append(f"{product} — {field}: {value}")
         if not lines:
             return (
@@ -125,7 +134,7 @@ def render_partial_answer(evidence: EvidenceBundle, validation: ValidationResult
                 item = evidence.evidence[index]
                 if item.field != clause.field or item.entity_id != clause.entity_id or item.value is None:
                     raise ValueError("partial answer evidence does not match its clause")
-                value = item.value
+                value = format_evidence_value(item.field, item.value)
                 if item.field not in VALUE_ONLY_FIELDS and item.metadata.get("metric_unit") == "PERCENT":
                     value = value if value.rstrip().endswith("%") else value + "%"
                 if value not in values:

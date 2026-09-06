@@ -155,7 +155,7 @@ def test_risk_grade_literal_with_a_value_remains_value_only():
                                     [_record("product.risk_grade", "RiskGrade.2")])
     assert len(calls) == 1
     assert trace["validation_summary"]["answerability"] == "FULLY_ANSWERABLE"
-    assert "RiskGrade.2" in result.answer
+    assert "2등급" in result.answer and "RiskGrade.2" not in result.answer
     assert all(text not in result.answer for text in ["중간 위험", "낮은 위험", "높은 위험", "1~5", "1~6"])
 
 
@@ -298,7 +298,7 @@ def test_unverified_risk_comparison_can_only_return_raw_facts():
     assert calls[0].steps[0].inputs["comparison"] is None
     assert trace["validation_summary"]["answerability"] == "PARTIALLY_ANSWERABLE"
     assert not trace["validation_summary"]["comparison_completed"]
-    assert "RiskGrade.2" in result.answer
+    assert "2등급" in result.answer and "RiskGrade.2" not in result.answer
     assert all(text not in result.answer for text in ["중간 위험", "낮은 위험", "높은 위험", "1~5", "1~6"])
 
 

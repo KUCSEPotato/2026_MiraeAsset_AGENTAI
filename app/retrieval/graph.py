@@ -194,6 +194,16 @@ def _record_from_path(
     if len(edges) != len(relations) or len(nodes) != len(edges) + 1:
         raise ValueError("Neo4j path does not match the compiled traversal depth")
     entity_id = _result_entity_id(nodes, directions, candidate_ids)
+    entity_display_name = next(
+        (
+            str(node["display_name"]).strip()
+            for node in nodes
+            if node.get("entity_id") == entity_id
+            and node.get("display_name")
+            and str(node["display_name"]).strip() != entity_id
+        ),
+        None,
+    )
     labels = [str(node.get("display_name") or node.get("entity_id")) for node in nodes]
     path_text = " -> ".join(labels)
     edge_ids = [str(edge["edge_id"]) for edge in edges]
@@ -232,6 +242,7 @@ def _record_from_path(
         },
         metadata={
             "dataset_snapshot": snapshot,
+            **({"display_name": entity_display_name} if entity_display_name else {}),
             **({"generation": generation, "snapshot_identity": f"{generation}:{snapshot}"}
                if generation is not None else {}),
             "graph_version": graph_version,

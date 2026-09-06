@@ -129,3 +129,9 @@ sys.exit(subprocess.call([sys.executable, '-m', 'pytest', '-o', 'addopts=', '-q'
 - `git diff --check` 및 staged diff 공백 검사 통과.
 
 병합 후 코드에 대한 운영·QA 배포는 수행하지 않았다. 앞의 실제 QA 시간·응답은 병합 전 실행에 대한 관측치다.
+
+## main 병합 직전 추가 통합
+
+원격 main에 추가된 `9d60707`의 근거 상품명·위험등급 표시 개선을 함께 통합했다. 공통 표시 이름 선택을 사용하되, 상품명 근거가 충돌하거나 검증을 통과하지 못하면 부분 답변에서 임의의 이름을 선택하지 않는다. 관련 focused 검사 **222 passed**. 운영·QA 서버의 실행 버전은 변경하지 않았다.
+
+최종 전체 tracked 회귀 검사: **850 passed, 109 skipped, 1 warning**, 78.21초. 생략 사유는 PostgreSQL 환경 108개와 Next.js export 산출물 1개다. 결과 원문: `/private/tmp/mirae-main-pr-regression.txt`. `git diff --check` 통과.

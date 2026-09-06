@@ -101,6 +101,7 @@ def test_real_graph_retriever_preserves_path_and_source_provenance() -> None:
         "value": "삼성",
         "text": "KODEX 200 -> 삼성",
     }
+    assert records[0].metadata["display_name"] == "KODEX 200"
     assert records[0].metadata["path_provenance"][0]["source_record_keys"] == [
         "KR7069500007"
     ]
