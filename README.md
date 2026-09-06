@@ -359,7 +359,7 @@ PostgreSQL integration test는 운영 DB가 아닌 격리된 database URL만 받
 
 ```bash
 POSTGRES_TEST_DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/testdb \
-  uv run pytest -m postgresql tests/test_postgresql_integration.py
+  uv run python -m pytest -m postgresql
 ```
 
 ## Canonical Schema
@@ -492,8 +492,8 @@ model 및 stage latency summary만 기록합니다.
 credential이 있는 환경에서만 실행됩니다.
 
 ```bash
-uv run pytest tests/test_m10_6_semantic_parser.py
-uv run pytest -m hyperclova tests/test_hyperclova_semantic_integration.py
+uv run python -m pytest tests/test_m10_9_c1_structured_operations.py -k "llm_candidate_rejection"
+uv run python -m pytest -m hyperclova tests/test_m10_9_hyperclova_answer.py
 ```
 
 ## M10.8-B Canonical v2 Clean Rebuild
@@ -625,11 +625,20 @@ false booleans, dates, entities, or recommendation evidence.
 uv sync --all-groups
 ```
 
+`requirements.txt` mirrors the Python packages needed for pip-based
+environments. `pyproject.toml` and `uv.lock` are the authoritative uv project
+definition used by CI and Docker builds.
+
 ## Running the Server
 
 ```bash
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+For local browser development, the backend allows `FRONTEND_ORIGINS` and can
+serve the checked-in legacy static UI from `frontend/index.html` when that file
+is present. The production stack still serves the UI from the dedicated
+`frontend` nginx container and proxies API routes to `agent-api`.
 
 Production에서는 [deployment runbook](deploy/README.md)의 Docker Compose stack을
 사용합니다. `agent-api`만 port를 publish하며 PostgreSQL과 Neo4j는 Compose network
@@ -688,7 +697,7 @@ Ready server는 HTTP 200과 `status=ok`, `process_status=alive`,
 ## Tests
 
 ```bash
-uv run pytest
+uv run python -m pytest
 ```
 
 ## canonical_v2 Runtime Bundle and Cutover (M10.8-E)
@@ -869,5 +878,3 @@ TRUSTED_ISSUER_RUNTIME_ENABLED=1
 
 `/health` reports `issuer_source`, `canonical_issuer`, `graph_issuer`, and
 `company_query` readiness independently before the v2 bundle becomes READY.
-
-# 2026_MiraeAsset_AGENTAI

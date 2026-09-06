@@ -222,6 +222,11 @@ class RDFOntologyService:
         for item in parsed.filters:
             field_resolution = self.resolve_field(item.field)
             field = field_resolution.canonical_field
+            mapping = self._field_mapping(item.field)
+            executable = mapping is None or (
+                mapping.capability is SemanticCapabilityState.ACTIVE
+                and "filter" in mapping.operations
+            )
             category = category_by_field.get(item.field)
             raw_values = item.value if isinstance(item.value, list) else [item.value]
             value_resolutions = (
@@ -236,6 +241,8 @@ class RDFOntologyService:
                 and resolution.canonical_concept is not None
             ]
             status = field_resolution.status
+            if not executable:
+                status = GroundingStatus.UNRESOLVED
             if category is not None:
                 if any(
                     resolution.status is GroundingStatus.AMBIGUOUS

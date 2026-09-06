@@ -383,7 +383,7 @@ def test_packager_generates_bundle_only_release_for_final_commit(tmp_path: Path)
 
 
 def test_deployment_workflow_is_test_gated_immutable_and_kill_switched() -> None:
-    workflow = Path(".github/workflows/deploy-production.yml").read_text()
+    workflow = Path(".github/workflows/deploy-production.yml").read_text(encoding="utf-8")
     assert "uv run python -m pytest -p no:capture -p no:debugging" in workflow
     assert "uv run pytest -p no:capture -p no:debugging" not in workflow
     assert "needs: test" in workflow
@@ -405,7 +405,7 @@ def test_deployment_workflow_is_test_gated_immutable_and_kill_switched() -> None
 
 
 def test_naver_deploy_requires_bundle_checksum_and_health_before_promotion() -> None:
-    script = Path("scripts/deploy_naver.sh").read_text()
+    script = Path("scripts/deploy_naver.sh").read_text(encoding="utf-8")
     checksum = script.index("sha256sum -c")
     preflight = script.rindex("deployment_preflight \\")
     runtime_preflight = script.index("production runtime preflight passed", preflight)
@@ -429,9 +429,9 @@ def test_naver_deploy_requires_bundle_checksum_and_health_before_promotion() -> 
     assert ".Destination \"/var/lib/financial-semantic-agent\"" in script
     assert "semantic_index_readiness" in Path(
         "app/deployment/consistency.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert 'python3 "$app_dir/scripts/deployment_diagnostics.py"' in script
-    diagnostics = Path("scripts/deployment_diagnostics.py").read_text()
+    diagnostics = Path("scripts/deployment_diagnostics.py").read_text(encoding="utf-8")
     assert 'docker", "logs", "--tail", "80"' in diagnostics
     assert "[REDACTED]" in diagnostics
     assert '$artifact_release_id/artifacts' not in script
@@ -446,7 +446,7 @@ def test_naver_deploy_requires_bundle_checksum_and_health_before_promotion() -> 
 
 
 def test_naver_rollback_never_recreates_data_services() -> None:
-    script = Path("scripts/deploy_naver.sh").read_text()
+    script = Path("scripts/deploy_naver.sh").read_text(encoding="utf-8")
     rollback = script.split("rollback() {", 1)[1].split(
         "\ndeployment_failed() {", 1
     )[0]
@@ -478,15 +478,15 @@ def test_naver_deploy_supports_bundle_extracted_directly_at_release_root(
     assert (release_root / "release.json").is_file()
     assert not (release_root / "artifacts").exists()
 
-    script = Path("scripts/deploy_naver.sh").read_text()
+    script = Path("scripts/deploy_naver.sh").read_text(encoding="utf-8")
     assert 'release_base="$base/releases"' in script
     assert 'artifact_dir="$release_base/$artifact_release_id"' in script
     assert 'test -f "$artifact_dir/release.json"' in script
 
 
 def test_release_binaries_are_excluded_from_git_and_docker_context() -> None:
-    gitignore = Path(".gitignore").read_text()
-    dockerignore = Path(".dockerignore").read_text()
+    gitignore = Path(".gitignore").read_text(encoding="utf-8")
+    dockerignore = Path(".dockerignore").read_text(encoding="utf-8")
     for pattern in (
         "mirae-production-artifacts-*.zip",
         "submission-candidate-*.tar",

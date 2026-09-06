@@ -85,7 +85,7 @@ class RuleBasedQueryAnalyzer:
         "기준가격", "NAV", "가격", "티커",
         "ticker", "ISIN", "신용등급", "편입 비중", "보유 비중",
         "상품유형", "상품종류", "자산유형", "자산군", "투자지역", "노출지역",
-        "상장국가", "거래통화", "시장범위", "국내외구분", "채권유형", "채권종류",
+        "상장국가", "거래통화", "시장범위", "국내외구분", "채권유형", "채권종류", "만기일", "만기",
     )
     _ranking_field_aliases = (*_field_aliases, "수익률", "위험", "만기일", "만기")
     _semantic_markers = (
@@ -102,7 +102,8 @@ class RuleBasedQueryAnalyzer:
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "설명해줘", "설명해주세요", "대해", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
-        "종목", "종목을", "순으로", "찾고", "각각의", "각각", "도", "각", "상품의",
+        "종목", "종목을", "순으로", "순서로",
+        "찾고", "각각의", "각각", "도", "각", "상품의",
         "TOP", "top",
     }
 
@@ -651,6 +652,7 @@ class RuleBasedQueryAnalyzer:
             filters.append(
                 FilterSpec(field="currency", operator=FilterOperator.EQ, value="KRW")
             )
+        filters.extend(self._extract_maturity_filters(question))
         rating = re.search(
             r"(?:신용등급\s*)?([A-Z]{1,4}(?:[+\-0])?)\s*(이상|이하|초과|미만)",
             question,
@@ -822,6 +824,22 @@ class RuleBasedQueryAnalyzer:
             ))
         filters.extend(self._extract_numeric_filters(question))
         return filters
+
+    def _extract_maturity_filters(self, question: str) -> list[FilterSpec]:
+        result: list[FilterSpec] = []
+        for match in re.finditer(
+            r"(?:만기|만기일)(?:이|가|은|는)?\s*(\d{4})년(?:인|의)?",
+            question,
+        ):
+            year = int(match.group(1))
+            result.append(
+                FilterSpec(
+                    field="만기일",
+                    operator=FilterOperator.BETWEEN,
+                    value=[f"{year:04d}-01-01", f"{year:04d}-12-31"],
+                )
+            )
+        return result
 
     def _extract_numeric_filters(self, question: str) -> list[FilterSpec]:
         patterns = (
@@ -1516,6 +1534,13 @@ class RuleBasedQueryAnalyzer:
             match = re.search(field_alias + r".*?" + re.escape(item.value.raw)
                               + r"\s*(?:이상|이하|초과|미만)(?:인)?",
                               question, re.IGNORECASE)
+            if match is not None:
+                return match.start(), match.end()
+        if item.field == "만기일" and item.operator is FilterOperator.BETWEEN:
+            match = re.search(
+                r"(?:만기|만기일)(?:이|가|은|는)?\s*\d{4}년(?:인|의)?",
+                question,
+            )
             if match is not None:
                 return match.start(), match.end()
         special_patterns = {

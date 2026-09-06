@@ -95,13 +95,13 @@ def test_real_kodex_shape_normalizes_multiple_constituents_and_scale(tmp_path: P
     raw = workspace.path / result.source_record.raw_artifact_path
     normalized = workspace.path / result.normalized_output.relative_path  # type: ignore[union-attr]
     assert raw.read_bytes() == FIXTURE
-    rows = [json.loads(line) for line in normalized.read_text().splitlines()]
+    rows = [json.loads(line) for line in normalized.read_text(encoding="utf-8").splitlines()]
     assert all("source_record_id" not in row and "retrieved_at" not in row for row in rows)
     evidence = [
         json.loads(line)
         for line in (
             workspace.path / "holdings/normalized/holding_evidence_links.jsonl"
-        ).read_text().splitlines()
+        ).read_text(encoding="utf-8").splitlines()
     ]
     assert {row["source_record_id"] for row in evidence} == {
         result.source_record.source_record_id
@@ -149,7 +149,7 @@ def test_cutoff_accepts_20260824_and_rejects_post_cutoff_response(tmp_path: Path
     workspace_path = tmp_path / "rejected" / "snapshots" / "2026-08-30" / "kodex-snapshot"
     assert list((workspace_path / "holdings" / "raw").iterdir())
     assert not (workspace_path / "holdings" / "normalized" / "holdings.jsonl").exists()
-    manifest = json.loads((workspace_path / "manifest.json").read_text())
+    manifest = json.loads((workspace_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["failures"][0]["quality_status"] == "VALIDATION_FAILED"
 
 
@@ -161,7 +161,7 @@ def test_malformed_schema_fails_visibly_after_preserving_raw(tmp_path: Path) -> 
         asyncio.run(_acquire(tmp_path, body))
     workspace_path = tmp_path / "snapshots" / "2026-08-30" / "kodex-snapshot"
     assert next((workspace_path / "holdings" / "raw").iterdir()).read_bytes() == body
-    manifest = json.loads((workspace_path / "manifest.json").read_text())
+    manifest = json.loads((workspace_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["failures"][0]["quality_status"] == "PARSE_FAILED"
     assert not (workspace_path / "holdings" / "normalized" / "holdings.jsonl").exists()
 
