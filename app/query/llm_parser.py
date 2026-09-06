@@ -21,7 +21,7 @@ from app.query.semantic_models import (
 )
 
 
-PROMPT_VERSION = "composition-hcx-semantic-v1"
+PROMPT_VERSION = "composition-hcx-semantic-v2"
 SEMANTIC_SCHEMA_VERSION = "composition-semantic-v1"
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,10 @@ class HyperCLOVASemanticParserClient:
                 json=payload,
             )
             response.raise_for_status()
+            logger.info("HyperCLOVA response received", extra={
+                "request_purpose": "semantic_parse", "request_id": request_id,
+                "http_status": response.status_code,
+            })
             envelope = response.json()
             content = envelope["result"]["message"]["content"]
             raw_candidate = json.loads(content)
@@ -108,15 +112,19 @@ class HyperCLOVASemanticParserClient:
                 request_id=request_id,
             ) from exc
         except httpx.HTTPError as exc:
+            timed_out = isinstance(exc, httpx.TimeoutException)
             logger.error(
                 "HyperCLOVA request failed",
                 extra={
                     "request_purpose": "semantic_parse",
                     "request_id": request_id,
                     "error_class": type(exc).__name__,
+                    "failure_stage": "timeout" if timed_out else "transport",
                 },
             )
-            raise SemanticParserError(request_id=request_id) from exc
+            raise SemanticParserError(request_id=request_id, failure_reason=(
+                "semantic_parse_timeout" if timed_out else "semantic_parse_dependency_failure"
+            )) from exc
         except ValidationError as exc:
             validation_errors = [
                 {
@@ -146,6 +154,7 @@ class HyperCLOVASemanticParserClient:
                     "request_id": request_id,
                     "error_class": type(exc).__name__,
                     "validation_errors": validation_errors,
+                    "failure_stage": "response_schema",
                     "parsed_top_level_keys": parsed_keys,
                 },
             )
@@ -161,6 +170,7 @@ class HyperCLOVASemanticParserClient:
                     "request_id": request_id,
                     "error_class": type(exc).__name__,
                     "parsed_top_level_keys": [],
+                    "failure_stage": "response_json",
                 },
             )
             raise SemanticParserError(
@@ -197,6 +207,7 @@ def _request_content(request: SemanticParserRequest) -> str:
                 "Represent coordinated products as separate entities and all requested fields as separate projections.",
                 "Preserve explicit return periods in raw field aliases; the application resolves metrics and default periods.",
                 "Use group_by for explicit grouping; do not convert historical change into a current snapshot field.",
+                "Calendar-year maturity is a maturity field filter with operator eq and the exact raw year string (e.g. 2027년), not temporal_condition. The application derives date bounds; do not invent dates absent from the source span.",
             ],
             "candidate_schema": hyperclova_candidate_schema(),
             "semantic_schema_version": request.semantic_schema_version,

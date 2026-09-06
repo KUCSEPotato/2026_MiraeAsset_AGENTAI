@@ -169,6 +169,10 @@ class HyperCLOVAEvidenceAnswerGenerator:
                 json=request,
             )
             response.raise_for_status()
+            logger.info("HyperCLOVA response received", extra={
+                "request_purpose": "answer_generation", "request_id": request_id,
+                "http_status": response.status_code,
+            })
             content = response.json()["result"]["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("empty answer")
