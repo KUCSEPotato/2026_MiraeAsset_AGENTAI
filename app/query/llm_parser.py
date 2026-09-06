@@ -16,6 +16,8 @@ from app.hyperclova import (
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParserError
 from app.query.semantic_models import (
+    ALLOWED_RELATION_SUBJECT_TYPES,
+    ALLOWED_RELATION_TARGET_TYPES,
     LLMSemanticParseCandidate,
     SemanticParserRequest,
 )
@@ -300,9 +302,15 @@ def hyperclova_candidate_schema() -> dict[str, object]:
             "source_span": span,
             "raw_relation": {"type": "string"},
             "direction": {"type": "string", "enum": ["outgoing", "incoming"]},
-            "subject_type": {"type": "string"},
+            "subject_type": {
+                "type": "string",
+                "enum": list(ALLOWED_RELATION_SUBJECT_TYPES),
+            },
             "target_raw_text": {"type": "string"},
-            "target_type": {"type": "string"},
+            "target_type": {
+                "type": "string",
+                "enum": list(ALLOWED_RELATION_TARGET_TYPES),
+            },
             "negated": {"type": "boolean"},
             "chain_id": {"type": "string"},
             "path_position": {"type": "integer", "minimum": 0},

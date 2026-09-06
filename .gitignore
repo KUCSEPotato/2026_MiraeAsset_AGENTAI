@@ -67,3 +67,4 @@ tests/external_data/**/*.py[cod]
 !tests/test_risk_grade_contract_audit.py
 !tests/test_production_integration_stabilization.py
 !tests/test_clause_answerability.py
+!tests/test_semantic_connection_integrity.py

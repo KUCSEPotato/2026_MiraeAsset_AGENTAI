@@ -34,6 +34,8 @@ from app.ontology.index import normalize_ontology_text
 from app.query.exceptions import SemanticCandidateValidationError
 from app.query.normalization import normalize_query_semantics
 from app.query.semantic_models import (
+    ALLOWED_RELATION_SUBJECT_TYPES,
+    ALLOWED_RELATION_TARGET_TYPES,
     LLMCandidateSpan,
     LLMBooleanExpressionCandidate,
     LLMFilterCandidate,
@@ -56,12 +58,8 @@ class _Draft:
 class LLMSemanticCandidateValidator:
     """Convert an untrusted full candidate into the existing ParsedQuery contract."""
 
-    _subject_types = {
-        "AssetManager", "Bond", "Currency", "ETF", "ETN",
-        "ExchangeTradedProduct", "FinancialProduct", "Fund", "Index",
-        "Issuer", "RiskGrade",
-    }
-    _target_types = {"AssetManager", "Currency", "Index", "Issuer", "RiskGrade"}
+    _subject_types = frozenset(ALLOWED_RELATION_SUBJECT_TYPES)
+    _target_types = frozenset(ALLOWED_RELATION_TARGET_TYPES)
 
     def __init__(self, vocabulary: dict[str, list[str]]) -> None:
         self._vocabulary = {key: list(values) for key, values in vocabulary.items()}
@@ -278,10 +276,13 @@ class LLMSemanticCandidateValidator:
             }:
                 continue
             candidates = typed.get(item.semantic_type)
-            if (
-                item.semantic_type is ConstraintSemanticType.SEMANTIC
-                and item.status is ConstraintStatus.UNSUPPORTED
-            ):
+            if item.status is ConstraintStatus.UNSUPPORTED:
+                # The fallback parser exists specifically to replace an
+                # incomplete deterministic interpretation. Preserve the
+                # original material span, but do not require the proposal to
+                # repeat a semantic type that the rule parser already marked
+                # unsupported (for example, a peer selector corrected to a
+                # region filter).
                 candidates = LLMSemanticCandidateValidator._all_spans(candidate)
             if candidates is None:
                 candidates = semantic_spans

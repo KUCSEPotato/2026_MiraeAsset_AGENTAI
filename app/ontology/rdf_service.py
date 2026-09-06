@@ -89,6 +89,8 @@ class RDFOntologyService:
             "region": "product.region",
             "asset_type": "product.asset_type",
             "product_type": "product.product_type",
+            "market_scope": "product.market_scope",
+            "bond_type": "product.bond_type",
             "aum": "product.aum",
             "expense_ratio": "product.expense_ratio",
             "credit_rating": "product.credit_rating",
@@ -111,6 +113,7 @@ class RDFOntologyService:
             "etp_insufficient_info": "product.etp_insufficient_info",
             "listing_country": "product.listing_country",
             "currency": "product.currency",
+            "trading_currency": "product.trading_currency",
         }.get(raw, raw)
         resolution = self.index.resolve_alias(semantic_slot, "field")
         if self.is_team_ontology or resolution.status is not GroundingStatus.UNRESOLVED:
@@ -213,6 +216,8 @@ class RDFOntologyService:
             ),
             "product_type": ConceptCategory.PRODUCT_TYPE,
             "offering_type": ConceptCategory.OFFERING_TYPE,
+            "market_scope": ConceptCategory.MARKET_SCOPE,
+            "bond_type": ConceptCategory.BOND_TYPE,
         }
         for item in parsed.filters:
             field_resolution = self.resolve_field(item.field)

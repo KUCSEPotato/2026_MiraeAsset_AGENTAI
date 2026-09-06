@@ -124,6 +124,8 @@ class ConceptCategory(str, Enum):
     EXPOSURE_REGION = "exposure_region"
     ASSET_CLASS = "asset_class"
     OFFERING_TYPE = "offering_type"
+    MARKET_SCOPE = "market_scope"
+    BOND_TYPE = "bond_type"
     CLASSIFICATION = "classification"
     SEMANTIC_TERM = "semantic_term"
 
