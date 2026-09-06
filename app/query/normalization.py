@@ -28,7 +28,7 @@ _PERIOD_PATTERNS = (
 )
 _METRIC_ALIASES = {
     "RETURN": ("수익률", "return"),
-    "AUM": ("aum", "순자산", "운용규모"),
+    "AUM": ("aum", "순자산", "운용규모", "운용 규모"),
     "EXPENSE_RATIO": ("운용보수", "총보수", "보수율", "expense_ratio"),
     "NAV": ("nav", "기준가격"),
     "PRICE": ("가격", "종가", "price"),

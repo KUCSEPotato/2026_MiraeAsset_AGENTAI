@@ -20,6 +20,14 @@ _SCOPE_LABELS = {
     ),
     "PublicFund family-level ranking": "Fund 단위 공모펀드 순위",
 }
+_CLAUSE_REASON_LABELS = {
+    "expense_ratio_scale_unverified": (
+        "원천 총보수 값의 scale이 검증되지 않아 정렬에서 제외했습니다"
+    ),
+    "risk_grade_ordering_and_comparability_unverified": (
+        "위험등급의 순서·비교 기준이 검증되지 않아 정렬할 수 없습니다"
+    ),
+}
 
 
 def answer_contract(evidence: EvidenceBundle) -> dict:
@@ -146,7 +154,14 @@ def render_partial_answer(evidence: EvidenceBundle, validation: ValidationResult
         prefix = f"{clause.entity_label} — " if clause.entity_label else ""
         if clause.kind == "COMPARISON":
             if clause.status is not ClauseStatus.SATISFIED:
-                lines.append("상품 간 비교는 완료하지 못했으며 우열을 판단할 수 없습니다.")
+                if clause.field is not None:
+                    reason = _CLAUSE_REASON_LABELS.get(
+                        clause.reason or "",
+                        "현재 검증된 비교 계약으로 정렬할 수 없습니다",
+                    )
+                    lines.append(f"- {label}: {reason}.")
+                else:
+                    lines.append("상품 간 비교는 완료하지 못했으며 우열을 판단할 수 없습니다.")
             continue
         if clause.status is ClauseStatus.SATISFIED:
             values = []

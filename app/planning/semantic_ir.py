@@ -105,7 +105,12 @@ def build_semantic_ir(query: GroundedQuery) -> SemanticQueryIR:
     if parsed.requires_semantic_search or parsed.semantic_terms:
         add(SemanticOperatorKind.SEMANTIC_SEARCH, query_terms=parsed.semantic_terms)
     if parsed.comparison or parsed.intent is QueryIntent.COMPARE_PRODUCTS:
-        add(SemanticOperatorKind.COMPARE, fields=fields or [item.canonical_field for item in query.grounded_sort],
+        ranking_fields = [
+            item.canonical_field
+            for item in query.grounded_sort
+            if item.canonical_field
+        ]
+        add(SemanticOperatorKind.COMPARE, fields=ranking_fields or fields,
             mode="fieldwise", source=RetrievalSource.RDB)
     if parsed.group_by:
         add(SemanticOperatorKind.GROUP_BY, fields=parsed.group_by.fields,

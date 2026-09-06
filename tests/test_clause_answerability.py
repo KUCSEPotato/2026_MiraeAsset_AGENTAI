@@ -292,6 +292,35 @@ def test_missing_ranking_metric_is_hard_even_when_aum_is_available():
     assert "987654321" not in result.answer
 
 
+def test_supported_aum_ranking_survives_unverified_expense_sort_with_disclosure():
+    result, trace, calls, llm = _answer(
+        "미국 증시에 상장된 주식형 ETF 중 "
+        "총보수가 낮고 운용 규모가 큰 상품 3개를 비교해줘",
+        [_record("product.aum", "1000")],
+    )
+
+    assert llm.calls == 0 and len(calls) == 1
+    step = calls[0].steps[0]
+    assert step.inputs["sort_operations"] == [{
+        "semantic_metric_key": "product.aum",
+        "direction": "desc",
+    }]
+    assert step.inputs["top_n"] == {"value": 3}
+    assert trace["validation_summary"]["answerability"] == (
+        "PARTIALLY_ANSWERABLE"
+    )
+    assert any(
+        item["kind"] == "COMPARISON"
+        and item["field"] == "product.expense_ratio"
+        and item["status"] == "UNSUPPORTED"
+        and item["reason"] == "expense_ratio_scale_unverified"
+        for item in trace["validation_summary"]["clauses"]
+    )
+    assert "1000" in result.answer
+    assert "총보수" in result.answer
+    assert "정렬에서 제외" in result.answer
+
+
 def test_unverified_risk_comparison_can_only_return_raw_facts():
     result, trace, calls, _ = _answer("TIGER 미국S&P500과 XYZ ETF의 위험 정보 비교",
                                     [_record("product.risk_grade", "RiskGrade.2")])

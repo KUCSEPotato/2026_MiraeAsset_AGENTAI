@@ -25,8 +25,12 @@ BASIC_PRODUCT_FIELDS = (
 
 def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
     predicate = structured_predicate(query)
-    comparison_fields = list(dict.fromkeys(
+    requested_comparison_fields = list(dict.fromkeys(
         item.canonical_field for item in query.grounded_requested_fields
+        if item.canonical_field is not None
+    ))
+    ranking_comparison_fields = list(dict.fromkeys(
+        item.canonical_field for item in query.grounded_sort
         if item.canonical_field is not None
     ))
     product_concepts = [
@@ -70,7 +74,18 @@ def structured_query_inputs(query: GroundedQuery) -> dict[str, Any]:
     return {
         "boolean_expression": predicate.model_dump(mode="json") if predicate else None,
         "comparison": (
-            {"mode": "fieldwise", "fields": comparison_fields or [item.canonical_field for item in query.grounded_sort if item.canonical_field]}
+            {
+                "mode": "fieldwise",
+                # A ranked collection is ordered only by its explicit sort
+                # fields. Additional requested fields are post-TopK
+                # projections and must not acquire an ordering contract (for
+                # example, risk grade remains value-only evidence).
+                "fields": (
+                    ranking_comparison_fields
+                    if ranking_comparison_fields
+                    else requested_comparison_fields
+                ),
+            }
             if query.parsed_query.comparison is not None
             or query.parsed_query.intent is QueryIntent.COMPARE_PRODUCTS
             else None

@@ -65,6 +65,54 @@ def prepare_outputs(original: GroundedQuery) -> PreparedOutputs:
 
     scoped = original.model_copy(update={"resolved_entities": entities})
     inputs = structured_query_inputs(scoped)
+    # A coordinated ranking may contain independently gated sort criteria.
+    # Preserve the whole request for audit, but when at least one criterion has
+    # an existing executable contract, execute only that verified subset and
+    # disclose every rejected ordering clause. A lone unsupported sort remains
+    # fail-closed, so this cannot turn risk-grade or expense-ratio ordering on.
+    deferred_sort_ids: set[str] = set()
+    if len(original.grounded_sort) > 1:
+        supported_sorts = []
+        unsupported_sorts = []
+        registry = MetricCapabilityRegistry()
+        for item in original.grounded_sort:
+            # An unknown/ambiguous sort is not a clause-level capability
+            # rejection and must keep the whole query fail-closed.
+            if (
+                item.status is not GroundingStatus.RESOLVED
+                or item.canonical_field is None
+            ):
+                supported_sorts = []
+                unsupported_sorts = []
+                break
+            contract, reason = registry.comparison_contract(
+                item.canonical_field, inputs
+            )
+            if contract is not None and contract.sort_capability:
+                supported_sorts.append(item)
+            else:
+                unsupported_sorts.append((item, reason))
+        if supported_sorts and unsupported_sorts:
+            for item, reason in unsupported_sorts:
+                if item.raw_sort.constraint_id is not None:
+                    deferred_sort_ids.add(item.raw_sort.constraint_id)
+                    removed.add(item.raw_sort.constraint_id)
+                disclosures.append(ClauseResult(
+                    kind="COMPARISON",
+                    label=f"{item.raw_sort.field} 정렬",
+                    field=item.canonical_field,
+                    constraint_id=item.raw_sort.constraint_id,
+                    status=ClauseStatus.UNSUPPORTED,
+                    reason=reason or "sort_capability_disabled",
+                ))
+            parsed = parsed.model_copy(update={
+                "sort": [item.raw_sort for item in supported_sorts],
+            })
+            scoped = scoped.model_copy(update={
+                "parsed_query": parsed,
+                "grounded_sort": supported_sorts,
+            })
+            inputs = structured_query_inputs(scoped)
     mapping = {item.canonical_field: item for item in TeamOntologyRuntimeMapping().fields}
     fields = []
     removed_fields = set()
@@ -123,7 +171,7 @@ def prepare_outputs(original: GroundedQuery) -> PreparedOutputs:
         *(item.constraint_id for item in (parsed.result_limit, parsed.product_universe,
                                           parsed.aggregation, parsed.group_by, parsed.temporal_constraint) if item),
     } - {None}
-    if removed & hard_ids:
+    if (removed - deferred_sort_ids) & hard_ids:
         raise UnsupportedQuerySemanticsError(["output_clause_overlaps_hard_constraint"])
 
     def constraints(values):

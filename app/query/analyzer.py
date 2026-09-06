@@ -152,10 +152,11 @@ class RuleBasedQueryAnalyzer:
         "1D 수익률", "1D수익률",
         "상품판매여부", "추가매수 상태", "거래정지 상태", "가입 상태",
         "상품명", "이름", "단축명", "약칭", "표준코드", "지역", "region",
-        "운용규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
+        "운용규모", "운용 규모", "순자산", "AUM", "운용보수", "총보수", "보수율",
         "위험 정보", "위험정보", "위험등급", "위험도", "리스크", "위험",
         "기준가격", "NAV", "가격", "종가", "티커", "관측일", "기준일",
-        "ticker", "ISIN", "신용등급", "편입 비중", "보유 비중",
+        "ticker", "ISIN", "신용등급", "표면이자율", "표면금리", "쿠폰금리",
+        "편입 비중", "보유 비중",
         "상품유형", "상품종류", "자산유형", "자산군", "투자지역", "노출지역",
         "상장국가", "거래통화", "통화", "시장범위", "국내외구분",
         "채권유형", "채권종류", "만기일", "만기",
@@ -1066,7 +1067,11 @@ class RuleBasedQueryAnalyzer:
             ), range(match.start(), match.end())))
         adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
         for alias in sorted(self._ranking_field_aliases, key=len, reverse=True):
-            adjectives = "빠른|늦은|이른" if alias in {"만기", "만기일"} else adjective_pattern
+            adjectives = (
+                "빠른|늦은|이른|가까운"
+                if alias in {"만기", "만기일"}
+                else adjective_pattern
+            )
             if "수익률" in alias:
                 adjectives += "|좋은|좋고|나쁜|나쁘고"
             # In return comparisons, ``최근`` qualifies the trailing-period
@@ -1577,7 +1582,7 @@ class RuleBasedQueryAnalyzer:
     def _extract_limit(question: str) -> tuple[ResultLimit | None, range | None]:
         for pattern in (r"(?:TOP|Top|top)\s*(\d+)", r"(?:상위|하위)\s*(\d+)\s*개", r"(\d+)\s*개만",
                         r"가장\s+(?:큰|낮은|높은|작은)\s*(\d+)\s*개",
-                        r"(?:상품|종목)?\s*(\d+)\s*개(?:를|만)?(?=\s|[?.!]|$)"):
+                        r"(?:상품|종목)?\s*(\d+)\s*개(?:를|만|의)?(?=\s|[?.!]|$)"):
             match = re.search(pattern, question)
             if match is not None:
                 return (ResultLimit(value=int(match.group(1)), raw_text=match.group(0)),

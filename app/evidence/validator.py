@@ -39,7 +39,16 @@ class QualityAwareEvidenceValidator:
     async def validate(
         self, query: GroundedQuery, evidence: EvidenceBundle,
     ) -> ValidationResult:
-        if not query.grounded_requested_fields and not query.parsed_query.selectors:
+        comparison_requested = (
+            query.parsed_query.comparison is not None
+            or query.parsed_query.intent is QueryIntent.COMPARE_PRODUCTS
+            or bool(query.parsed_query.selectors)
+        )
+        if (
+            not query.grounded_requested_fields
+            and not query.parsed_query.selectors
+            and not comparison_requested
+        ):
             return await self._validate_full(query, evidence)
         from app.planning.output_requirements import prepare_outputs
         from app.planning.capabilities import SemanticCapabilityValidator
@@ -55,13 +64,16 @@ class QualityAwareEvidenceValidator:
                     for item in query.grounded_requested_fields])
 
         factual = prepared.query
-        comparison_requested = query.parsed_query.comparison is not None or query.parsed_query.intent is QueryIntent.COMPARE_PRODUCTS or bool(query.parsed_query.selectors)
         if comparison_requested and not query.grounded_sort:
             factual = factual.model_copy(update={"parsed_query": factual.parsed_query.model_copy(update={
                 "comparison": None, "intent": QueryIntent.SEARCH_PRODUCT,
             })})
         result = await self._validate_full(factual, evidence)
-        clauses = [item for item in prepared.disclosures if item.kind != "COMPARISON"]
+        clauses = [
+            item
+            for item in prepared.disclosures
+            if item.kind != "COMPARISON" or item.field is not None
+        ]
         hard_fields = {item.canonical_field for item in (*query.grounded_filters, *query.grounded_sort)}
         local_codes = {
             AnswerabilityReasonCode.MISSING_REQUIRED_FIELD, AnswerabilityReasonCode.INVALID_SENTINEL,

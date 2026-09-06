@@ -49,6 +49,8 @@ from app.data.metric_capabilities import (
 from app.domain.models import (
     AnswerabilityStatus,
     CanonicalEntity,
+    ClauseResult,
+    ClauseStatus,
     Evidence,
     ExecutionResult,
     ExecutionContext,
@@ -1285,6 +1287,141 @@ def test_rule_parser_treats_sort_order_particle_as_non_material() -> None:
     assert parsed.sort[0].field == "순자산"
     assert parsed.sort[0].direction == "desc"
     assert parsed.result_limit.value == 5
+
+
+def test_ranked_domestic_return_projects_aum_and_risk_without_ordering_risk() -> None:
+    question = (
+        "국내 ETF 중 최근 1년 수익률 상위 5개의 "
+        "AUM과 위험등급을 비교해줘"
+    )
+    parsed, _, plan = asyncio.run(_plan(question))
+
+    assert parsed.semantic_coverage.value == "complete"
+    assert parsed.unparsed_material_spans == []
+    assert parsed.requested_fields == ["AUM", "위험등급"]
+    step = plan.steps[0]
+    assert step.inputs["sort_operations"] == [{
+        "semantic_metric_key": "product.one_year_return",
+        "direction": "desc",
+    }]
+    assert step.inputs["top_n"] == {"value": 5}
+    assert step.inputs["comparison"] == {
+        "mode": "fieldwise",
+        "fields": ["product.one_year_return"],
+    }
+    assert step.inputs["requested_fields"] == [
+        "product.aum",
+        "product.risk_grade",
+    ]
+    assert [
+        item["canonical_field"]
+        for item in step.inputs["comparison_contracts"]
+    ] == ["product.one_year_return"]
+    compare = next(
+        item for item in plan.semantic_ir["operators"]
+        if item["kind"] == "Compare"
+    )
+    assert compare["fields"] == ["product.one_year_return"]
+
+    compiled = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=100
+    ).compile(
+        step,
+        V2SnapshotSelection(
+            snapshot_date=date(2026, 8, 24),
+            generation="260824",
+            ontology_version="merged-optical-1.4",
+            snapshot_ids=("pref01",),
+            dataset_ids=("dataset:pref01",),
+        ),
+    )
+    assert compiled.ranking_applied is True
+    assert compiled.projected_fields == (
+        "product.aum",
+        "product.risk_grade",
+        "product.one_year_return",
+    )
+
+
+def test_company_bond_nearest_maturity_preserves_unavailable_coupon_contract() -> None:
+    question = (
+        "회사채 중 만기가 가까운 상품 5개의 "
+        "신용등급과 표면금리를 비교해줘"
+    )
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze(question))
+    grounded = asyncio.run(
+        _ontology().ground(ResolvedQuery(parsed_query=parsed))
+    )
+
+    assert parsed.semantic_coverage.value == "complete"
+    assert parsed.unparsed_material_spans == []
+    assert parsed.product_types == ["채권"]
+    assert parsed.filters[0].field == "bond_type"
+    assert parsed.filters[0].value == "일반회사채"
+    assert [(item.field, item.direction) for item in parsed.sort] == [
+        ("만기", "asc")
+    ]
+    assert parsed.result_limit.value == 5
+    assert parsed.requested_fields == ["신용등급", "표면금리"]
+    fields = {
+        item.raw_text: (item.canonical_field, item.status.value)
+        for item in grounded.grounded_requested_fields
+    }
+    assert fields["신용등급"] == ("product.credit_rating", "resolved")
+    assert fields["표면금리"] == (None, "unresolved")
+    assert grounded.grounded_sort[0].canonical_field is None
+
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan(question))
+    assert "unresolved_structured_field" in caught.value.reasons
+    assert any(
+        reason.startswith("unsupported_constraint:")
+        for reason in caught.value.reasons
+    )
+
+
+def test_multi_sort_uses_supported_aum_and_discloses_expense_rejection() -> None:
+    question = (
+        "미국 증시에 상장된 주식형 ETF 중 "
+        "총보수가 낮고 운용 규모가 큰 상품 3개를 비교해줘"
+    )
+    parsed, _, plan = asyncio.run(_plan(question))
+
+    assert parsed.semantic_coverage.value == "complete"
+    assert [(item.field, item.direction) for item in parsed.sort] == [
+        ("총보수", "asc"),
+        ("운용 규모", "desc"),
+    ]
+    step = plan.steps[0]
+    assert step.inputs["sort_operations"] == [{
+        "semantic_metric_key": "product.aum",
+        "direction": "desc",
+    }]
+    assert step.inputs["top_n"] == {"value": 3}
+    assert [
+        item["canonical_field"]
+        for item in step.inputs["comparison_contracts"]
+    ] == ["product.aum"]
+    assert plan.output_disclosures == [ClauseResult(
+        kind="COMPARISON",
+        label="총보수 정렬",
+        field="product.expense_ratio",
+        constraint_id=parsed.sort[0].constraint_id,
+        status=ClauseStatus.UNSUPPORTED,
+        reason="expense_ratio_scale_unverified",
+    )]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "위험등급이 낮은 ETF 3개 알려줘",
+        "총보수가 낮은 ETF 3개 알려줘",
+    ],
+)
+def test_single_unverified_ranking_remains_rejected(question: str) -> None:
+    with pytest.raises(UnsupportedQuerySemanticsError):
+        asyncio.run(_plan(question))
 
 
 def test_maturity_constraints_are_not_reported_as_parser_failure() -> None:
