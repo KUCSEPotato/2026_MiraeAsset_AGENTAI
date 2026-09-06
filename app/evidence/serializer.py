@@ -52,6 +52,7 @@ def serialize_evidence_bundle(
         optional_fields = {
             "step_id": evidence.step_id,
             "entity_id": evidence.entity_id,
+            "display_name": evidence.metadata.get("display_name"),
             "field": evidence.field,
             "value": evidence.value,
             "text": evidence.text,

@@ -8,11 +8,23 @@ import httpx
 import pytest
 
 from app.agent.service import create_pipeline_answer_service
-from app.domain.models import CanonicalEntity, ValidationResult
+from app.domain.models import (
+    CanonicalEntity,
+    Evidence,
+    EvidenceBundle,
+    EntityMention,
+    GroundedQuery,
+    ParsedQuery,
+    RetrievalRecord,
+    ValidationResult,
+)
 from app.entity.lookup import StaticEntityLookup
 from app.entity.resolver import RegistryEntityResolver
 from app.evidence.answer import DeterministicEvidenceAnswerGenerator, satisfies_answer_contract
+from app.evidence.builder import GenericEvidenceBuilder
+from app.evidence.display import bundle_entity_labels, format_evidence_value
 from app.evidence.llm_answer import HyperCLOVAEvidenceAnswerGenerator, _evidence_payload
+from app.evidence.serializer import serialize_evidence_bundle
 from app.operations import JsonLogFormatter
 from app.planning.exceptions import UnsupportedQuerySemanticsError
 from tests.evidence_helpers import make_bundle, make_evidence
@@ -47,7 +59,8 @@ def test_risk_grade_generated_interpretations_never_escape_value_only_contract(i
             return await generator.generate("어떤 상품의 위험 정보", bundle, ValidationResult(answerable=True))
 
     result = asyncio.run(run())
-    assert "RiskGrade.2" in result and "1000" in result
+    assert "2등급" in result and "1000" in result
+    assert "RiskGrade.2" not in result
     assert interpretation not in result
     contract = json.loads(_evidence_payload(bundle))["answer_contract"]
     assert contract["value_only_fields"] == ["product.risk_grade"]
@@ -57,8 +70,10 @@ def test_risk_grade_generated_interpretations_never_escape_value_only_contract(i
     assert satisfies_answer_contract(result, result, bundle)
 
 
-@pytest.mark.parametrize("value", ["RiskGrade.2", "2등급", "제공기관 분류 B"])
-def test_deterministic_risk_answer_preserves_raw_display_value_and_ignores_stale_order_metadata(value):
+@pytest.mark.parametrize("value,display", [
+    ("RiskGrade.2", "2등급"), ("2등급", "2등급"), ("제공기관 분류 B", "제공기관 분류 B"),
+])
+def test_deterministic_risk_answer_formats_known_value_and_ignores_stale_order_metadata(value, display):
     fact = make_evidence(field="product.risk_grade", value=value, metadata={
         "comparison_contracts": [{"answer_disclosure": "중간 위험, 1~5등급"}],
         "metric_unit": "PERCENT",
@@ -66,8 +81,97 @@ def test_deterministic_risk_answer_preserves_raw_display_value_and_ignores_stale
     result = asyncio.run(DeterministicEvidenceAnswerGenerator().generate(
         "위험 정보", make_bundle([fact]), ValidationResult(answerable=True),
     ))
-    assert value in result
+    assert display in result
     assert "중간 위험" not in result and "1~5등급" not in result and "%" not in result
+
+
+def _display_evidence(entity_id, field, value, display_name=None):
+    return Evidence(source_type="rdb", source_id=f"fact:{entity_id}:{field}",
+        entity_id=entity_id, field=field, value=value, metadata={"real_rdb": True,
+            **({"preferred_name": display_name} if display_name else {})})
+
+
+def _render_display(items):
+    return asyncio.run(DeterministicEvidenceAnswerGenerator().generate(
+        "fixture", EvidenceBundle(question="fixture", evidence=items),
+        ValidationResult(answerable=True),
+    ))
+
+
+def test_collection_bond_risk_grade_uses_display_name_without_changing_evidence_identity():
+    entity_id = "bond_kr:KR101501DB80"
+    item = _display_evidence(entity_id, "product.risk_grade", "RiskGrade.6",
+                             "국민주택1종채권 21-08")
+    answer = _render_display([item])
+    assert "국민주택1종채권 21-08 — 위험등급: 6등급" in answer
+    assert entity_id not in answer and "RiskGrade.6" not in answer
+    serialized = serialize_evidence_bundle(EvidenceBundle(question="fixture", evidence=[item]))
+    assert entity_id in serialized and "RiskGrade.6" in serialized
+
+
+def test_etf_collection_uses_human_names_instead_of_internal_ids():
+    items = [
+        _display_evidence("etf_gl:AAA", "product.name",
+                          "Alternative Access First Priority CLO Bond ETF"),
+        _display_evidence("etf_gl:BBB", "product.name",
+                          "Amplius Aggressive Asset Allocation ETF"),
+    ]
+    answer = _render_display(items)
+    assert all(item.value in answer for item in items)
+    assert "etf_gl:AAA" not in answer and "etf_gl:BBB" not in answer
+
+
+@pytest.mark.parametrize("grade", range(1, 7))
+def test_exact_canonical_risk_grade_has_generic_display_format(grade):
+    assert format_evidence_value("product.risk_grade", f"RiskGrade.{grade}") == f"{grade}등급"
+
+
+@pytest.mark.parametrize("value", ["RiskGrade.UNKNOWN", "RiskGrade.7", "제공기관 분류 B"])
+def test_unknown_risk_grade_uses_safe_raw_fallback(value):
+    assert format_evidence_value("product.risk_grade", value) == value
+
+
+def test_missing_display_name_uses_entity_id_as_final_fallback():
+    entity_id = "bond_kr:missing-name"
+    assert entity_id in _render_display([
+        _display_evidence(entity_id, "product.risk_grade", "RiskGrade.6"),
+    ])
+
+
+def test_canonical_evidence_name_precedes_query_alias_and_short_identifier():
+    entity_id = "etf_kr:KR7360750004"
+    bundle = EvidenceBundle(question="fixture", resolved_entities=[EntityMention(
+        raw_text="TIGER 미국S&P500", entity_type="product", canonical_id=entity_id,
+        resolution_status="resolved",
+    )], evidence=[
+        _display_evidence(entity_id, "product.ticker", "360750"),
+        _display_evidence(entity_id, "product.risk_grade", "RiskGrade.1",
+                          "미래에셋 TIGER 미국S&P500증권상장지수투자신탁(주식)"),
+    ])
+    assert bundle_entity_labels(bundle)[entity_id] == (
+        "미래에셋 TIGER 미국S&P500증권상장지수투자신탁(주식)"
+    )
+
+
+def test_builder_and_llm_payload_preserve_display_name_with_internal_identity():
+    query = GroundedQuery(parsed_query=ParsedQuery(
+        original_question="fixture", intent="search_product",
+    ))
+    record = RetrievalRecord(source="rdb", source_id="fact:1",
+        entity_id="bond_kr:KR101501DB80", payload={
+            "field": "product.risk_grade", "value": "RiskGrade.6",
+            "text": "국민주택1종채권 21-08",
+        }, metadata={"preferred_name": "국민주택1종채권 21-08"})
+    bundle = asyncio.run(GenericEvidenceBuilder().build(query, [record]))
+    item = bundle.evidence[0]
+    assert item.entity_id == "bond_kr:KR101501DB80"
+    assert item.metadata["display_name"] == "국민주택1종채권 21-08"
+    payload = json.loads(_evidence_payload(bundle))["records"][0]
+    assert payload == {
+        "evidence_index": 1, "context": 0, "entity_id": "bond_kr:KR101501DB80",
+        "display_name": "국민주택1종채권 21-08", "field": "product.risk_grade",
+        "value": "RiskGrade.6", "display_value": "6등급", "text": "국민주택1종채권 21-08",
+    }
 
 
 @pytest.mark.parametrize("manager", ["미래에셋", "삼성", "가상운용사"])
