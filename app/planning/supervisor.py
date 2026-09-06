@@ -67,6 +67,19 @@ class DeterministicSupervisorPlanner:
             and relation.canonical_relation is not None
             for relation in query.grounded_relations
         )
+        if structured_inputs.get("comparison_groups"):
+            if (
+                semantic_search
+                or query.grounded_relations
+                or query.resolved_entities
+            ):
+                from app.planning.exceptions import UnsupportedQuerySemanticsError
+                raise UnsupportedQuerySemanticsError([
+                    "partial_group_federation_not_supported"
+                ])
+            from app.planning.rule_router import DeterministicRuleRouter
+            grouped = await DeterministicRuleRouter().create_plan(query)
+            return grouped.model_copy(update={"planner": PlannerType.SUPERVISOR})
         relation_only_product_identity = bool(
             has_resolved_relations
             and structured_inputs["entity_ids"]

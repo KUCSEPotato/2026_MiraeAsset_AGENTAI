@@ -370,6 +370,9 @@ class PipelineAnswerService:
             trace.append("safe_response")
             status = "unanswerable"
         answer_latency_ms = _elapsed_ms(answer_started)
+        comparison_scope_summary = _comparison_scope_summary(
+            plan, execution_result
+        )
 
         return AgentResult(
             retrieved_context=serialize_evidence_bundle(evidence, validation),
@@ -397,6 +400,7 @@ class PipelineAnswerService:
                         for step_id, result in execution_result.step_results.items()
                         if result.retrieval_metadata
                     } if execution_result is not None else {},
+                    **comparison_scope_summary,
                     "validation_reasons": validation.reasons,
                     "validation_summary": {
                         "answerable": validation.answerable,
@@ -1041,6 +1045,49 @@ def get_answer_service() -> AnswerService:
 
 def _elapsed_ms(started: float) -> float:
     return round((perf_counter() - started) * 1000.0, 3)
+
+
+def _comparison_scope_summary(plan, execution_result) -> dict[str, object]:
+    groups = []
+    for step in plan.steps:
+        scope = step.inputs.get("comparison_scope")
+        if not isinstance(scope, dict):
+            continue
+        actual = None
+        if (
+            execution_result is not None
+            and step.step_id in execution_result.step_results
+        ):
+            actual = execution_result.step_results[
+                step.step_id
+            ].retrieval_metadata.get("comparison_scope")
+        groups.append(dict(actual if isinstance(actual, dict) else scope))
+    if not groups:
+        return {}
+
+    def unique(key: str) -> list[object]:
+        return list(dict.fromkeys(
+            value
+            for group in groups
+            for value in group.get(key, [])
+        ))
+
+    return {
+        "requested_scope": unique("requested_scope"),
+        "compared_scope": unique("compared_scope"),
+        "excluded_scope": unique("excluded_scope"),
+        "exclusion_reasons": unique("exclusion_reasons"),
+        "candidate_count": sum(
+            int(group.get("candidate_count", 0)) for group in groups
+        ),
+        "rankable_candidate_count": sum(
+            int(group.get("rankable_candidate_count", 0)) for group in groups
+        ),
+        "ranked_candidate_count": sum(
+            int(group.get("ranked_candidate_count", 0)) for group in groups
+        ),
+        "comparison_groups": groups,
+    }
 
 
 def _parser_summary(provenance: ParseProvenance) -> dict[str, object]:

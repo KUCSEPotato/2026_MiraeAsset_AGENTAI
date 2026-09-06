@@ -718,6 +718,7 @@ class RetrievalResult(BaseModel):
     rankable_total: int | None = Field(default=None, ge=0)
     missing_metric_total: int | None = Field(default=None, ge=0)
     requested_top_n: int | None = Field(default=None, ge=1)
+    comparison_scope: dict[str, Any] | None = None
 
 
 class StepExecutionResult(BaseModel):

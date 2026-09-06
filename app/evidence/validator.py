@@ -194,6 +194,21 @@ class QualityAwareEvidenceValidator:
                 evidence,
             )
         )
+        comparison_scopes = _comparison_scopes(evidence)
+        if comparison_scopes and self._has_usable_evidence(evidence):
+            findings.append(ValidationFinding(
+                code=AnswerabilityReasonCode.INSUFFICIENT_COVERAGE,
+                severity=FindingSeverity.WARNING,
+                field=(
+                    comparison_scopes[0].get("metric_field")
+                    if comparison_scopes else None
+                ),
+                message=(
+                    "Ranking was completed only within independently verified "
+                    "comparison scopes."
+                ),
+                metadata={"comparison_scopes": comparison_scopes},
+            ))
 
         if not self._has_usable_evidence(evidence):
             code = self._no_usable_evidence_code(evidence)
@@ -232,8 +247,16 @@ class QualityAwareEvidenceValidator:
             for finding in findings
             if finding.severity is FindingSeverity.WARNING
         ]
+        answerability = (
+            AnswerabilityStatus.PARTIALLY_ANSWERABLE
+            if answerable and comparison_scopes
+            else AnswerabilityStatus.FULLY_ANSWERABLE
+            if answerable
+            else AnswerabilityStatus.UNANSWERABLE
+        )
         return ValidationResult(
             answerable=answerable,
+            answerability=answerability,
             reason_codes=reason_codes,
             findings=findings,
             reasons=[code.value for code in reason_codes],
@@ -248,24 +271,49 @@ class QualityAwareEvidenceValidator:
         findings: list[ValidationFinding] = []
         # A receipt proves execution of the Boolean expression; OR does not
         # prove that every individual branch is true for each returned entity.
-        required = {item.canonical_field for item in query.grounded_filters if item.canonical_field}
         try:
+            base_inputs = structured_query_inputs(query)
             predicate = structured_predicate(query)
-            expected_tree = predicate.model_dump(mode="json") if predicate else None
-            expected_filters = structured_query_inputs(query)["filters"]
+            base_inputs["boolean_expression"] = (
+                predicate.model_dump(mode="json") if predicate else None
+            )
+            registry = MetricCapabilityRegistry()
+            prepared, _ = registry.prepare(base_inputs)
+            scoped_inputs = {
+                group["group_id"]: registry.prepare_comparison_group(
+                    base_inputs, group
+                )[0]
+                for group in prepared.get("comparison_groups", [])
+            }
         except UnsupportedQuerySemanticsError:
             return [ValidationFinding(
                 code=AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS,
                 severity=FindingSeverity.BLOCKING,
                 message="The predicate expression has no executable contract.",
             )]
-        expected_receipts = {
-            (item["canonical_field"], item["raw"]["operator"], repr(item["canonical_value"]))
-            for item in expected_filters
-        }
         for item in bundle.evidence:
             if item.metadata.get("repository_version") != "v2" or item.source_type != "rdb":
                 continue
+            scope = item.metadata.get("comparison_scope")
+            expected_inputs = (
+                scoped_inputs.get(scope.get("group_id"), base_inputs)
+                if isinstance(scope, dict) else base_inputs
+            )
+            expected_tree = expected_inputs.get("boolean_expression")
+            expected_filters = expected_inputs.get("filters", [])
+            required = {
+                expected.get("canonical_field")
+                for expected in expected_filters
+                if isinstance(expected, dict) and expected.get("canonical_field")
+            }
+            expected_receipts = {
+                (
+                    expected["canonical_field"],
+                    expected["raw"]["operator"],
+                    repr(expected["canonical_value"]),
+                )
+                for expected in expected_filters
+            }
             fields = item.metadata.get("matched_constraints", [])
             matches = item.metadata.get("structured_constraint_matches", [])
             boolean_receipt = (
@@ -871,6 +919,21 @@ def _required_fields(query: GroundedQuery) -> list[str]:
             if field is not None
         )
     )
+
+
+def _comparison_scopes(bundle: EvidenceBundle) -> list[dict]:
+    scopes: list[dict] = []
+    if bundle.execution_result is not None:
+        for result in bundle.execution_result.step_results.values():
+            scope = result.retrieval_metadata.get("comparison_scope")
+            if isinstance(scope, dict):
+                scopes.append(scope)
+    if not scopes:
+        for item in bundle.evidence:
+            scope = item.metadata.get("comparison_scope")
+            if isinstance(scope, dict) and scope not in scopes:
+                scopes.append(scope)
+    return scopes
 
 
 def _query_product_type(query: GroundedQuery) -> str | None:

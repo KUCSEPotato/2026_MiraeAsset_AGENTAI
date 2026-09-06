@@ -312,6 +312,12 @@ class MetricCapabilityRegistry:
                 return PREF01_RETURN_CONTRACTS[canonical_field], None
             if (
                 canonical_field == "product.one_year_return"
+                and universe == ("PublicFund",)
+                and inputs.get("result_grain") == "fund_share_class"
+            ):
+                return PRFD_SHARE_CLASS_ONE_YEAR_RETURN, None
+            if (
+                canonical_field == "product.one_year_return"
                 and universe == ("ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS",)
             ):
                 return ISHARES_SCOPED_ONE_YEAR_RETURN, None
@@ -384,6 +390,12 @@ class MetricCapabilityRegistry:
             field = item.get("canonical_field") if isinstance(item, dict) else None
             if field is None and isinstance(item, dict):
                 field = aliases.get(str(item.get("raw", {}).get("field", "")).casefold())
+            comparison_groups = self._partial_return_ranking_groups(
+                str(field), prepared
+            )
+            if comparison_groups:
+                prepared["comparison_groups"] = comparison_groups
+                continue
             universe_input = prepared.get("product_universe") or {}
             universe = tuple(universe_input.get("operands", ()))
             cross_contract = next(
@@ -500,6 +512,156 @@ class MetricCapabilityRegistry:
         prepared["evaluation_data_cutoff"] = EVALUATION_DATA_CUTOFF.isoformat()
         return prepared, list(dict.fromkeys(unsupported))
 
+    def _partial_return_ranking_groups(
+        self,
+        canonical_field: str,
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Build only independently authorized 1Y ranking groups.
+
+        This is a plan decomposition contract, not a cross-source comparison
+        authorization. Each emitted group is re-validated against its existing
+        source/grain-specific ComparisonContract before SQL compilation.
+        """
+
+        if (
+            canonical_field != "product.one_year_return"
+            or inputs.get("comparison_scope") is not None
+        ):
+            return []
+        universe_input = inputs.get("product_universe") or {}
+        requested = tuple(universe_input.get("operands", ()))
+        if (
+            not requested
+            and "FinancialProduct.Fund" in inputs.get("product_types", [])
+            and any(_is_public_fund_filter(item) for item in inputs.get("filters", []))
+        ):
+            requested = ("PublicFund",)
+        supported = {"DomesticETF", "ForeignETF", "PublicFund", "ETF"}
+        if not requested or not set(requested).issubset(supported):
+            return []
+        if requested == ("DomesticETF",):
+            return []
+
+        expanded = []
+        for operand in requested:
+            values = (
+                ("DomesticETF", "ForeignETF")
+                if operand == "ETF"
+                else (operand,)
+            )
+            for value in values:
+                if value not in expanded:
+                    expanded.append(value)
+
+        groups: list[dict[str, Any]] = []
+        if "DomesticETF" in expanded:
+            groups.append({
+                "group_id": "domestic_etf",
+                "label": "국내 ETF",
+                "requested_scope": list(requested),
+                "compared_scope": ["DomesticETF"],
+                "execution_universe": ["DomesticETF"],
+                "result_grain": "financial_product",
+                "metric_field": canonical_field,
+                "coverage": "FULL_WITHIN_GROUP",
+                "excluded_scope": [],
+                "exclusion_reasons": [],
+            })
+        if "ForeignETF" in expanded:
+            groups.append({
+                "group_id": "foreign_etf_ishares",
+                "label": "해외 ETF (검증된 iShares 범위)",
+                "requested_scope": list(requested),
+                "compared_scope": [
+                    "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS"
+                ],
+                "execution_universe": [
+                    "ISHARES_US_FOREIGN_ETF_SECURITY_HOLDINGS"
+                ],
+                "result_grain": "financial_product",
+                "metric_field": canonical_field,
+                "coverage": "PARTIAL_SUBSET",
+                "excluded_scope": ["ForeignETF outside READY iShares scope"],
+                "exclusion_reasons": [
+                    "ONE_YEAR_RETURN_UNAVAILABLE_OUTSIDE_READY_FOREIGN_ETF_SCOPE"
+                ],
+            })
+        if "PublicFund" in expanded:
+            groups.append({
+                "group_id": "public_fund_share_class",
+                "label": "공모펀드 클래스",
+                "requested_scope": list(requested),
+                "compared_scope": ["PublicFundShareClass"],
+                "execution_universe": ["PublicFund"],
+                "result_grain": "fund_share_class",
+                "metric_field": canonical_field,
+                "coverage": "GRAIN_PRESERVING_GROUP",
+                "excluded_scope": ["PublicFund family-level ranking"],
+                "exclusion_reasons": ["COMPARISON_GRAIN_NOT_COMPATIBLE"],
+            })
+
+        mode = "GROUP_WISE" if len(groups) > 1 else "COMPARABLE_SUBSET"
+        for group in groups:
+            group["mode"] = mode
+            if len(groups) > 1:
+                group["exclusion_reasons"] = list(dict.fromkeys([
+                    *group["exclusion_reasons"],
+                    "CROSS_GROUP_RETURN_BASIS_NOT_COMPARABLE",
+                ]))
+        return groups
+
+    def prepare_comparison_group(
+        self,
+        inputs: dict[str, Any],
+        group: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Specialize and re-authorize one reviewed partial-ranking group."""
+
+        parent, unsupported = self.prepare(inputs)
+        if unsupported or group not in parent.get("comparison_groups", []):
+            raise ValueError("comparison group is not authorized by the requested scope")
+
+        scoped = dict(inputs)
+        scoped["product_universe"] = {
+            "operation": "UNION",
+            "operands": list(group["execution_universe"]),
+        }
+        scoped["result_grain"] = group["result_grain"]
+        scoped["comparison_scope"] = dict(group)
+
+        is_fund_group = group["result_grain"] == "fund_share_class"
+        scoped["product_types"] = [
+            value
+            for value in inputs.get("product_types", [])
+            if (value == "FinancialProduct.Fund") is is_fund_group
+        ]
+        filter_ids = list(inputs.get("filter_constraint_ids", []))
+        filters = list(inputs.get("filters", []))
+        pairs = [
+            (item, filter_ids[index] if index < len(filter_ids) else None)
+            for index, item in enumerate(filters)
+            if is_fund_group or not _is_public_fund_filter(item)
+        ]
+        scoped["filters"] = [item for item, _ in pairs]
+        scoped["filter_constraint_ids"] = [identifier for _, identifier in pairs]
+        removed_ids = {
+            filter_ids[index]
+            for index, item in enumerate(filters)
+            if index < len(filter_ids)
+            and filter_ids[index]
+            and not is_fund_group
+            and _is_public_fund_filter(item)
+        }
+        scoped["boolean_expression"] = _without_predicates(
+            inputs.get("boolean_expression"), removed_ids
+        )
+
+        prepared, scoped_unsupported = self.prepare(scoped)
+        if scoped_unsupported or prepared.get("comparison_unsupported_reasons"):
+            raise ValueError("comparison group does not have an executable contract")
+        return prepared, scoped_unsupported
+
     def _plan_contract(
         self,
         contract: ComparisonContract,
@@ -559,6 +721,10 @@ class MetricCapabilityRegistry:
     def verified_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Recompute authorization at execution, independent of plan ledgers."""
         prepared, unsupported = self.prepare(inputs)
+        if prepared.get("comparison_groups"):
+            raise ValueError(
+                "partial comparison requires independently scoped ranking steps"
+            )
         reasons = prepared["comparison_unsupported_reasons"]
         if unsupported or reasons:
             raise ValueError("unsupported comparison: " + ",".join([*reasons, *unsupported]))
@@ -615,6 +781,52 @@ class MetricCapabilityRegistry:
             if raw.get("operator") == "eq":
                 return item.get("canonical_value", raw.get("value"))
         return None
+
+
+def _is_public_fund_filter(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and value.get("canonical_field") == "product.offering_type"
+        and value.get("canonical_value") == "OfferingType.PUBLIC"
+        and value.get("raw", {}).get("operator") == "eq"
+    )
+
+
+def _without_predicates(value: Any, removed_ids: set[str]) -> Any:
+    """Remove only conjunctive, group-scoped predicates.
+
+    Removing a branch from OR would broaden user semantics, so such a shape is
+    rejected rather than rewritten.
+    """
+
+    if not removed_ids or value is None:
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("invalid boolean expression")
+    node_type = value.get("node_type")
+    if node_type == "predicate":
+        return None if value.get("constraint_id") in removed_ids else value
+    if node_type != "and":
+        if any(
+            child.get("constraint_id") in removed_ids
+            for child in value.get("children", [])
+            if isinstance(child, dict)
+        ):
+            raise ValueError("group-scoped predicate cannot be removed from OR")
+        return value
+    children = [
+        child
+        for child in (
+            _without_predicates(item, removed_ids)
+            for item in value.get("children", [])
+        )
+        if child is not None
+    ]
+    if not children:
+        return None
+    if len(children) == 1:
+        return children[0]
+    return {**value, "children": children}
 
 
 def _contract_semantics(value: Any) -> Any:

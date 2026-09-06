@@ -133,6 +133,15 @@ class StructuredQueryPlanValidator:
         errors: list[str] = []
         from app.planning.serialization import structured_query_inputs
         expected_inputs = structured_query_inputs(query)
+        from app.data.metric_capabilities import MetricCapabilityRegistry
+        metric_registry = MetricCapabilityRegistry()
+        prepared_expected, _ = metric_registry.prepare(expected_inputs)
+        expected_groups = prepared_expected.get("comparison_groups", [])
+        authorized_scoped_inputs: dict[str, dict] = {}
+        for group in expected_groups:
+            scoped, _ = metric_registry.prepare_comparison_group(expected_inputs, group)
+            authorized_scoped_inputs[group["group_id"]] = scoped
+        seen_groups: set[str] = set()
         canonical_allowed_fields = set(query.canonical_fields.values())
         allowed_concepts = {concept.value for concept in query.canonical_concepts}
         allowed_entity_ids = {
@@ -143,14 +152,37 @@ class StructuredQueryPlanValidator:
         }
         for step in plan.steps:
             if step.source is RetrievalSource.RDB and step.operation is QueryOperation.SEARCH_PRODUCTS:
+                comparison_scope = step.inputs.get("comparison_scope")
+                scoped_expected = expected_inputs
+                if comparison_scope is not None:
+                    group_id = (
+                        comparison_scope.get("group_id")
+                        if isinstance(comparison_scope, dict) else None
+                    )
+                    authorized = authorized_scoped_inputs.get(group_id)
+                    if (
+                        authorized is None
+                        or comparison_scope != authorized.get("comparison_scope")
+                        or group_id in seen_groups
+                    ):
+                        errors.append(f"invalid_comparison_scope:{step.step_id}")
+                    else:
+                        seen_groups.add(group_id)
+                        scoped_expected = authorized
+                elif expected_groups:
+                    errors.append(f"missing_comparison_scope:{step.step_id}")
                 for key in ("filters", "sort", "comparison", "boolean_expression", "product_universe"):
-                    expected = expected_inputs.get(key)
+                    expected = scoped_expected.get(key)
                     actual = step.inputs.get(key)
                     if (actual or expected) and actual != expected:
                         errors.append(f"changed_query_operator:{step.step_id}:{key}")
-                if not set(expected_inputs["requested_fields"]).issubset(step.inputs.get("requested_fields", [])):
+                if comparison_scope is not None:
+                    for key in ("product_types", "result_grain"):
+                        if step.inputs.get(key) != scoped_expected.get(key):
+                            errors.append(f"changed_query_operator:{step.step_id}:{key}")
+                if not set(scoped_expected["requested_fields"]).issubset(step.inputs.get("requested_fields", [])):
                     errors.append(f"omitted_projection:{step.step_id}")
-                if set(expected_inputs["entity_ids"]) != set(step.inputs.get("entity_ids", [])):
+                if set(scoped_expected["entity_ids"]) != set(step.inputs.get("entity_ids", [])):
                     errors.append(f"changed_entity_selection:{step.step_id}")
             allowed_fields = set(canonical_allowed_fields)
             projection_profile = step.inputs.get("projection_profile")
@@ -200,15 +232,19 @@ class StructuredQueryPlanValidator:
                 if step.inputs["comparison"] != structured_query_inputs(query).get("comparison"):
                     errors.append("invented_comparison_specification")
             if step.inputs.get("boolean_expression") is not None:
-                from app.planning.predicates import structured_predicate
-                predicate = structured_predicate(query)
-                if predicate is None or step.inputs["boolean_expression"] != predicate.model_dump(mode="json"):
-                    errors.append("invented_boolean_expression")
+                if step.inputs.get("comparison_scope") is None:
+                    from app.planning.predicates import structured_predicate
+                    predicate = structured_predicate(query)
+                    if predicate is None or step.inputs["boolean_expression"] != predicate.model_dump(mode="json"):
+                        errors.append("invented_boolean_expression")
             if step.inputs.get("paths"):
                 from app.planning.supervisor import _graph_paths
                 expected_paths = _graph_paths(query, allow_holdings=True)
                 if any(path not in expected_paths for path in step.inputs["paths"]):
                     errors.append("invented_relation_path")
+
+        if expected_groups and seen_groups != set(authorized_scoped_inputs):
+            errors.append("incomplete_comparison_group_plan")
 
         if planner is PlannerType.RULE:
             unresolved_grounding = (

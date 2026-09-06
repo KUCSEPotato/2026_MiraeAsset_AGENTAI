@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.agent.exceptions import AgentUnavailableError
 from app.agent.service import AnswerService, get_answer_service
 from app.evidence.llm_answer import AnswerGenerationError
+from app.schemas.agent import AgentResult
 from app.schemas.api import AnswerResponse
 
 router = APIRouter(tags=["evaluation"])
@@ -42,32 +43,98 @@ async def answer(
         )
         result = exc.to_result()
     except TimeoutError as exc:
-        logger.error(
-            "answer request timed out",
-            extra={
-                "request_id": request_id,
-                "question_id": question_id,
-                "latency_ms": round((perf_counter() - started) * 1000.0, 3),
-                "error_class": type(exc).__name__,
-                "http_status": 504,
-            },
+        result = _safe_boundary_result(
+            reason="request_timeout",
+            answer=(
+                "요청 처리 시간이 길어져 답변을 완료하지 못했습니다. "
+                "잠시 후 다시 시도해 주세요."
+            ),
         )
-        raise HTTPException(status_code=504, detail="answer request timed out") from exc
+        _log_safe_boundary_failure(
+            message="answer request timed out",
+            exc=exc,
+            request_id=request_id,
+            question_id=question_id,
+            started=started,
+            reason="request_timeout",
+        )
     except AnswerGenerationError as exc:
-        logger.error(
-            "answer generation dependency failed",
-            extra={
-                "request_id": request_id,
-                "question_id": question_id,
-                "latency_ms": round((perf_counter() - started) * 1000.0, 3),
-                "error_class": type(exc).__name__,
-                "http_status": 503,
-            },
+        result = _safe_boundary_result(
+            reason="answer_generation_dependency_failure",
+            answer=(
+                "답변 생성 서비스를 완료하지 못했습니다. "
+                "잠시 후 다시 시도해 주세요."
+            ),
         )
-        raise HTTPException(
-            status_code=503, detail="answer generation dependency unavailable"
-        ) from exc
+        _log_safe_boundary_failure(
+            message="answer generation dependency failed",
+            exc=exc,
+            request_id=request_id,
+            question_id=question_id,
+            started=started,
+            reason="answer_generation_dependency_failure",
+        )
+    except Exception as exc:
+        # Do not catch BaseException subclasses such as CancelledError,
+        # KeyboardInterrupt, or SystemExit. Evaluation requests still receive a
+        # stable envelope for unexpected application failures, while logs retain
+        # only allow-listed diagnostics and never expose the exception message.
+        result = _safe_boundary_result(
+            reason="safe_internal_error",
+            answer="요청 처리 중 일시적인 문제가 발생했습니다.",
+        )
+        _log_safe_boundary_failure(
+            message="unexpected answer processing failure",
+            exc=exc,
+            request_id=request_id,
+            question_id=question_id,
+            started=started,
+            reason="safe_internal_error",
+        )
 
+    try:
+        return _render_answer_response(
+            request=request,
+            question_id=question_id,
+            question=question,
+            result=result,
+            request_id=request_id,
+            started=started,
+        )
+    except Exception as exc:
+        # Keep the evaluation contract stable even if an otherwise valid service
+        # result cannot be summarized or rendered. The fallback construction is
+        # intentionally independent of service-owned metadata.
+        _log_safe_boundary_failure(
+            message="answer response rendering failed",
+            exc=exc,
+            request_id=request_id,
+            question_id=question_id,
+            started=started,
+            reason="safe_internal_error",
+        )
+        fallback = _safe_boundary_result(
+            reason="safe_internal_error",
+            answer="요청 처리 중 일시적인 문제가 발생했습니다.",
+        )
+        return AnswerResponse(
+            question_id=question_id,
+            question=question,
+            retrieved_context=fallback.retrieved_context,
+            think_trace=fallback.think_trace,
+            answer=fallback.answer,
+        )
+
+
+def _render_answer_response(
+    *,
+    request: Request,
+    question_id: str,
+    question: str,
+    result: AgentResult,
+    request_id: str,
+    started: float,
+) -> AnswerResponse:
     trace = _safe_trace(result.think_trace)
     planning = trace.get("planning_summary", {})
     validation = trace.get("validation_summary", {})
@@ -106,3 +173,41 @@ def _safe_trace(raw_trace: str) -> dict[str, object]:
     except (json.JSONDecodeError, TypeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_boundary_result(*, reason: str, answer: str) -> AgentResult:
+    return AgentResult(
+        retrieved_context="",
+        think_trace=json.dumps(
+            {
+                "steps": ["api_boundary"],
+                "status": "internal_failure",
+                "reason": reason,
+            },
+            ensure_ascii=False,
+        ),
+        answer=answer,
+    )
+
+
+def _log_safe_boundary_failure(
+    *,
+    message: str,
+    exc: Exception,
+    request_id: str,
+    question_id: str,
+    started: float,
+    reason: str,
+) -> None:
+    logger.error(
+        message,
+        extra={
+            "request_id": request_id,
+            "question_id": question_id,
+            "latency_ms": round((perf_counter() - started) * 1000.0, 3),
+            "error_class": type(exc).__name__,
+            "answer_status": "internal_failure",
+            "parser_failure_reason": reason,
+            "http_status": 200,
+        },
+    )

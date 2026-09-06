@@ -93,13 +93,17 @@ def test_holdings_and_return_constraints_compose_without_special_plan(
     )
 
 
-def test_generic_foreign_return_ranking_fails_closed() -> None:
-    with pytest.raises(UnsupportedQuerySemanticsError) as raised:
-        asyncio.run(_plan("해외 ETF 중 1년 수익률 TOP10"))
-    assert any(
-        "foreign_etf_return_1Y_unavailable_or_incompatible" in item
-        for item in raised.value.reasons
+def test_generic_foreign_return_ranking_uses_disclosed_ready_subset() -> None:
+    _, _, plan = asyncio.run(_plan("해외 ETF 중 1년 수익률 TOP10"))
+    assert len(plan.steps) == 1
+    inputs = plan.steps[0].inputs
+    assert inputs["product_universe"]["operands"] == [ISHARES_SCOPE]
+    assert inputs["comparison_contracts"][0]["dataset"] == (
+        "ISHARES_US_PERFORMANCE"
     )
+    assert inputs["comparison_scope"]["excluded_scope"] == [
+        "ForeignETF outside READY iShares scope"
+    ]
 
 
 def test_domestic_ishares_return_union_is_not_comparable() -> None:

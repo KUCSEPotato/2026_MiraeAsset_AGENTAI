@@ -3,6 +3,23 @@ from app.evidence.display import bundle_entity_labels, format_evidence_value
 
 
 VALUE_ONLY_FIELDS = frozenset({"product.risk_grade"})
+_SCOPE_REASON_LABELS = {
+    "ONE_YEAR_RETURN_UNAVAILABLE_OUTSIDE_READY_FOREIGN_ETF_SCOPE": (
+        "검증된 해외 ETF 범위 밖에는 1년 수익률 근거가 부족함"
+    ),
+    "COMPARISON_GRAIN_NOT_COMPATIBLE": (
+        "공모펀드 수익률은 FundShareClass 단위이며 Fund 단위로 승격할 수 없음"
+    ),
+    "CROSS_GROUP_RETURN_BASIS_NOT_COMPARABLE": (
+        "그룹 간 수익률 기준과 관측 단위의 통합 비교가 검증되지 않음"
+    ),
+}
+_SCOPE_LABELS = {
+    "ForeignETF outside READY iShares scope": (
+        "검증된 READY iShares 범위 밖의 해외 ETF"
+    ),
+    "PublicFund family-level ranking": "Fund 단위 공모펀드 순위",
+}
 
 
 def answer_contract(evidence: EvidenceBundle) -> dict:
@@ -120,6 +137,9 @@ class DeterministicEvidenceAnswerGenerator:
 
 def render_partial_answer(evidence: EvidenceBundle, validation: ValidationResult) -> str:
     """Only validated entity×field cells may contribute factual output."""
+    scopes = _comparison_scopes(evidence)
+    if scopes:
+        return _render_scoped_ranking(evidence, scopes)
     lines = ["확인 가능한 정보는 다음과 같습니다. (일부 항목 확인 불가)"]
     for clause in validation.clauses:
         label = _FIELD_LABELS.get(clause.field, clause.label)
@@ -146,4 +166,77 @@ def render_partial_answer(evidence: EvidenceBundle, validation: ValidationResult
                            else "현재 지원되는 근거로 확인할 수 없음" if clause.status is ClauseStatus.UNSUPPORTED
                            else "현재 데이터에서 확인할 수 없음")
             lines.append(f"- {prefix}{label}: {unavailable}")
+    return "\n".join(lines)
+
+
+def _comparison_scopes(evidence: EvidenceBundle) -> list[dict]:
+    if evidence.execution_result is None:
+        return []
+    return [
+        scope
+        for result in evidence.execution_result.step_results.values()
+        if isinstance(
+            scope := result.retrieval_metadata.get("comparison_scope"), dict
+        )
+    ]
+
+
+def _render_scoped_ranking(evidence: EvidenceBundle, scopes: list[dict]) -> str:
+    labels = bundle_entity_labels(evidence)
+    lines = [
+        "현재 데이터에서 각 그룹 내부의 동일한 기준으로 비교 가능한 상품을 "
+        "검증된 비교 그룹별로 정리했습니다."
+    ]
+    for scope in scopes:
+        group_id = scope.get("group_id")
+        metric_field = scope.get("metric_field")
+        lines.append(f"[{scope.get('label', group_id or '비교 그룹')}]")
+        seen: set[str] = set()
+        rank = 0
+        for item in evidence.evidence:
+            item_scope = item.metadata.get("comparison_scope")
+            if (
+                not isinstance(item_scope, dict)
+                or item_scope.get("group_id") != group_id
+                or item.field != metric_field
+                or item.entity_id is None
+                or item.entity_id in seen
+                or item.value is None
+            ):
+                continue
+            seen.add(item.entity_id)
+            rank += 1
+            value = format_evidence_value(item.field, item.value)
+            if (
+                item.metadata.get("metric_unit") == "PERCENT"
+                and not value.rstrip().endswith("%")
+            ):
+                value += "%"
+            label = labels.get(item.entity_id, item.entity_id)
+            field_label = _FIELD_LABELS.get(item.field or "", item.field or "근거")
+            lines.append(f"{rank}. {label} — {field_label}: {value}")
+        if rank == 0:
+            lines.append("- 비교 계약을 만족하는 근거가 현재 데이터에 없습니다.")
+
+        excluded = scope.get("excluded_scope", [])
+        reasons = scope.get("exclusion_reasons", [])
+        missing = scope.get("missing_metric_count", 0)
+        disclosures = []
+        if excluded:
+            disclosures.append("제외 범위: " + ", ".join(
+                _SCOPE_LABELS.get(str(value), str(value)) for value in excluded
+            ))
+        if reasons:
+            disclosures.append("사유: " + ", ".join(
+                _SCOPE_REASON_LABELS.get(str(reason), str(reason))
+                for reason in reasons
+            ))
+        if isinstance(missing, int) and missing:
+            disclosures.append(f"해당 지표 결측 {missing}건")
+        if disclosures:
+            lines.append("※ " + " / ".join(disclosures))
+    lines.append(
+        "그룹 간 수익률 기준·관측 단위가 서로 검증되지 않은 경우 "
+        "하나의 통합 순위로 섞지 않았습니다."
+    )
     return "\n".join(lines)

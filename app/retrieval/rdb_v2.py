@@ -639,7 +639,7 @@ class CanonicalV2QueryCompiler:
         if universe is not None:
             conditions.append(
                 self._product_universe_predicate(
-                    entity_id, base, universe["operands"], snapshot
+                    entity_id, base, universe["operands"], snapshot, grain
                 )
             )
         elif codes:
@@ -1368,7 +1368,9 @@ class CanonicalV2QueryCompiler:
             )
         )
 
-    def _product_universe_predicate(self, entity_id, base, operands, snapshot):
+    def _product_universe_predicate(
+        self, entity_id, base, operands, snapshot, grain: V2ResultGrain
+    ):
         if not operands or len(operands) != len(set(operands)):
             raise RDBQueryCompilationError("product universe operands must be unique")
         allowed = {
@@ -1432,12 +1434,22 @@ class CanonicalV2QueryCompiler:
             elif operand == "ETF":
                 branches.append(base.c.product_type == "ETF")
             elif operand == "PublicFund":
-                branches.append(
-                    and_(
+                if grain is V2ResultGrain.FINANCIAL_PRODUCT:
+                    branches.append(and_(
                         base.c.product_type == "FUND",
                         self._public_fund_exists(entity_id, snapshot),
+                    ))
+                elif grain is V2ResultGrain.FUND_SHARE_CLASS:
+                    public_iri = self._fields.concept_iri(
+                        "OFFERING_TYPE", "OfferingType.PUBLIC"
                     )
-                )
+                    branches.append(self._classification_exists(
+                        entity_id, "OFFERING_TYPE", [public_iri], snapshot
+                    ))
+                else:
+                    raise RDBQueryCompilationError(
+                        "public-fund universe does not support sale-lot grain"
+                    )
             else:
                 branches.append(base.c.product_type == "FUND")
         return or_(*branches)
@@ -1798,6 +1810,18 @@ class CanonicalV2RDBRetriever:
             }
             for index, item in enumerate(step.inputs.get("filters", []))
         ]
+        returned_count = len(entity_ids)
+        comparison_scope = step.inputs.get("comparison_scope")
+        if isinstance(comparison_scope, dict):
+            comparison_scope = {
+                **comparison_scope,
+                "candidate_count": filtered_total,
+                "rankable_candidate_count": rankable_total,
+                "missing_metric_count": filtered_total - rankable_total,
+                "ranked_candidate_count": returned_count,
+            }
+        else:
+            comparison_scope = None
         records: list[RetrievalRecord] = []
         for row in rows:
             entity_id = str(row["entity_id"])
@@ -1849,6 +1873,10 @@ class CanonicalV2RDBRetriever:
                             "comparison_contracts": step.inputs.get(
                                 "comparison_contracts", []
                             ),
+                            **(
+                                {"comparison_scope": comparison_scope}
+                                if comparison_scope is not None else {}
+                            ),
                             **field_metric,
                             **(
                                 {"parent_fund_id": row["parent_fund_id"]}
@@ -1861,7 +1889,7 @@ class CanonicalV2RDBRetriever:
         return RetrievalResult(
             records=records,
             total_matches=filtered_total,
-            returned_count=len({record.entity_id for record in records if record.entity_id}),
+            returned_count=returned_count,
             window_limit=compiled.statement._limit_clause.value if compiled.statement._limit_clause is not None else None,
             counts={
                 "structured_total_matches": filtered_total,
@@ -1878,6 +1906,7 @@ class CanonicalV2RDBRetriever:
                 if isinstance(step.inputs.get("top_n"), dict)
                 else None
             ),
+            comparison_scope=comparison_scope,
         )
 
     @staticmethod

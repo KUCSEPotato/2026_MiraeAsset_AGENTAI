@@ -9,7 +9,7 @@ import pytest
 from openpyxl import load_workbook
 from sqlalchemy.dialects import postgresql
 
-from app.agent.service import _metric_resolutions
+from app.agent.service import _comparison_scope_summary, _metric_resolutions
 from app.data.cleaning import (
     canonical_mirae_sale_flag,
     canonical_subscription_status,
@@ -47,7 +47,10 @@ from app.data.metric_capabilities import (
     CROSS_PRODUCT_RETURN_CONTRACTS,
 )
 from app.domain.models import (
+    AnswerabilityStatus,
     CanonicalEntity,
+    Evidence,
+    ExecutionResult,
     ExecutionContext,
     QueryIntent,
     QueryPlan,
@@ -63,7 +66,9 @@ from app.domain.models import (
 from app.entity.lookup import StaticEntityLookup
 from app.entity.resolver import RegistryEntityResolver
 from app.evidence.answer import DeterministicEvidenceAnswerGenerator
+from app.evidence.quality import StaticFieldQualityProvider
 from app.evidence.serializer import serialize_evidence_bundle
+from app.evidence.validator import QualityAwareEvidenceValidator
 from app.execution.transforms import InternalTransformExecutor
 from app.graph.config import GraphSettings
 from app.ontology.loader import OntologyLoader
@@ -75,7 +80,10 @@ from app.planning.metadata import RoutingMetadataRegistry
 from app.planning.routing import FastRoutingChecker
 from app.planning.rule_router import DeterministicRuleRouter
 from app.planning.supervisor import DeterministicSupervisorPlanner
-from app.planning.validator import StructuredQueryPlanValidator
+from app.planning.validator import (
+    QueryPlanValidationError,
+    StructuredQueryPlanValidator,
+)
 from app.query.analyzer import RuleBasedQueryAnalyzer
 from app.query.exceptions import SemanticParseSafetyError
 from app.query.semantic_models import (
@@ -985,12 +993,207 @@ def test_validated_product_universe_union_is_explicit(
 
 def test_public_fund_return_is_not_silently_promoted_or_dropped() -> None:
     question = "국내/해외 ETF와 공모펀드 중 1년 수익률이 높은 순으로 10개 알려줘"
-    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
-        asyncio.run(_plan(question))
-    assert (
-        "unsupported_comparison:public_fund_return_1Y_not_comparable_at_fund_grain"
-        in caught.value.reasons
+    _, _, plan = asyncio.run(_plan(question))
+    assert [step.inputs["comparison_scope"]["group_id"] for step in plan.steps] == [
+        "domestic_etf", "foreign_etf_ishares", "public_fund_share_class",
+    ]
+    fund_step = plan.steps[-1]
+    assert fund_step.inputs["result_grain"] == "fund_share_class"
+    assert fund_step.inputs["comparison_contracts"][0]["dataset"] == "PRFD01N001"
+    assert all(
+        "public_fund_return_1Y_not_comparable_at_fund_grain"
+        not in step.inputs["comparison_unsupported_reasons"]
+        for step in plan.steps
     )
+
+
+@pytest.mark.parametrize(
+    ("question", "group_ids"),
+    [
+        ("국내 ETF 중 1년 수익률 상위 10개", []),
+        ("해외 ETF 중 1년 수익률 상위 10개", ["foreign_etf_ishares"]),
+        ("공모펀드 중 1년 수익률 상위 10개", ["public_fund_share_class"]),
+        (
+            "국내/해외 ETF 중 1년 수익률 상위 10개",
+            ["domestic_etf", "foreign_etf_ishares"],
+        ),
+        (
+            "국내 ETF와 공모펀드 중 1년 수익률 상위 10개",
+            ["domestic_etf", "public_fund_share_class"],
+        ),
+        (
+            "국내/해외 ETF와 공모펀드 중 1년 수익률 상위 10개",
+            [
+                "domestic_etf",
+                "foreign_etf_ishares",
+                "public_fund_share_class",
+            ],
+        ),
+    ],
+)
+def test_return_ranking_preserves_requested_universe_as_verified_groups(
+    question: str, group_ids: list[str]
+) -> None:
+    _, _, plan = asyncio.run(_plan(question))
+    scopes = [
+        step.inputs.get("comparison_scope")
+        for step in plan.steps
+        if step.inputs.get("comparison_scope") is not None
+    ]
+    assert [scope["group_id"] for scope in scopes] == group_ids
+    assert not plan.unsupported_constraint_ids
+    for step in plan.steps:
+        assert step.inputs["top_n"] == {"value": 10}
+        assert step.inputs["limit"] == 10
+        assert MetricCapabilityRegistry().verified_inputs(step.inputs)
+
+
+def test_groupwise_return_steps_compile_at_their_authorized_entity_grain() -> None:
+    _, _, plan = asyncio.run(
+        _plan("국내/해외 ETF와 공모펀드 중 1년 수익률 상위 10개")
+    )
+    snapshot = V2SnapshotSelection(
+        snapshot_date=date(2026, 8, 24),
+        generation="260824",
+        ontology_version="merged-optical-1.4",
+        snapshot_ids=(
+            "prbd", "pref01", "pref02", "prfd",
+            "ishares-holdings", "ishares-performance",
+        ),
+        dataset_ids=(
+            "dataset:prbd", "dataset:pref01", "dataset:pref02", "dataset:prfd",
+            "dataset:ishares-us-holdings", "dataset:ishares-us-performance",
+        ),
+    )
+    compiler = CanonicalV2QueryCompiler(
+        CanonicalV2FieldRegistry(), default_limit=100
+    )
+    compiled = {
+        step.inputs["comparison_scope"]["group_id"]: compiler.compile(
+            step, snapshot
+        )
+        for step in plan.steps
+    }
+    assert compiled["domestic_etf"].result_grain.value == "financial_product"
+    assert compiled["foreign_etf_ishares"].result_grain.value == (
+        "financial_product"
+    )
+    assert compiled["public_fund_share_class"].result_grain.value == (
+        "fund_share_class"
+    )
+    assert all(item.ranking_applied for item in compiled.values())
+
+
+def test_partial_ranking_plan_cannot_silently_drop_a_requested_group() -> None:
+    _, grounded, plan = asyncio.run(
+        _plan("국내/해외 ETF와 공모펀드 중 1년 수익률 상위 10개")
+    )
+    incomplete = plan.model_copy(update={"steps": plan.steps[:-1]})
+    with pytest.raises(
+        QueryPlanValidationError, match="incomplete_comparison_group_plan"
+    ):
+        StructuredQueryPlanValidator(RoutingMetadataRegistry()).validate(
+            incomplete, grounded
+        )
+
+
+def test_groupwise_return_evidence_is_partial_and_disclosed() -> None:
+    _, query, plan = asyncio.run(
+        _plan("국내/해외 ETF 중 1년 수익률 상위 10개")
+    )
+    now = datetime.now(UTC)
+    domestic, foreign = plan.steps
+    domestic_scope = {
+        **domestic.inputs["comparison_scope"],
+        "candidate_count": 400,
+        "rankable_candidate_count": 350,
+        "missing_metric_count": 50,
+        "ranked_candidate_count": 1,
+    }
+    foreign_scope = {
+        **foreign.inputs["comparison_scope"],
+        "candidate_count": 0,
+        "rankable_candidate_count": 0,
+        "missing_metric_count": 0,
+        "ranked_candidate_count": 0,
+    }
+    record = RetrievalRecord(
+        step_id=domestic.step_id,
+        source="rdb",
+        source_id="canonical_v2:test:etf:1:return",
+        entity_id="etf:1",
+        payload={"field": "product.one_year_return", "value": "12.4"},
+        metadata={"ranking_applied": True},
+    )
+
+    def step_result(step: QueryStep, scope: dict, records=None):
+        return StepExecutionResult(
+            step_id=step.step_id,
+            source=step.source,
+            status=StepExecutionStatus.SUCCESS,
+            records=records or [],
+            retrieval_metadata={"comparison_scope": scope},
+            started_at=now,
+            finished_at=now,
+            duration_seconds=0,
+        )
+
+    execution = ExecutionResult(
+        records=[record],
+        step_results={
+            domestic.step_id: step_result(domestic, domestic_scope, [record]),
+            foreign.step_id: step_result(foreign, foreign_scope),
+        },
+    )
+    evidence = Evidence(
+        step_id=domestic.step_id,
+        source_type="rdb",
+        source_id=record.source_id,
+        entity_id="etf:1",
+        field="product.one_year_return",
+        value="12.4",
+        text="검증 ETF",
+        dataset_snapshot="2026-08-24",
+        observed_at="2026-08-24",
+        metadata={
+            "repository_version": "v2",
+            "real_rdb": True,
+            "display_name": "검증 ETF",
+            "ranking_applied": True,
+            "matched_constraints": [],
+            "structured_constraint_matches": [],
+            "comparison_contracts": domestic.inputs["comparison_contracts"],
+            "comparison_scope": domestic_scope,
+            "metric_dataset": "PREF01N001",
+            "metric_unit": "PERCENT",
+            "metric_scale_basis": "SOURCE_PERCENT",
+            "field_fact_id": "fact:return:1",
+            "field_evidence_assertion_ids": ["assertion:return:1"],
+        },
+    )
+    bundle = make_bundle([evidence], execution)
+    validation = asyncio.run(
+        QualityAwareEvidenceValidator(
+            StaticFieldQualityProvider()
+        ).validate(query, bundle)
+    )
+    assert validation.answerability is AnswerabilityStatus.PARTIALLY_ANSWERABLE
+    assert validation.answerable is True
+    answer = asyncio.run(
+        DeterministicEvidenceAnswerGenerator().generate(
+            query.parsed_query.original_question, bundle, validation
+        )
+    )
+    assert "[국내 ETF]" in answer
+    assert "검증 ETF — 1년 수익률: 12.4%" in answer
+    assert "[해외 ETF (검증된 iShares 범위)]" in answer
+    assert "하나의 통합 순위로 섞지 않았습니다" in answer
+    trace_scope = _comparison_scope_summary(plan, execution)
+    assert trace_scope["requested_scope"] == ["DomesticETF", "ForeignETF"]
+    assert trace_scope["candidate_count"] == 400
+    assert trace_scope["rankable_candidate_count"] == 350
+    assert trace_scope["ranked_candidate_count"] == 1
+    assert "ForeignETF outside READY iShares scope" in trace_scope["excluded_scope"]
 
 
 @pytest.mark.parametrize("security", ["삼성전자", "SK하이닉스"])
@@ -1423,7 +1626,10 @@ def test_cross_product_ranking_requires_registry_authorization_at_compilation() 
 
     # A caller-supplied flag cannot authorize the currently incompatible
     # domestic/foreign return basis, even when bypassing the planner.
-    with pytest.raises(RDBQueryCompilationError, match="foreign_etf_return"):
+    with pytest.raises(
+        RDBQueryCompilationError,
+        match="partial comparison requires independently scoped ranking steps",
+    ):
         compiler.compile(step, snapshot)
     approved = step.model_copy(update={"inputs": {
         **step.inputs,
