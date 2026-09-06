@@ -72,6 +72,11 @@ class LLMSemanticCandidateValidator:
         self._allowed_relations = {
             normalize_ontology_text(item) for item in vocabulary["relations"]
         }
+        self._allowed_classification_values = {
+            normalize_ontology_text(item)
+            for key in ("product_types", "regions", "asset_types")
+            for item in vocabulary.get(key, [])
+        }
 
     def validate(
         self,
@@ -212,8 +217,8 @@ class LLMSemanticCandidateValidator:
         for raw in values:
             self._require_value_in_span(raw, item.source_span, reasons)
 
-    @staticmethod
     def _covers_rule_material(
+        self,
         rule_result: ParsedQuery,
         candidate: LLMSemanticParseCandidate,
     ) -> bool:
@@ -276,6 +281,18 @@ class LLMSemanticCandidateValidator:
             }:
                 continue
             candidates = typed.get(item.semantic_type)
+            if (
+                item.semantic_type is ConstraintSemanticType.ENTITY
+                and normalize_ontology_text(item.raw_text)
+                in self._allowed_classification_values
+            ):
+                # A catch-all deterministic entity candidate is only a hint.
+                # Permit an LLM candidate to re-type an ontology-vocabulary
+                # alias as a product type or filter, while unknown entity text
+                # remains required to stay on the entity path.
+                candidates = [
+                    item.source_span for item in candidate.product_types
+                ] + [item.source_span for item in candidate.filters]
             if item.status is ConstraintStatus.UNSUPPORTED:
                 # The fallback parser exists specifically to replace an
                 # incomplete deterministic interpretation. Preserve the

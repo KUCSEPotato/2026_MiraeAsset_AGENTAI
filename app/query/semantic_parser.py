@@ -114,19 +114,20 @@ class SemanticParserCoordinator:
                 llm_latency_ms=_milliseconds(llm_started),
             ) from exc
         except SemanticCandidateValidationError as exc:
-          logger.warning(
-            "semantic candidate rejected",
-             extra={
-                  "request_purpose": "semantic_parse",
-                  "parser_path": "LLM_FALLBACK",
-                  "failure_stage": "candidate_validation",
-                  "validation_status": "rejected",
-                  "candidate_rejection_reasons": exc.reasons,
-                  "validation_reason_count": len(exc.reasons),
-                  "rule_latency_ms": rule_latency,
-                  "llm_latency_ms": _milliseconds(llm_started),
-              },
-          )
+            logger.warning(
+                "semantic parse candidate rejected",
+                extra={
+                    "request_purpose": "semantic_parse",
+                    "parser_path": "LLM_FALLBACK",
+                    "failure_stage": "candidate_validation",
+                    "validation_status": "rejected",
+                    "candidate_rejection_reasons": exc.reasons,
+                    "validation_reasons": exc.reasons,
+                    "validation_reason_count": len(exc.reasons),
+                    "rule_latency_ms": rule_latency,
+                    "llm_latency_ms": _milliseconds(llm_started),
+                },
+            )
             raise SemanticParseSafetyError(
                 "llm_candidate_rejected",
                 rule_latency_ms=rule_latency,
@@ -165,6 +166,7 @@ def _is_understood_unsupported(parsed: ParsedQuery) -> bool:
         "historical_metric_series_unavailable",
         "holdings_weight_projection_unavailable",
         "peer_selector_unverified",
+        "true_ambiguity:comparison_metric_missing",
     }
 
 

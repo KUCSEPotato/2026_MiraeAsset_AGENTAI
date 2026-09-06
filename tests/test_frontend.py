@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.agent.service import get_answer_service
 import app.main as main_module
@@ -76,6 +77,8 @@ def test_backend_serves_legacy_frontend_when_static_files_exist(monkeypatch):
 
 
 def test_backend_serves_exported_frontend_when_next_export_exists(monkeypatch):
+    if not (FRONTEND / "out" / "index.html").is_file():
+        pytest.skip("Next.js export artifact is not provisioned")
     _override_frontend_paths(
         monkeypatch,
         frontend_dir=FRONTEND,

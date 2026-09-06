@@ -324,7 +324,10 @@ def test_real_llm_client_and_validator_with_mock_maturity_response(fault, expect
     if expected:
         with pytest.raises(SemanticParseSafetyError, match="semantic parsing"):
             asyncio.run(run())
-        record = next(r for r in caplog.records if r.msg == "semantic candidate rejected")
+        record = next(
+            r for r in caplog.records
+            if r.msg == "semantic parse candidate rejected"
+        )
         diagnostic = json.loads(JsonLogFormatter().format(record))
         assert expected in diagnostic["candidate_rejection_reasons"]
         assert diagnostic["failure_stage"] == "candidate_validation"

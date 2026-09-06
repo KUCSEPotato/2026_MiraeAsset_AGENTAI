@@ -167,6 +167,24 @@ def test_natural_return_rankings_do_not_call_semantic_llm(
     assert parsed.result_limit.value == limit
 
 
+def test_collection_comparison_without_metric_is_rule_understood_unsupported() -> None:
+    llm = _FailingSemanticParserLLM()
+    parsed = asyncio.run(
+        _semantic_coordinator(llm).analyze("채권형 상품 여러 개를 비교해줘")
+    )
+
+    assert llm.calls == 0
+    assert parsed.parser_source.value == "rule"
+    assert parsed.entities == []
+    assert [(item.field, item.value) for item in parsed.filters] == [
+        ("asset_type", "채권형")
+    ]
+    assert any(
+        item.unsupported_reason == "true_ambiguity:comparison_metric_missing"
+        for item in parsed.semantic_constraints
+    )
+
+
 def test_hyperclova_semantic_parse_payload_omits_unsupported_parameters() -> None:
     captured: dict[str, object] = {}
 
