@@ -454,6 +454,7 @@ class CanonicalV2FieldRegistry:
             # Storage is numeric, but the approved comparison contracts are disabled.
             V2FieldMapping("product.aum", "metric", "AUM", False, True, False),
             V2FieldMapping("product.expense_ratio", "metric", "EXPENSE_RATIO", False, True, False),
+            V2FieldMapping("product.nav", "metric", "NAV", False, True, False),
             V2FieldMapping("product.price", "metric", "PRICE", False, True, False),
             V2FieldMapping("product.market_price", "metric", "MARKET_PRICE", False, True, False),
             V2FieldMapping("product.market_volume", "metric", "VOLUME", False, True, False),

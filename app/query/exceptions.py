@@ -41,6 +41,7 @@ class SemanticParseSafetyError(ValueError):
         llm_latency_ms: float = 0.0,
         llm_calls: int | None = None,
         repair_attempts: int = 0,
+        validation_reasons: list[str] | None = None,
     ) -> None:
         self.reason = reason
         self.parser = parser
@@ -48,4 +49,5 @@ class SemanticParseSafetyError(ValueError):
         self.llm_latency_ms = llm_latency_ms
         self.llm_calls = (0 if reason == "llm_fallback_not_configured" else 1) if llm_calls is None else llm_calls
         self.repair_attempts = repair_attempts
+        self.validation_reasons = list(dict.fromkeys(validation_reasons or []))
         super().__init__("semantic parsing could not be completed safely")

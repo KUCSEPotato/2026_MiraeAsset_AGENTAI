@@ -311,9 +311,11 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         FieldMapping("product.isin", "Identifier", ("ISIN", "표준코드"), "rdb", "canonical_products.isin", exact_ops),
         FieldMapping("product.asset_manager", "managedBy", ("운용사",), "rdb+graph", "canonical_products.asset_manager/MANAGED_BY", exact_ops),
         FieldMapping("product.issuer", "issuedBy", ("발행사",), "rdb+graph", "canonical_products.issuer/ISSUED_BY", exact_ops),
-        FieldMapping("product.product_type", "FinancialProduct", ("상품유형", "product_type"), "rdb", "canonical_products.product_type", exact_ops),
-        FieldMapping("product.region", "hasExposureRegion", ("지역", "투자지역", "region"), "rdb+graph", "canonical_products.region/HAS_EXPOSURE_REGION", exact_ops),
+        FieldMapping("product.product_type", "FinancialProduct", ("상품유형", "상품종류", "product_type"), "rdb", "canonical_products.product_type", exact_ops),
+        FieldMapping("product.region", "hasExposureRegion", ("지역", "투자지역", "노출지역", "region"), "rdb+graph", "canonical_products.region/HAS_EXPOSURE_REGION", exact_ops),
         FieldMapping("product.asset_type", "hasAssetClass", ("자산유형", "자산군", "asset_type"), "rdb+graph", "canonical_products.asset_type/HAS_ASSET_CLASS", exact_ops),
+        FieldMapping("product.market_scope", "hasMarketScope", ("시장범위", "국내외구분", "market_scope"), "rdb+graph", "canonical_v2.entity_classifications/HAS_MARKET_SCOPE", exact_ops),
+        FieldMapping("product.bond_type", "hasBondType", ("채권유형", "채권종류", "bond_type"), "rdb+graph", "canonical_v2.entity_classifications/HAS_BOND_TYPE", exact_ops),
         FieldMapping(
             "product.risk_grade",
             "hasRiskGrade",
@@ -330,6 +332,7 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         ),
         FieldMapping("product.offering_type", "hasOfferingType", ("공모", "사모", "offering_type"), "rdb", "canonical_products.offering_type/HAS_OFFERING_TYPE", exact_ops),
         FieldMapping("product.currency", "denominatedIn", ("통화", "표시통화"), "rdb+graph", "canonical_products.currency/DENOMINATED_IN", exact_ops),
+        FieldMapping("product.trading_currency", "tradedInCurrency", ("거래통화",), "rdb+graph", "canonical_v2.entity_relations/TRADED_IN_CURRENCY", exact_ops),
         # Projection is safe, but cross-source comparisons are not.  The new
         # generation mixes currencies and does not provide an FX normalization
         # contract, so filter/sort stay disabled in Team mode.
@@ -344,7 +347,7 @@ def _field_mappings() -> tuple[FieldMapping, ...]:
         FieldMapping("product.nav", "NAVMetric", ("NAV", "기준가격"), "rdb", "canonical_products.nav", project, active, "row currency", None, None),
         FieldMapping("product.price", "PriceMetric", ("가격", "종가"), "rdb", "canonical_products.price", project, active, "row currency", None, None),
         FieldMapping("product.base_index", "hasUnderlyingIndex", ("기초지수", "추종지수"), "rdb+graph", "canonical_products.base_index/TRACKS_INDEX", exact_ops),
-        FieldMapping("product.observed_at", "observedAt", ("관측일", "기준일"), "rdb", "canonical_products.observed_at", exact_ops),
+        FieldMapping("product.observed_at", "observedAt", ("관측일", "기준일"), "rdb", "canonical_products.observed_at", exact_ops, prospective),
         FieldMapping("product.strategy_description", "investmentStrategyDescription", ("전략", "투자전략"), "vector_bm25", "etf_attributes.strategy", project),
         FieldMapping("product.credit_rating", "hasCreditRating", ("신용등급", "credit_rating"), "rdb", "canonical_v2.metric_observations", frozenset({"filter", "project", "ordered_comparison"}), active, "ordinal", "ordinal", "CREDIT_RATING_V1"),
         FieldMapping("product.current_sale_available", "OperationalConstraint", ("현재 판매 가능", "current_sale_available"), "rdb", "organizer bond lifecycle exclusion rule", frozenset({"filter"}), active, "organizer rule", "boolean", "ORGANIZER_RULE_V1"),

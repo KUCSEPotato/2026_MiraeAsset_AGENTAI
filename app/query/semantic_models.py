@@ -14,6 +14,45 @@ from app.domain.models import (
 )
 
 
+ALLOWED_RELATION_SUBJECT_TYPES = (
+    "AssetManager",
+    "Bond",
+    "Currency",
+    "ETF",
+    "ETN",
+    "EquitySecurity",
+    "ExchangeTradedProduct",
+    "FinancialProduct",
+    "Fund",
+    "FundShareClass",
+    "Index",
+    "Issuer",
+    "Organization",
+    "RiskGrade",
+    "SaleLot",
+    "Security",
+)
+ALLOWED_RELATION_TARGET_TYPES = (
+    "AssetClass",
+    "AssetManager",
+    "AssetManagementCompany",
+    "BondType",
+    "Country",
+    "Currency",
+    "EquitySecurity",
+    "ExposureRegion",
+    "FundShareClass",
+    "Index",
+    "Issuer",
+    "MarketScope",
+    "Organization",
+    "OfferingType",
+    "RiskGrade",
+    "SaleLot",
+    "Security",
+)
+
+
 class UntrustedCandidateModel(BaseModel):
     """Strict base for data proposed by an external language model."""
 

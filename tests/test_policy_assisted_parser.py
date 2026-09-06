@@ -235,3 +235,33 @@ def test_known_capability_failures_explain_the_missing_contract(reason, phrase):
     result = asyncio.run(ReasonAwareSafeResponseGenerator().generate(ValidationResult(
         answerable=False, reason_codes=['UNSUPPORTED_CONSTRAINT'], reasons=[reason])))
     assert phrase in result and '잠시 후' not in result
+
+
+@pytest.mark.parametrize('question', ['미국 ETF 알려줘', '미국에 투자하는 ETF 알려줘'])
+def test_merging_exclusion_correction_does_not_allow_invented_negation(question):
+    data = dict(intent='search_product', product_types=[dict(value='ETF', source_span=_span(question, 'ETF'))],
+                filters=[dict(field='region', operator='ne', value='미국', source_span=_span(question, question))])
+    with pytest.raises(SemanticCandidateValidationError) as exc:
+        _validate(question, data)
+    assert 'candidate_changes_rule_filter' in exc.value.reasons
+
+
+def test_relation_type_normalization_uses_the_merged_schema_allowlist():
+    from app.query.llm_parser import hyperclova_candidate_schema
+    normalized = normalize_candidate_payload('', {'subject_type': 'salelot', 'target_type': 'asset class'})
+    properties = hyperclova_candidate_schema()['properties']['relations']['items']['properties']
+    assert normalized == {'subject_type': 'SaleLot', 'target_type': 'AssetClass'}
+    assert normalized['subject_type'] in properties['subject_type']['enum']
+    assert normalized['target_type'] in properties['target_type']['enum']
+
+
+def test_merged_rule_retyping_cannot_downgrade_a_hard_numeric_filter():
+    question = '국내 ETF 중 순자산 1조 이상인 상품 알려줘'
+    rule = _parse(question)
+    condition = next(c for c in rule.semantic_constraints if c.semantic_type.value == 'filter')
+    assert condition.unsupported_reason == 'dataset_unit_mapping_unverified'
+    data = dict(intent='search_product', product_types=[dict(value='ETF', source_span=_span(question, 'ETF'))],
+                semantic_texts=[dict(value=condition.raw_text, source_span=_span(question, condition.raw_text))])
+    with pytest.raises(SemanticCandidateValidationError) as exc:
+        _validate(question, data)
+    assert 'candidate_omits_rule_material' in exc.value.reasons

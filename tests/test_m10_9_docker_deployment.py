@@ -5,14 +5,14 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_docker_build_context_excludes_secrets_and_runtime_data() -> None:
-    dockerignore = (ROOT / ".dockerignore").read_text()
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     for required in (".env", "*.pem", "*.key", "material", "data/canonical_v2"):
         assert required in dockerignore
     assert "!.env.example" in dockerignore
 
 
 def test_compose_only_publishes_frontend_and_persists_state() -> None:
-    compose = (ROOT / "docker-compose.prod.yml").read_text()
+    compose = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
     postgres = compose.split("  postgres:", 1)[1].split("  neo4j:", 1)[0]
     neo4j = compose.split("  neo4j:", 1)[1].split("  agent-api:", 1)[0]
     api = compose.split("  agent-api:", 1)[1].split("  frontend:", 1)[0]
@@ -34,8 +34,8 @@ def test_compose_only_publishes_frontend_and_persists_state() -> None:
 
 
 def test_compose_keeps_runtime_readiness_and_config_driven_rollback() -> None:
-    compose = (ROOT / "docker-compose.prod.yml").read_text()
-    dockerfile = (ROOT / "Dockerfile").read_text()
+    compose = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "RUNTIME_DATA_VERSION" in compose
     assert "CANONICAL_V2_SEMANTIC_INDEX_PATH" in compose

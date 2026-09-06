@@ -139,7 +139,7 @@ def test_multiple_source_records_support_one_semantic_holding(tmp_path: Path) ->
         json.loads(line)
         for line in (
             workspace.path / "holdings/normalized/holding_evidence_links.jsonl"
-        ).read_text().splitlines()
+        ).read_text(encoding="utf-8").splitlines()
     ]
     assert len(holding_ids) == 3
     assert len(links) == 6
@@ -156,7 +156,7 @@ def test_rerun_count_ids_and_semantic_checksum_are_stable(tmp_path: Path) -> Non
         [FIXTURE, _variant(curp="1", risep="2", rcv_time="3")],
     )
     path = workspace.path / "holdings/normalized/holdings.jsonl"
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == len(results[0].holdings) == len(results[1].holdings) == 3
     assert checksums[0] == checksums[1]
     assert all("retrieved_at" not in row and "source_record_id" not in row for row in rows)
@@ -179,7 +179,7 @@ def test_manifest_quality_report_round_trip_and_derived_failure_rate(tmp_path: P
         validation={"fixture": True},
         quality_reports=[report],
     )
-    raw = json.loads((workspace.path / "manifest.json").read_text())
+    raw = json.loads((workspace.path / "manifest.json").read_text(encoding="utf-8"))
     assert "failure_rate" not in raw["source_quality_reports"][0]
     loaded = load_snapshot_manifest(
         tmp_path, snapshot_date=date(2026, 8, 31), snapshot_id="hardening"

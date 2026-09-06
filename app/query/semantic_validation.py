@@ -34,11 +34,13 @@ from app.ontology.index import normalize_ontology_text
 from app.query.exceptions import SemanticCandidateValidationError
 from app.query.normalization import normalize_query_semantics
 from app.query.candidate_normalization import (
-    CandidateAliasNormalizer, RELATION_SUBJECT_TYPES, RELATION_TARGET_TYPES,
+    CandidateAliasNormalizer,
     normalize_candidate_payload,
 )
 from app.query.default_policies import DEFAULT_POLICIES
 from app.query.semantic_models import (
+    ALLOWED_RELATION_SUBJECT_TYPES,
+    ALLOWED_RELATION_TARGET_TYPES,
     LLMCandidateSpan,
     LLMBooleanExpressionCandidate,
     LLMFilterCandidate,
@@ -61,8 +63,8 @@ class _Draft:
 class LLMSemanticCandidateValidator:
     """Convert an untrusted full candidate into the existing ParsedQuery contract."""
 
-    _subject_types = RELATION_SUBJECT_TYPES
-    _target_types = RELATION_TARGET_TYPES
+    _subject_types = frozenset(ALLOWED_RELATION_SUBJECT_TYPES)
+    _target_types = frozenset(ALLOWED_RELATION_TARGET_TYPES)
 
     def __init__(self, vocabulary: dict[str, list[str]]) -> None:
         self._aliases = CandidateAliasNormalizer()
@@ -75,6 +77,11 @@ class LLMSemanticCandidateValidator:
         }
         self._allowed_relations = {
             normalize_ontology_text(item) for item in vocabulary["relations"]
+        }
+        self._allowed_classification_values = {
+            normalize_ontology_text(item)
+            for key in ("product_types", "regions", "asset_types")
+            for item in vocabulary.get(key, [])
         }
 
     def validate(
@@ -258,6 +265,18 @@ class LLMSemanticCandidateValidator:
             return value.model_dump(mode="json")["value"]
         if any(v.operator == item.operator and normalized_value(v) == expected for v in matching):
             return True
+        # A residual exclusion can qualify a rule's bare positive alias.
+        # Preserve the upstream correction path only when the same literal
+        # is directly negated in the original candidate span.
+        if item.operator is FilterOperator.EQ and isinstance(expected, str):
+            exclusion = re.compile(
+                rf"{re.escape(expected)}(?:을|를|은|는|이|가)?\s*"
+                r"(?:빼고|제외한|제외하고|제외|아닌)(?![가-힣])",
+                re.IGNORECASE,
+            )
+            if any(v.operator is FilterOperator.NE and v.value == expected
+                   and exclusion.search(v.source_span.raw_text) for v in matching):
+                return True
         # The deterministic maturity normalizer expands an explicit calendar
         # year only after the candidate's literal grounding is validated.
         if item.field in {"만기", "만기일", "product.maturity"} and item.operator is FilterOperator.BETWEEN:
@@ -351,8 +370,8 @@ class LLMSemanticCandidateValidator:
         for raw in values:
             self._require_value_in_span(raw, item.source_span, reasons)
 
-    @staticmethod
     def _covers_rule_material(
+        self,
         rule_result: ParsedQuery,
         candidate: LLMSemanticParseCandidate,
     ) -> bool:
@@ -417,9 +436,30 @@ class LLMSemanticCandidateValidator:
                 continue
             candidates = typed.get(item.semantic_type)
             if (
-                item.semantic_type is ConstraintSemanticType.SEMANTIC
-                and item.status is ConstraintStatus.UNSUPPORTED
+                item.semantic_type is ConstraintSemanticType.ENTITY
+                and normalize_ontology_text(item.raw_text)
+                in self._allowed_classification_values
             ):
+                # A catch-all deterministic entity candidate is only a hint.
+                # Permit an LLM candidate to re-type an ontology-vocabulary
+                # alias as a product type or filter, while unknown entity text
+                # remains required to stay on the entity path.
+                candidates = [
+                    item.source_span for item in candidate.product_types
+                ] + [item.source_span for item in candidate.filters]
+            if item.status is ConstraintStatus.UNSUPPORTED and item.semantic_type not in {
+                ConstraintSemanticType.FILTER, ConstraintSemanticType.SORT,
+                ConstraintSemanticType.RELATION, ConstraintSemanticType.TEMPORAL,
+                ConstraintSemanticType.AGGREGATION, ConstraintSemanticType.GROUP_BY,
+            }:
+                # The fallback parser exists specifically to replace an
+                # incomplete deterministic interpretation. Preserve the
+                # original material span, but do not require the proposal to
+                # repeat a semantic type that the rule parser already marked
+                # unsupported (for example, a peer selector corrected to a
+                # region filter).
+                # Explicit selection/operation clauses must retain their
+                # semantic type even when their execution is unsupported.
                 candidates = LLMSemanticCandidateValidator._all_spans(candidate)
             if candidates is None:
                 candidates = semantic_spans

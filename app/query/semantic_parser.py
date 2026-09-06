@@ -119,10 +119,13 @@ class SemanticParserCoordinator:
                     reason = "llm_candidate_rejected"
                     rejected = candidate.model_dump(mode="json", exclude_none=True)
                     errors = exc.reasons
-                    logger.warning("semantic candidate rejected", extra={
+                    logger.warning("semantic parse candidate rejected", extra={
                         "request_purpose": "semantic_parse", "parser_path": "LLM_FALLBACK",
                         "failure_stage": "candidate_validation", "validation_status": "rejected",
                         "candidate_rejection_reasons": errors,
+                        "validation_reasons": errors,
+                        "validation_reason_count": len(errors),
+                        "rule_latency_ms": rule_latency,
                         "llm_latency_ms": _milliseconds(llm_started),
                     })
                 else:
@@ -140,6 +143,7 @@ class SemanticParserCoordinator:
                     reason, rule_latency_ms=rule_latency,
                     llm_latency_ms=_milliseconds(llm_started),
                     llm_calls=attempt + 1, repair_attempts=attempt,
+                    validation_reasons=errors,
                 ) from exc
 
         logger.info(
@@ -176,6 +180,7 @@ def _is_understood_unsupported(parsed: ParsedQuery) -> bool:
         "projection_unavailable",
         "subjective_execution_unsupported",
         "intent_execution_not_implemented",
+        "true_ambiguity:comparison_metric_missing",
     }
 
 

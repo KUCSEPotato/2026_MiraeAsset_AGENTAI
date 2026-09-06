@@ -1,7 +1,12 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from app.domain.models import QueryOperation, RetrievalSource
+from app.domain.models import (
+    QueryOperation,
+    RetrievalSource,
+    SemanticCapabilityState,
+)
+from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
 
 
 class FieldCapability(str, Enum):
@@ -172,6 +177,35 @@ class RoutingMetadataRegistry:
                 }
             ),
         }
+        # Keep routing admission aligned with the authoritative semantic
+        # boundary. The historical explicit entries above preserve names and
+        # source preferences, while the runtime mapping owns which operations
+        # are actually active. This prevents an old routing table from either
+        # advertising unsupported filters/sorts or forcing supported fields
+        # through an unnecessary fallback route.
+        operation_capabilities = {
+            "filter": FieldCapability.FILTER,
+            "ordered_comparison": FieldCapability.FILTER,
+            "sort": FieldCapability.SORT,
+            "sort_contract": FieldCapability.SORT,
+            "project": FieldCapability.PROJECT,
+        }
+        for mapping in TeamOntologyRuntimeMapping().fields:
+            if (
+                mapping.capability is not SemanticCapabilityState.ACTIVE
+                or "rdb" not in mapping.storage_backend
+            ):
+                continue
+            capabilities = frozenset(
+                operation_capabilities[operation]
+                for operation in mapping.operations
+                if operation in operation_capabilities
+            )
+            self._fields[mapping.canonical_field] = CanonicalFieldMetadata(
+                mapping.canonical_field,
+                (RetrievalSource.RDB,),
+                capabilities,
+            )
 
     def field(self, canonical_field: str) -> CanonicalFieldMetadata | None:
         return self._fields.get(canonical_field)

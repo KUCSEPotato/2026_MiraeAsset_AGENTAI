@@ -15,11 +15,11 @@ from app.hyperclova import (
 )
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParserError
-from app.query.candidate_normalization import (
-    normalize_candidate_payload, RELATION_SUBJECT_TYPES, RELATION_TARGET_TYPES,
-)
+from app.query.candidate_normalization import normalize_candidate_payload
 from app.query.default_policies import DEFAULT_POLICIES
 from app.query.semantic_models import (
+    ALLOWED_RELATION_SUBJECT_TYPES,
+    ALLOWED_RELATION_TARGET_TYPES,
     LLMSemanticParseCandidate,
     SemanticParserRequest,
 )
@@ -222,6 +222,7 @@ def _request_content(request: SemanticParserRequest) -> str:
                 "Cover every material clause with a semantic item or unresolved_material_phrases.",
                 "Use raw aliases; downstream ontology performs canonical grounding.",
                 "Do not blindly append to the rule result; review the entire question.",
+                "The rule hint is non-authoritative: re-type a suspected entity span as a product type or filter when, and only when, its exact text is an allowed vocabulary classification alias.",
                 "Do not turn subjective phrases into objective fields.",
                 "Use only keys declared in candidate_schema.",
                 "Omit unused optional keys instead of emitting null values.",
@@ -331,9 +332,15 @@ def hyperclova_candidate_schema() -> dict[str, object]:
             "source_span": span,
             "raw_relation": {"type": "string"},
             "direction": {"type": "string", "enum": ["outgoing", "incoming"]},
-            "subject_type": {"type": "string", "enum": sorted(RELATION_SUBJECT_TYPES)},
+            "subject_type": {
+                "type": "string",
+                "enum": list(ALLOWED_RELATION_SUBJECT_TYPES),
+            },
             "target_raw_text": {"type": "string"},
-            "target_type": {"type": "string", "enum": sorted(RELATION_TARGET_TYPES)},
+            "target_type": {
+                "type": "string",
+                "enum": list(ALLOWED_RELATION_TARGET_TYPES),
+            },
             "negated": {"type": "boolean"},
             "chain_id": {"type": "string"},
             "path_position": {"type": "integer", "minimum": 0},

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from app.data.metric_capabilities import (
 from app.domain.models import (
     CanonicalEntity,
     ExecutionContext,
+    QueryIntent,
     QueryPlan,
     QueryOperation,
     QueryStep,
@@ -75,6 +77,14 @@ from app.planning.rule_router import DeterministicRuleRouter
 from app.planning.supervisor import DeterministicSupervisorPlanner
 from app.planning.validator import StructuredQueryPlanValidator
 from app.query.analyzer import RuleBasedQueryAnalyzer
+from app.query.exceptions import SemanticParseSafetyError
+from app.query.semantic_models import (
+    LLMCandidateSpan,
+    LLMSemanticParseCandidate,
+    LLMSemanticTermCandidate,
+)
+from app.query.semantic_parser import SemanticParserCoordinator
+from app.query.semantic_validation import LLMSemanticCandidateValidator
 from app.retrieval.rdb_v2 import (
     CanonicalV2FieldRegistry,
     CanonicalV2QueryCompiler,
@@ -1021,6 +1031,139 @@ def test_explicit_sort_direction_is_preserved(word: str, direction: str) -> None
     assert plan.steps[0].inputs["sort_operations"] == [
         {"semantic_metric_key": "product.aum", "direction": direction}
     ]
+
+
+def test_rule_parser_preserves_maturity_year_filter_before_execution() -> None:
+    parsed = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze("만기가 2027년인 채권 5개 보여줘.")
+    )
+
+    assert parsed.semantic_coverage.value == "complete"
+    assert parsed.unparsed_material_spans == []
+    assert parsed.product_types == ["채권"]
+    assert parsed.result_limit.value == 5
+    assert parsed.filters[0].field == "만기일"
+    assert parsed.filters[0].operator.value == "between"
+    assert parsed.filters[0].value == ["2027-01-01", "2027-12-31"]
+
+
+@pytest.mark.parametrize(
+    ("question", "direction"),
+    [
+        ("채권을 만기일이 빠른 순서로 5개 보여줘.", "asc"),
+        ("채권 중 만기가 이른 순으로 5개 보여줘.", "asc"),
+        ("채권을 만기일이 늦은 순서로 5개 보여줘.", "desc"),
+    ],
+)
+def test_rule_parser_preserves_maturity_sort_before_execution(
+    question: str,
+    direction: str,
+) -> None:
+    parsed = asyncio.run(RuleBasedQueryAnalyzer().analyze(question))
+
+    assert parsed.semantic_coverage.value == "complete"
+    assert parsed.unparsed_material_spans == []
+    assert parsed.product_types == ["채권"]
+    assert parsed.result_limit.value == 5
+    assert parsed.sort[0].field in {"만기", "만기일"}
+    assert parsed.sort[0].direction == direction
+
+
+def test_rule_parser_treats_sort_order_particle_as_non_material() -> None:
+    parsed = asyncio.run(
+        RuleBasedQueryAnalyzer().analyze(
+            "국내 ETF 중 순자산이 큰 순서로 5개 보여줘."
+        )
+    )
+
+    assert parsed.semantic_coverage.value == "complete"
+    assert parsed.unparsed_material_spans == []
+    assert parsed.product_universe.operands == ["DomesticETF"]
+    assert parsed.sort[0].field == "순자산"
+    assert parsed.sort[0].direction == "desc"
+    assert parsed.result_limit.value == 5
+
+
+def test_maturity_constraints_are_not_reported_as_parser_failure() -> None:
+    with pytest.raises(UnsupportedQuerySemanticsError) as caught:
+        asyncio.run(_plan("만기가 2027년인 채권 5개 보여줘."))
+
+    assert any(
+        reason.startswith("unsupported_constraint:")
+        for reason in caught.value.reasons
+    )
+    assert "unparsed_material_clause" not in caught.value.reasons
+
+
+class _RejectingSemanticParserLLM:
+    model_name = "diagnostic-fixture"
+
+    async def parse(self, request):
+        return LLMSemanticParseCandidate(
+            intent=QueryIntent.SEARCH_PRODUCT,
+            product_types=[
+                LLMSemanticTermCandidate(
+                    source_span=LLMCandidateSpan(
+                        start=0,
+                        end=3,
+                        # Absent text cannot be repaired by relocating an
+                        # otherwise exact, unique substring.
+                        raw_text="ETN",
+                    ),
+                    value="ETF",
+                )
+            ],
+        )
+
+
+def test_llm_candidate_rejection_preserves_reasons_in_error_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator = SemanticParserCoordinator(
+        rule_parser=RuleBasedQueryAnalyzer(),
+        llm_parser=_RejectingSemanticParserLLM(),
+        candidate_validator=LLMSemanticCandidateValidator(
+            {
+                "fields": ["순자산", "만기일"],
+                "product_types": ["ETF", "채권"],
+                "relations": [],
+            }
+        ),
+        compact_vocabulary={},
+    )
+
+    records: list[logging.LogRecord] = []
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    parser_logger = logging.getLogger("app.query.semantic_parser")
+    handler = CaptureHandler(level=logging.WARNING)
+    previous_level = parser_logger.level
+    previous_disabled = parser_logger.disabled
+    previous_global_disable = parser_logger.manager.disable
+    logging.disable(logging.NOTSET)
+    parser_logger.disabled = False
+    parser_logger.setLevel(logging.WARNING)
+    parser_logger.addHandler(handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.query.semantic_parser"):
+            with pytest.raises(SemanticParseSafetyError) as caught:
+                asyncio.run(coordinator.analyze("AI 관련 ETF 5개 보여줘."))
+    finally:
+        parser_logger.removeHandler(handler)
+        parser_logger.setLevel(previous_level)
+        parser_logger.disabled = previous_disabled
+        logging.disable(previous_global_disable)
+
+    assert caught.value.reason == "llm_candidate_rejected"
+    assert "invalid_source_span" in caught.value.validation_reasons
+    assert any(
+        record.validation_reasons == caught.value.validation_reasons
+        for record in records
+        if record.getMessage() == "semantic parse candidate rejected"
+    )
 
 
 @pytest.mark.parametrize(

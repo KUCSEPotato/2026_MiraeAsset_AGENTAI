@@ -209,6 +209,7 @@ class PipelineAnswerService:
                     "reason": exc.reason,
                     "llm_calls": exc.llm_calls,
                     "repair_attempts": exc.repair_attempts,
+                    "validation_reasons": exc.validation_reasons,
                 },
                 total_started=request_started,
                 reason_code=AnswerabilityReasonCode.SEMANTIC_PARSE_FAILED,

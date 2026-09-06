@@ -10,17 +10,11 @@ import re
 from app.ontology.index import normalize_ontology_text as norm
 from app.ontology.runtime_mapping import TeamOntologyRuntimeMapping
 from app.query.normalization import metric_spec
+from app.query.semantic_models import ALLOWED_RELATION_SUBJECT_TYPES, ALLOWED_RELATION_TARGET_TYPES
 
 
-RELATION_SUBJECT_TYPES = {
-    "AssetManager", "Bond", "Currency", "ETF", "ETN", "ExchangeTradedProduct",
-    "FinancialProduct", "Fund", "Index", "Issuer", "RiskGrade",
-    "Organization", "Security", "EquitySecurity", "FundShareClass",
-}
-RELATION_TARGET_TYPES = {
-    "AssetManager", "Currency", "Index", "Issuer", "RiskGrade",
-    "Organization", "Security", "EquitySecurity", "FundShareClass",
-}
+RELATION_SUBJECT_TYPES = frozenset(ALLOWED_RELATION_SUBJECT_TYPES)
+RELATION_TARGET_TYPES = frozenset(ALLOWED_RELATION_TARGET_TYPES)
 
 _ENUMS = {
     "direction": {

@@ -148,6 +148,20 @@ def test_app_timeout_must_leave_evaluator_margin(monkeypatch) -> None:
         OperationalSettings.from_env()
 
 
+def test_frontend_origin_is_allowed_for_browser_calls(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTEND_ORIGINS", "http://localhost:3000")
+    with _client(monkeypatch, _Service()) as client:
+        response = client.options(
+            "/answer?question_id=Q-cors&question=ETF",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
 def test_evaluator_reason_code_uses_required_entity_ambiguous_name() -> None:
     assert AnswerabilityReasonCode.AMBIGUOUS_ENTITY.value == "ENTITY_AMBIGUOUS"
     assert AnswerabilityReasonCode.ENTITY_AMBIGUOUS.value == "ENTITY_AMBIGUOUS"
