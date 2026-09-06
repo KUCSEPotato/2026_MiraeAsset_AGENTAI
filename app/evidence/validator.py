@@ -75,6 +75,17 @@ class QualityAwareEvidenceValidator:
         }
         if not expected or query.grounded_sort:
             expected = {item.entity_id: item.entity_id for item in evidence.evidence if item.entity_id}
+            names = defaultdict(set)
+            for item in evidence.evidence:
+                if (item.entity_id in expected and item.field == "product.name"
+                        and not self._is_missing(item.value) and not self._is_sentinel(item)):
+                    names[item.entity_id].add(item.value)
+            for entity_id, values in names.items():
+                if len(values) == 1 and not any(
+                    finding.field == "product.name" and finding.entity_id in {None, entity_id}
+                    and finding.severity is FindingSeverity.BLOCKING for finding in result.findings
+                ):
+                    expected[entity_id] = next(iter(values))
         if not expected:
             expected = {None: None}
         clauses = [cell for item in clauses for cell in (

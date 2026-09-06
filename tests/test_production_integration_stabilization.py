@@ -278,7 +278,7 @@ def diagnostic_logging(monkeypatch):
 
 
 @pytest.mark.parametrize("fault,expected", [
-    (None, None), ("span", "invalid_source_span"), ("snapshot", "candidate_omits_rule_material"),
+    (None, None), ("span", None), ("snapshot", "candidate_omits_rule_material"),
     ("date_literal", "candidate_value_not_grounded_in_span"),
     ("field", "unknown_filter_field"), ("sort_field", "unknown_sort_field"),
 ])
@@ -334,7 +334,9 @@ def test_real_llm_client_and_validator_with_mock_maturity_response(fault, expect
         assert parsed.parser_source == "llm_fallback"
         assert parsed.filters[0].value == ["2027-01-01", "2027-12-31"]
         assert parsed.temporal_constraint is None
-    assert len(requests) == 1
+        assert all(question[c.source_span.start:c.source_span.end] == c.raw_text
+                   for c in parsed.semantic_constraints)
+    assert len(requests) == (2 if expected else 1)
 
 
 @pytest.mark.parametrize("fault,reason,stage", [

@@ -342,6 +342,20 @@ class UnparsedMaterialSpan(BaseModel):
     raw_text: str
 
 
+class AppliedDefaultPolicy(BaseModel):
+    """Application-owned omission handling, never evidence or a new capability."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    policy_id: Literal[
+        "RETURN.default_period", "TOPK.default_k",
+        "RETURN.positive_direction", "RETURN.negative_direction",
+    ]
+    inferred_value: str | int
+    source: Literal["DEFAULT_POLICY"] = "DEFAULT_POLICY"
+    constraint_id: str | None = None
+    disclosure: str
+
+
 class ParseProvenance(BaseModel):
     parser_source: ParserSource = ParserSource.RULE
     semantic_schema_version: str = "m10.9-semantic-v2"
@@ -349,6 +363,9 @@ class ParseProvenance(BaseModel):
     model: str | None = None
     rule_latency_ms: float = Field(default=0.0, ge=0.0)
     llm_latency_ms: float = Field(default=0.0, ge=0.0)
+    llm_calls: int = Field(default=0, ge=0, le=2)
+    repair_attempts: int = Field(default=0, ge=0, le=1)
+    default_policies: list[AppliedDefaultPolicy] = Field(default_factory=list)
     validation_status: Literal["not_required", "accepted", "rejected"] = (
         "not_required"
     )

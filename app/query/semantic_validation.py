@@ -33,6 +33,11 @@ from app.domain.models import (
 from app.ontology.index import normalize_ontology_text
 from app.query.exceptions import SemanticCandidateValidationError
 from app.query.normalization import normalize_query_semantics
+from app.query.candidate_normalization import (
+    CandidateAliasNormalizer, RELATION_SUBJECT_TYPES, RELATION_TARGET_TYPES,
+    normalize_candidate_payload,
+)
+from app.query.default_policies import DEFAULT_POLICIES
 from app.query.semantic_models import (
     LLMCandidateSpan,
     LLMBooleanExpressionCandidate,
@@ -56,14 +61,11 @@ class _Draft:
 class LLMSemanticCandidateValidator:
     """Convert an untrusted full candidate into the existing ParsedQuery contract."""
 
-    _subject_types = {
-        "AssetManager", "Bond", "Currency", "ETF", "ETN",
-        "ExchangeTradedProduct", "FinancialProduct", "Fund", "Index",
-        "Issuer", "RiskGrade",
-    }
-    _target_types = {"AssetManager", "Currency", "Index", "Issuer", "RiskGrade"}
+    _subject_types = RELATION_SUBJECT_TYPES
+    _target_types = RELATION_TARGET_TYPES
 
     def __init__(self, vocabulary: dict[str, list[str]]) -> None:
+        self._aliases = CandidateAliasNormalizer()
         self._vocabulary = {key: list(values) for key, values in vocabulary.items()}
         self._allowed_fields = {
             normalize_ontology_text(item) for item in vocabulary["fields"]
@@ -87,15 +89,63 @@ class LLMSemanticCandidateValidator:
         prompt_version: str,
         schema_version: str,
     ) -> ParsedQuery:
+        candidate = LLMSemanticParseCandidate.model_validate(normalize_candidate_payload(
+            question, candidate.model_dump(mode="json", exclude_none=True),
+        ))
+        candidate = self._aliases.normalize(candidate)
+        proposals = {item.policy_id: item.inferred_value for item in candidate.default_policies}
+        if len(proposals) != len(candidate.default_policies):
+            raise SemanticCandidateValidationError(["duplicate_default_policy"])
+        if any(DEFAULT_POLICIES.get(key) != value for key, value in proposals.items()):
+            raise SemanticCandidateValidationError(["invalid_default_policy_value"])
+        explicit_limit = rule_result.result_limit and not any(
+            c.constraint_id == rule_result.result_limit.constraint_id
+            and c.payload.get("source") == "DEFAULT_POLICY" for c in rule_result.semantic_constraints)
+        if ("TOPK.default_k" in proposals and not explicit_limit
+                and candidate.result_limit and candidate.result_limit.value == DEFAULT_POLICIES["TOPK.default_k"]):
+            candidate = candidate.model_copy(update={"result_limit": None})
         reasons = self._validate_candidate(question, rule_result, candidate)
         if reasons:
             raise SemanticCandidateValidationError(reasons)
         parsed = self._convert(question, candidate)
+        # A known subjective selection cannot become a soft semantic search
+        # term during repair. Its original hard condition remains required.
+        for original in rule_result.semantic_constraints:
+            if original.unsupported_reason != "subjective_execution_unsupported":
+                continue
+            if any(c.semantic_type is ConstraintSemanticType.SUBJECTIVE
+                   and c.source_span == original.source_span for c in parsed.semantic_constraints):
+                continue
+            identifier = f"C{len(parsed.semantic_constraints) + 1}"
+            parsed = parsed.model_copy(update={
+                "semantic_constraints": [*parsed.semantic_constraints, original.model_copy(update={"constraint_id": identifier})],
+                "unsupported_constraint_ids": [*parsed.unsupported_constraint_ids, identifier],
+                "semantic_coverage": SemanticCoverageStatus.INCOMPLETE,
+            })
+        if rule_result.product_universe:
+            # Product scope belongs to the trusted rule parse. Preserve it
+            # even when the LLM expresses its constituents as separate clauses.
+            original = next(c for c in rule_result.semantic_constraints
+                            if c.constraint_id == rule_result.product_universe.constraint_id)
+            used = {c.constraint_id for c in parsed.semantic_constraints}
+            number = len(used) + 1
+            while f"C{number}" in used:
+                number += 1
+            identifier = f"C{number}"
+            parsed = parsed.model_copy(update={
+                "product_universe": rule_result.product_universe.model_copy(update={"constraint_id": identifier}),
+                "semantic_constraints": [*parsed.semantic_constraints, original.model_copy(update={"constraint_id": identifier})],
+            })
+        applied = {item.policy_id: item.inferred_value for item in parsed.parse_provenance.default_policies}
+        if any(applied.get(key) != value for key, value in proposals.items()):
+            raise SemanticCandidateValidationError(["default_policy_not_applicable"])
         return parsed.model_copy(
             update={
                 "parser_source": ParserSource.LLM_FALLBACK,
                 "parse_provenance": ParseProvenance(
                     parser_source=ParserSource.LLM_FALLBACK,
+                    llm_calls=1,
+                    default_policies=parsed.parse_provenance.default_policies,
                     semantic_schema_version=schema_version,
                     prompt_version=prompt_version,
                     model=model,
@@ -137,7 +187,10 @@ class LLMSemanticCandidateValidator:
         for item in candidate.filters:
             if normalize_ontology_text(item.field) not in self._allowed_fields:
                 reasons.append("unknown_filter_field")
-            self._validate_filter_value(item, reasons)
+            # A normalized controlled literal (e.g. US) may be reused only
+            # when the rule already grounded this exact predicate and span.
+            if not self._matches_rule_filter(rule_result, item):
+                self._validate_filter_value(item, reasons)
             if item.operator is FilterOperator.CONTAINS and (
                 not isinstance(item.value, str) or not item.value
             ):
@@ -161,6 +214,11 @@ class LLMSemanticCandidateValidator:
 
         if not self._covers_rule_material(rule_result, candidate):
             reasons.append("candidate_omits_rule_material")
+        reasons.extend(self._changed_rule_material(rule_result, candidate))
+        if candidate.result_limit and not re.search(
+            rf"(?<!\d){candidate.result_limit.value}(?!\d)", candidate.result_limit.source_span.raw_text,
+        ):
+            reasons.append("ungrounded_result_limit")
         if candidate.boolean_expression:
             allowed_spans = {(item.source_span.start, item.source_span.end)
                              for item in (*candidate.filters, *candidate.product_types)}
@@ -168,6 +226,85 @@ class LLMSemanticCandidateValidator:
                    for span in _boolean_predicate_spans(candidate.boolean_expression)):
                 reasons.append("boolean_predicate_not_grounded")
         return list(dict.fromkeys(reasons))
+
+    @staticmethod
+    def _overlaps(span, constraint):
+        return span.start < constraint.source_span.end and span.end > constraint.source_span.start
+
+    def _matches_rule_filter(self, rule, candidate):
+        # Only controlled listing-country literals need this exception.
+        # Dates and numeric values must still be grounded in original text.
+        if candidate.field != "listing_country" or not isinstance(candidate.value, str):
+            return False
+        for item in rule.filters:
+            constraint = next((c for c in rule.semantic_constraints if c.constraint_id == item.constraint_id), None)
+            if (constraint and self._overlaps(candidate.source_span, constraint)
+                    and self._aliases.field_key(item.field) == self._aliases.field_key(candidate.field)
+                    and item.operator == candidate.operator
+                    and item.model_dump(mode="json")["value"] == candidate.model_dump(mode="json")["value"]):
+                return True
+        return False
+
+    def _equivalent_rule_filter(self, item, overlapping, candidate):
+        matching = [v for v in overlapping if
+                    self._aliases.field_key(v.field) == self._aliases.field_key(item.field)]
+        expected = item.model_dump(mode="json")["value"]
+        def normalized_value(value):
+            if isinstance(value.value, LLMTypedValueCandidate):
+                try:
+                    return _normalize_typed_value(value.value).model_dump(mode="json")
+                except ValueError:
+                    return None
+            return value.model_dump(mode="json")["value"]
+        if any(v.operator == item.operator and normalized_value(v) == expected for v in matching):
+            return True
+        # The deterministic maturity normalizer expands an explicit calendar
+        # year only after the candidate's literal grounding is validated.
+        if item.field in {"만기", "만기일", "product.maturity"} and item.operator is FilterOperator.BETWEEN:
+            for value in matching:
+                if (value.operator is FilterOperator.EQ and isinstance(value.value, str)
+                        and re.fullmatch(r"[1-9][0-9]{3}\s*년", value.value)):
+                    year = value.value[:4]
+                    if expected == [f"{year}-01-01", f"{year}-12-31"]:
+                        return True
+        # A single IN predicate may be expressed as an explicit OR of all
+        # the same values. Merely listing the EQ predicates would mean AND.
+        if item.operator is FilterOperator.IN and isinstance(expected, list):
+            equals = [v for v in matching if v.operator is FilterOperator.EQ and isinstance(v.value, str)]
+            spans = {(v.source_span.start, v.source_span.end) for v in equals}
+            def contains_exact_or(node):
+                if node is None:
+                    return False
+                if (node.node_type is BooleanNodeType.OR
+                        and all(c.node_type is BooleanNodeType.PREDICATE for c in node.children)
+                        and {(c.predicate_span.start, c.predicate_span.end) for c in node.children} == spans):
+                    return True
+                return any(contains_exact_or(c) for c in node.children)
+            return ({v.value for v in equals} == set(expected)
+                    and contains_exact_or(candidate.boolean_expression))
+        return False
+
+    def _changed_rule_material(self, rule, candidate):
+        reasons = []
+        for item in rule.sort:
+            constraint = next((c for c in rule.semantic_constraints if c.constraint_id == item.constraint_id), None)
+            overlapping = [v for v in candidate.sorts if constraint and self._overlaps(v.source_span, constraint)]
+            if overlapping and not any(
+                v.direction == item.direction and self._aliases.field_key(v.field, v.source_span.raw_text)
+                == self._aliases.field_key(item.field, constraint.raw_text) for v in overlapping
+            ):
+                reasons.append("candidate_changes_rule_sort")
+        for item in rule.filters:
+            constraint = next((c for c in rule.semantic_constraints if c.constraint_id == item.constraint_id), None)
+            overlapping = [v for v in candidate.filters if constraint and self._overlaps(v.source_span, constraint)]
+            if overlapping and not self._equivalent_rule_filter(item, overlapping, candidate):
+                reasons.append("candidate_changes_rule_filter")
+        if (rule.result_limit and candidate.result_limit
+                and not any(c.constraint_id == rule.result_limit.constraint_id
+                            and c.payload.get("source") == "DEFAULT_POLICY" for c in rule.semantic_constraints)
+                and rule.result_limit.value != candidate.result_limit.value):
+            reasons.append("candidate_changes_explicit_limit")
+        return reasons
 
     @staticmethod
     def _require_value_in_span(
@@ -275,7 +412,8 @@ class LLMSemanticCandidateValidator:
             if not item.required or item.semantic_type in {
                 ConstraintSemanticType.INTENT,
                 ConstraintSemanticType.BOOLEAN,
-            }:
+                ConstraintSemanticType.PRODUCT_UNIVERSE,
+            } or item.payload.get("source") == "DEFAULT_POLICY":
                 continue
             candidates = typed.get(item.semantic_type)
             if (

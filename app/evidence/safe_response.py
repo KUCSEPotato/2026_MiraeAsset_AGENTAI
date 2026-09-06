@@ -30,6 +30,18 @@ class ReasonAwareSafeResponseGenerator:
             AnswerabilityReasonCode.UNSUPPORTED_QUERY_SEMANTICS in codes
             or AnswerabilityReasonCode.UNSUPPORTED_CONSTRAINT in codes
         ):
+            explanations = []
+            for reason in validation.reasons:
+                if reason == "subjective_execution_unsupported":
+                    explanations.append("‘안전한’ 또는 ‘좋은 상품’이라는 선정 기준을 현재 근거로 검증할 수 없습니다.")
+                elif reason == "unsupported_comparison:expense_ratio_scale_unverified":
+                    explanations.append("보수의 단위와 비교 기준이 검증되지 않아 낮은 보수 순으로 선정할 수 없습니다.")
+                elif reason.startswith("unsupported_comparison:return_") and reason.endswith("product_scope_not_verified"):
+                    explanations.append("요청하신 상품 범위 전체를 같은 기준으로 비교할 수 있는 수익률 근거가 없습니다.")
+                elif reason == "unsupported_comparison:aum_scope_spans_or_cannot_exclude_incompatible_sources":
+                    explanations.append("요청하신 상품 범위의 순자산 단위·통화가 같은 기준인지 검증되지 않아 정렬할 수 없습니다.")
+            if explanations:
+                return " ".join(dict.fromkeys(explanations)) + " 해당 조건을 유지한 결과는 제공할 수 없습니다."
             return (
                 "현재 제공된 조건을 모두 정확하게 해석하여 조회하기 "
                 "어렵습니다. 조건을 조금 더 구체적으로 지정해 주세요."

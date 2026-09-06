@@ -9,11 +9,15 @@ class SemanticParserError(Exception):
         http_status: int | None = None,
         provider_code: str | None = None,
         request_id: str | None = None,
+        rejected_candidate: object = None,
+        validation_errors: list[str] | None = None,
     ) -> None:
         self.failure_reason = failure_reason
         self.http_status = http_status
         self.provider_code = provider_code
         self.request_id = request_id
+        self.rejected_candidate = rejected_candidate
+        self.validation_errors = validation_errors or []
         super().__init__(message)
 
 
@@ -35,9 +39,13 @@ class SemanticParseSafetyError(ValueError):
         parser: str = "llm_fallback",
         rule_latency_ms: float = 0.0,
         llm_latency_ms: float = 0.0,
+        llm_calls: int | None = None,
+        repair_attempts: int = 0,
     ) -> None:
         self.reason = reason
         self.parser = parser
         self.rule_latency_ms = rule_latency_ms
         self.llm_latency_ms = llm_latency_ms
+        self.llm_calls = (0 if reason == "llm_fallback_not_configured" else 1) if llm_calls is None else llm_calls
+        self.repair_attempts = repair_attempts
         super().__init__("semantic parsing could not be completed safely")
