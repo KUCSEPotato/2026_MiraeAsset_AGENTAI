@@ -163,6 +163,15 @@ class LLMTemporalCandidate(UntrustedCandidateModel):
     requested_snapshot: str | None = None
 
 
+class LLMDefaultPolicyCandidate(UntrustedCandidateModel):
+    policy_id: Literal[
+        "RETURN.default_period", "TOPK.default_k",
+        "RETURN.positive_direction", "RETURN.negative_direction",
+    ]
+    inferred_value: str | int
+    source: Literal["DEFAULT_POLICY"] = "DEFAULT_POLICY"
+
+
 class LLMSemanticParseCandidate(UntrustedCandidateModel):
     """Untrusted structured proposal; never passed directly to planning."""
 
@@ -185,6 +194,7 @@ class LLMSemanticParseCandidate(UntrustedCandidateModel):
     unresolved_material_phrases: list[LLMCandidateSpan] = Field(
         default_factory=list
     )
+    default_policies: list[LLMDefaultPolicyCandidate] = Field(default_factory=list, max_length=4)
 
 
 class SemanticParserRequest(UntrustedCandidateModel):
@@ -193,3 +203,4 @@ class SemanticParserRequest(UntrustedCandidateModel):
     compact_vocabulary: dict[str, list[str]]
     semantic_schema_version: str
     prompt_version: str
+    repair_context: dict[str, object] | None = None

@@ -33,6 +33,7 @@ from app.agent.interfaces import (
     SafeResponseGenerator,
 )
 from app.domain.models import (
+    AppliedDefaultPolicy,
     AnswerabilityReasonCode,
     ClauseResult,
     ClauseStatus,
@@ -102,6 +103,7 @@ from app.planning.exceptions import UnsupportedQuerySemanticsError
 from app.query.analyzer import RuleBasedQueryAnalyzer
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParseSafetyError
+from app.query.default_policies import disclose_defaults
 from app.query.llm_parser import (
     HyperCLOVASemanticParserClient,
     SemanticParserLLM,
@@ -205,8 +207,9 @@ class PipelineAnswerService:
                     "parser": exc.parser,
                     "status": "failed",
                     "reason": exc.reason,
+                    "llm_calls": exc.llm_calls,
+                    "repair_attempts": exc.repair_attempts,
                     "validation_reasons": exc.validation_reasons,
-                    "llm_calls": 0 if exc.reason == "llm_fallback_not_configured" else 1,
                 },
                 total_started=request_started,
                 reason_code=AnswerabilityReasonCode.SEMANTIC_PARSE_FAILED,
@@ -300,7 +303,8 @@ class PipelineAnswerService:
                     reason
                     for reason in exc.reasons
                     if reason.startswith("unsupported_comparison:")
-                ],
+                ] + [item.unsupported_reason for item in parsed_query.semantic_constraints
+                     if item.unsupported_reason == "subjective_execution_unsupported"],
                 reason_code=entity_reason,
                 clauses=[
                     ClauseResult(
@@ -369,6 +373,7 @@ class PipelineAnswerService:
             final_answer = await self._safe_response_generator.generate(validation)
             trace.append("safe_response")
             status = "unanswerable"
+        final_answer = disclose_defaults(final_answer, parsed_query.parse_provenance.default_policies)
         answer_latency_ms = _elapsed_ms(answer_started)
         comparison_scope_summary = _comparison_scope_summary(
             plan, execution_result
@@ -413,15 +418,16 @@ class PipelineAnswerService:
                     },
                     "llm_call_summary": {
                         "semantic_parser_calls": (
-                            1 if parsed_query.parser_source.value == "llm_fallback" else 0
+                            parsed_query.parse_provenance.llm_calls
                         ),
                         "answer_generation_calls": (
                             int(getattr(self._answer_generator, "model_calls_per_answer", 0))
                             if validation.answerable and validation.answerability.value != "PARTIALLY_ANSWERABLE"
                             else 0
                         ),
-                        "retries": 0,
+                        "retries": parsed_query.parse_provenance.repair_attempts,
                     },
+                    "default_policies": [item.model_dump(mode="json") for item in parsed_query.parse_provenance.default_policies],
                     "performance_ms": {
                         "query_understanding": query_latency_ms,
                         "entity_resolution": resolution_latency_ms,
@@ -520,6 +526,8 @@ class PipelineAnswerService:
             clauses=clauses or [],
         )
         final_answer = await self._safe_response_generator.generate(validation)
+        final_answer = disclose_defaults(final_answer, [AppliedDefaultPolicy.model_validate(item)
+            for item in parser_summary.get("default_policies", [])])
         return AgentResult(
             retrieved_context=json.dumps(
                 {
@@ -556,8 +564,9 @@ class PipelineAnswerService:
                             int(parser_summary.get("llm_calls", 0))
                         ),
                         "answer_generation_calls": 0,
-                        "retries": 0,
+                        "retries": int(parser_summary.get("repair_attempts", 0)),
                     },
+                    "default_policies": parser_summary.get("default_policies", []),
                     "performance_ms": {
                         "ontology_grounding": ontology_latency_ms,
                         "planning": planning_latency_ms,
@@ -1096,7 +1105,9 @@ def _parser_summary(provenance: ParseProvenance) -> dict[str, object]:
         "status": provenance.validation_status,
         "constraints_schema": provenance.semantic_schema_version,
         "model": provenance.model,
-        "llm_calls": 1 if provenance.parser_source.value == "llm_fallback" else 0,
+        "llm_calls": provenance.llm_calls,
+        "repair_attempts": provenance.repair_attempts,
+        "default_policies": [item.model_dump(mode="json") for item in provenance.default_policies],
     }
 
 

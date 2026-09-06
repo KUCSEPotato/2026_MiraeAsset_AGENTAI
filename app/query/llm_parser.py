@@ -15,6 +15,8 @@ from app.hyperclova import (
 )
 from app.query.config import HyperCLOVASemanticParserSettings
 from app.query.exceptions import SemanticParserError
+from app.query.candidate_normalization import normalize_candidate_payload
+from app.query.default_policies import DEFAULT_POLICIES
 from app.query.semantic_models import (
     ALLOWED_RELATION_SUBJECT_TYPES,
     ALLOWED_RELATION_TARGET_TYPES,
@@ -23,7 +25,7 @@ from app.query.semantic_models import (
 )
 
 
-PROMPT_VERSION = "composition-hcx-semantic-v2"
+PROMPT_VERSION = "composition-hcx-policy-semantic-v3"
 SEMANTIC_SCHEMA_VERSION = "composition-semantic-v1"
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,15 @@ class HyperCLOVASemanticParserClient:
         if self._owns_client:
             await self._client.aclose()
 
+    async def repair(self, request, rejected_candidate, errors):
+        # One repair is budgeted by the coordinator. This method never retries
+        # itself, and rejected content is data rather than a new instruction.
+        encoded = json.dumps(rejected_candidate, ensure_ascii=False, default=str)
+        return await self.parse(request.model_copy(update={"repair_context": {
+            "rejected_candidate": rejected_candidate if len(encoded) <= 16000 else "candidate omitted: size limit",
+            "validation_errors": errors[:20],
+        }}))
+
     async def parse(
         self,
         request: SemanticParserRequest,
@@ -69,6 +80,7 @@ class HyperCLOVASemanticParserClient:
             f"{quote(self._settings.model, safe='')}"
         )
         raw_candidate: object = None
+        content: object = None
         payload = {
             "messages": [
                 {"role": "system", "content": _system_prompt()},
@@ -100,7 +112,9 @@ class HyperCLOVASemanticParserClient:
             envelope = response.json()
             content = envelope["result"]["message"]["content"]
             raw_candidate = json.loads(content)
-            return LLMSemanticParseCandidate.model_validate(raw_candidate)
+            return LLMSemanticParseCandidate.model_validate(normalize_candidate_payload(
+                request.original_question, raw_candidate,
+            ))
         except httpx.HTTPStatusError as exc:
             details = log_hyperclova_http_error(
                 logger,
@@ -163,6 +177,9 @@ class HyperCLOVASemanticParserClient:
             raise SemanticParserError(
                 failure_reason="semantic_parse_response_invalid",
                 request_id=request_id,
+                rejected_candidate=raw_candidate,
+                validation_errors=[str(item["type"]) + ":" + ".".join(str(part) for part in item["loc"])
+                                   for item in validation_errors],
             ) from exc
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.error(
@@ -178,6 +195,8 @@ class HyperCLOVASemanticParserClient:
             raise SemanticParserError(
                 failure_reason="semantic_parse_response_invalid",
                 request_id=request_id,
+                rejected_candidate=content,
+                validation_errors=["response_json_invalid"],
             ) from exc
 
 
@@ -211,7 +230,17 @@ def _request_content(request: SemanticParserRequest) -> str:
                 "Preserve explicit return periods in raw field aliases; the application resolves metrics and default periods.",
                 "Use group_by for explicit grouping; do not convert historical change into a current snapshot field.",
                 "Calendar-year maturity is a maturity field filter with operator eq and the exact raw year string (e.g. 2027년), not temporal_condition. The application derives date bounds; do not invent dates absent from the source span.",
+                "Return semantic clauses, not an execution IR. Use user-facing field aliases and raw values; the application assigns IDs, normalizes values, grounds ontology and validates capability.",
+                "For omitted return period or ranking count, omit the explicit value and propose only the matching allowed default_policies item. Never fabricate a source span for a default.",
+                "Preserve recognized rule filters, sort directions, entities, explicit limits, and product scope. An unsupported condition remains an unresolved or subjective clause; it must not disappear.",
+                "A positive description of RETURN such as 수익률 좋은 means descending RETURN; good/safe products without an explicit metric must remain subjective. Do not invent a composite score.",
+                "Exact registered canonical field aliases may be normalized to an equivalent original substring. Do not invent a return period, country, risk ordering, scale, historic value or peer entity.",
             ],
+            "allowed_default_policies": [
+                {"policy_id": key, "inferred_value": value, "source": "DEFAULT_POLICY"}
+                for key, value in DEFAULT_POLICIES.items()
+            ],
+            **({"repair_context": request.repair_context} if request.repair_context else {}),
             "candidate_schema": hyperclova_candidate_schema(),
             "semantic_schema_version": request.semantic_schema_version,
             "prompt_version": request.prompt_version,
@@ -330,6 +359,18 @@ def hyperclova_candidate_schema() -> dict[str, object]:
                 ],
             },
             "product_types": {"type": "array", "items": term, "maxItems": 12},
+            "default_policies": {
+                "type": "array", "maxItems": 4,
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "policy_id": {"type": "string", "enum": list(DEFAULT_POLICIES)},
+                        "inferred_value": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+                        "source": {"type": "string", "enum": ["DEFAULT_POLICY"]},
+                    },
+                    "required": ["policy_id", "inferred_value", "source"],
+                },
+            },
             "entities": {
                 "type": "array",
                 "items": {
