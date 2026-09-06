@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from app.query.normalization import normalize_query_semantics
+from app.query.normalization import MATURITY_YEAR_PATTERNS, normalize_query_semantics
 
 from app.domain.models import (
     AggregationOperator,
@@ -83,7 +83,7 @@ class RuleBasedQueryAnalyzer:
         "기준가격", "NAV", "가격", "티커",
         "ticker", "ISIN", "신용등급", "편입 비중", "보유 비중",
     )
-    _ranking_field_aliases = (*_field_aliases, "수익률", "위험")
+    _ranking_field_aliases = (*_field_aliases, "수익률", "위험", "만기일", "만기")
     _semantic_markers = (
         "관련", "전략", "친환경", "폭넓게", "테마", "산업", "혁신형",
         "구조", "위험요인", "특징", "동향",
@@ -493,6 +493,10 @@ class RuleBasedQueryAnalyzer:
         region_scope_span: range | None = None,
     ) -> list[FilterSpec]:
         filters: list[FilterSpec] = []
+        for pattern in MATURITY_YEAR_PATTERNS:
+            for match in pattern.finditer(question):
+                if not any(match.start() in span for span in (excluded_spans or [])):
+                    filters.append(FilterSpec(field=match.group("field"), operator="eq", value=match.group("year")))
         # A geography already consumed by product-universe selection is not
         # an exposure predicate. Select remaining aliases before taking the
         # first region, so an explicit second geography cannot be discarded.
@@ -792,6 +796,7 @@ class RuleBasedQueryAnalyzer:
             ), range(match.start(), match.end())))
         adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
         for alias in sorted(self._ranking_field_aliases, key=len, reverse=True):
+            adjectives = "빠른|늦은|이른" if alias in {"만기", "만기일"} else adjective_pattern
             # In return comparisons, ``최근`` qualifies the trailing-period
             # metric (for example, 최근 6개월 수익률).  Consume it with the
             # structured sort span so it cannot become an unrelated temporal
@@ -799,20 +804,20 @@ class RuleBasedQueryAnalyzer:
             context_prefix = r"(?:최근\s*)?" if "수익률" in alias else ""
             pattern = re.compile(
                 rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:가장\s*)?"
-                rf"({adjective_pattern})(?:고|며)?", re.IGNORECASE,
+                rf"({adjectives})(?:고|며)?(?:\s*순(?:서)?(?:로|으로)?)?", re.IGNORECASE,
             )
             for match in pattern.finditer(question):
                 direction = (
                     "desc"
                     if match.group(2) in self._descending_words
-                    or match.group(2) in {"크고", "높고", "많고"}
+                    or match.group(2) in {"크고", "높고", "많고", "늦은"}
                     else "asc"
                 )
                 found.append((match.start(), SortSpec(field=match.group(1), direction=direction),
                               range(match.start(), match.end())))
             explicit = re.compile(
                 rf"{context_prefix}({re.escape(alias)})(?:이|가|은|는)?\s*(?:기준\s*)?"
-                r"(오름차순|내림차순|ASC|DESC)",
+                r"(오름차순|내림차순|ASC|DESC)(?:으로|로)?",
                 re.IGNORECASE,
             )
             for match in explicit.finditer(question):
@@ -1398,6 +1403,11 @@ class RuleBasedQueryAnalyzer:
     def _filter_span(
         self, question: str, item: FilterSpec, *, region_scope_span: range | None = None,
     ) -> tuple[int, int]:
+        if item.field in {"만기", "만기일"}:
+            for pattern in MATURITY_YEAR_PATTERNS:
+                for match in pattern.finditer(question):
+                    if match.group("field") == item.field and match.group("year") == item.value:
+                        return match.start(), match.end()
         if isinstance(item.value, TypedScalarValue):
             field_alias = {"aum": r"(?:순자산|AUM|운용규모)",
                            "expense_ratio": r"(?:총보수|보수율|운용보수)"}[item.field]

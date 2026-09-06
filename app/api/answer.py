@@ -28,7 +28,7 @@ async def answer(
     if not question.strip():
         raise HTTPException(status_code=422, detail="question must not be blank")
 
-    request_id = str(uuid4())
+    request_id = getattr(request.state, "request_id", None) or str(uuid4())
     started = perf_counter()
     timeout_seconds = request.app.state.operational_settings.request_timeout_seconds
     try:
@@ -84,6 +84,9 @@ async def answer(
             "candidate_counts": trace.get("execution_cardinality", {}),
             "latency_ms": round((perf_counter() - started) * 1000.0, 3),
             "answerability_reason": validation.get("reason_codes", []),
+            "answer_status": trace.get("status"),
+            "evidence_count": trace.get("evidence_count", 0),
+            "parser_failure_reason": trace.get("query_understanding", {}).get("reason"),
             "http_status": 200,
         },
     )

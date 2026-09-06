@@ -87,6 +87,12 @@ class SemanticParserCoordinator:
             semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
             prompt_version=PROMPT_VERSION,
         )
+        logger.info("semantic fallback required", extra={
+            "request_purpose": "semantic_parse", "parser_path": "LLM_FALLBACK",
+            "rule_latency_ms": rule_latency,
+            "constraint_count": len(rule_result.semantic_constraints),
+            "unparsed_count": len(rule_result.unparsed_material_spans),
+        })
         llm_started = perf_counter()
         try:
             candidate = await self._llm_parser.parse(request)
@@ -108,6 +114,12 @@ class SemanticParserCoordinator:
                 llm_latency_ms=_milliseconds(llm_started),
             ) from exc
         except SemanticCandidateValidationError as exc:
+            logger.warning("semantic candidate rejected", extra={
+                "request_purpose": "semantic_parse", "parser_path": "LLM_FALLBACK",
+                "failure_stage": "candidate_validation", "validation_status": "rejected",
+                "candidate_rejection_reasons": exc.reasons,
+                "llm_latency_ms": _milliseconds(llm_started),
+            })
             raise SemanticParseSafetyError(
                 "llm_candidate_rejected",
                 rule_latency_ms=rule_latency,

@@ -7,10 +7,11 @@ requests can run.  In particular, a return period observation is not a series.
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from app.data.metric_capabilities import MetricCapabilityRegistry, PREF01_RETURN_CONTRACTS
 from app.domain.models import (
-    ComparisonSpec, ConstraintSemanticType, ConstraintStatus, MetricSpec,
+    ComparisonSpec, ConstraintSemanticType, ConstraintStatus, FilterOperator, MetricSpec,
     GroupBySpec, ParsedQuery, QueryIntent, SemanticConstraint, SemanticCoverageStatus,
     SourceSpan, TemporalSpec,
 )
@@ -31,6 +32,37 @@ _METRIC_ALIASES = {
     "NAV": ("nav", "기준가격"),
     "PRICE": ("가격", "종가", "price"),
 }
+
+# Calendar-year maturity is a product predicate, never a dataset snapshot.
+MATURITY_YEAR_PATTERNS = (
+    re.compile(r"(?P<field>만기일|만기)(?:이|가|은|는)?\s*(?P<year>[1-9][0-9]{3}\s*년)(?:인)?"),
+    re.compile(r"(?P<year>[1-9][0-9]{3}\s*년)에?\s*(?P<field>만기일|만기)(?:인|가\s*되는|가\s*도래하는)?"),
+)
+
+
+def _normalize_maturity_year(parsed: ParsedQuery) -> ParsedQuery:
+    filters = []
+    normalized = {}
+    for item in parsed.filters:
+        constraint = next((c for c in parsed.semantic_constraints
+                           if c.constraint_id == item.constraint_id
+                           and c.semantic_type is ConstraintSemanticType.FILTER), None)
+        if (item.field in {"만기", "만기일", "product.maturity"}
+                and item.operator is FilterOperator.EQ and isinstance(item.value, str)
+                and re.fullmatch(r"[1-9][0-9]{3}\s*년", item.value)
+                and constraint is not None
+                and parsed.original_question[constraint.source_span.start:constraint.source_span.end] == constraint.raw_text
+                and item.value in constraint.raw_text):
+            year = int(item.value[:4])
+            item = item.model_copy(update={"operator": FilterOperator.BETWEEN,
+                "value": [date(year, 1, 1).isoformat(), date(year, 12, 31).isoformat()]})
+            normalized[item.constraint_id] = item
+        filters.append(item)
+    constraints = [c.model_copy(update={"payload": {
+        **c.payload, "operator": normalized[c.constraint_id].operator.value,
+        "value": normalized[c.constraint_id].value,
+    }}) if c.constraint_id in normalized else c for c in parsed.semantic_constraints]
+    return parsed.model_copy(update={"filters": filters, "semantic_constraints": constraints})
 
 
 def temporal_spec(text: str, *, default_return: bool = False) -> TemporalSpec | None:
@@ -91,6 +123,7 @@ def metric_spec(raw_field: str, *, context: str = "", constraint_id: str | None 
 
 def normalize_query_semantics(parsed: ParsedQuery) -> ParsedQuery:
     """Add reusable semantics without replacing legacy grounded-field inputs."""
+    parsed = _normalize_maturity_year(parsed)
     metrics = list(parsed.metrics)
     requested_ids = {
         str(item.payload.get("field")): item.constraint_id
