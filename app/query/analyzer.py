@@ -68,7 +68,7 @@ class RuleBasedQueryAnalyzer:
     _field_aliases = (
         "1년 수익률", "1년수익률", "연 수익률", "연수익률",
         "운용규모", "순자산", "AUM", "총보수", "보수율", "기준가격", "NAV",
-        "가격", "티커", "ticker", "ISIN", "신용등급",
+        "가격", "티커", "ticker", "ISIN", "신용등급", "만기일", "만기",
     )
     _semantic_markers = (
         "관련", "전략", "친환경", "폭넓게", "테마", "산업", "혁신형",
@@ -83,7 +83,7 @@ class RuleBasedQueryAnalyzer:
         "정보를", "조회", "있어", "있는", "가진", "투자", "투자하는", "투자한", "관련된",
         "해줘", "인가", "기준",
         "비교", "비교해줘", "추천", "추천해줘", "클래스",
-        "종목", "종목을", "순으로",
+        "종목", "종목을", "순으로", "순서로",
         "TOP", "top",
     }
 
@@ -518,6 +518,7 @@ class RuleBasedQueryAnalyzer:
             filters.append(
                 FilterSpec(field="currency", operator=FilterOperator.EQ, value="KRW")
             )
+        filters.extend(self._extract_maturity_filters(question))
         rating = re.search(
             r"(?:신용등급\s*)?([A-Z]{1,4}(?:[+\-0])?)\s*(이상|이하|초과|미만)",
             question,
@@ -690,6 +691,22 @@ class RuleBasedQueryAnalyzer:
         filters.extend(self._extract_numeric_filters(question))
         return filters
 
+    def _extract_maturity_filters(self, question: str) -> list[FilterSpec]:
+        result: list[FilterSpec] = []
+        for match in re.finditer(
+            r"(?:만기|만기일)(?:이|가|은|는)?\s*(\d{4})년(?:인|의)?",
+            question,
+        ):
+            year = int(match.group(1))
+            result.append(
+                FilterSpec(
+                    field="만기일",
+                    operator=FilterOperator.BETWEEN,
+                    value=[f"{year:04d}-01-01", f"{year:04d}-12-31"],
+                )
+            )
+        return result
+
     def _extract_numeric_filters(self, question: str) -> list[FilterSpec]:
         patterns = (
             ("aum", ScalarUnit.KRW, re.compile(
@@ -725,7 +742,10 @@ class RuleBasedQueryAnalyzer:
 
     def _extract_sort(self, question: str) -> tuple[list[SortSpec], list[range]]:
         found: list[tuple[int, SortSpec, range]] = []
-        adjective_pattern = "큰|높은|많은|낮은|작은|적은|크고|높고|많고|낮고|작고|적고"
+        adjective_pattern = (
+            "큰|높은|많은|낮은|작은|적은|빠른|이른|늦은|"
+            "크고|높고|많고|낮고|작고|적고|빠르고|이르고|늦고"
+        )
         for alias in self._field_aliases:
             pattern = re.compile(
                 rf"({re.escape(alias)})(?:이|가|은|는)?\s*(?:가장\s*)?"
@@ -735,7 +755,7 @@ class RuleBasedQueryAnalyzer:
                 direction = (
                     "desc"
                     if match.group(2) in self._descending_words
-                    or match.group(2) in {"크고", "높고", "많고"}
+                    or match.group(2) in {"크고", "높고", "많고", "늦은", "늦고"}
                     else "asc"
                 )
                 found.append((match.start(), SortSpec(field=match.group(1), direction=direction),
@@ -1160,6 +1180,13 @@ class RuleBasedQueryAnalyzer:
             match = re.search(field_alias + r".*?" + re.escape(item.value.raw)
                               + r"\s*(?:이상|이하|초과|미만)",
                               question, re.IGNORECASE)
+            if match is not None:
+                return match.start(), match.end()
+        if item.field == "만기일" and item.operator is FilterOperator.BETWEEN:
+            match = re.search(
+                r"(?:만기|만기일)(?:이|가|은|는)?\s*\d{4}년(?:인|의)?",
+                question,
+            )
             if match is not None:
                 return match.start(), match.end()
         special_patterns = {

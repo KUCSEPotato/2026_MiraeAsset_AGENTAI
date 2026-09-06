@@ -108,10 +108,22 @@ class SemanticParserCoordinator:
                 llm_latency_ms=_milliseconds(llm_started),
             ) from exc
         except SemanticCandidateValidationError as exc:
+            logger.warning(
+                "semantic parse candidate rejected",
+                extra={
+                    "parser_path": "LLM_FALLBACK",
+                    "rule_latency_ms": rule_latency,
+                    "llm_latency_ms": _milliseconds(llm_started),
+                    "validation_status": "rejected",
+                    "validation_reasons": exc.reasons,
+                    "validation_reason_count": len(exc.reasons),
+                },
+            )
             raise SemanticParseSafetyError(
                 "llm_candidate_rejected",
                 rule_latency_ms=rule_latency,
                 llm_latency_ms=_milliseconds(llm_started),
+                validation_reasons=exc.reasons,
             ) from exc
 
         logger.info(

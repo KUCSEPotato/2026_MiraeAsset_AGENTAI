@@ -202,6 +202,7 @@ class PipelineAnswerService:
                     "parser": exc.parser,
                     "status": "rejected",
                     "reason": exc.reason,
+                    "validation_reasons": exc.validation_reasons,
                     "llm_calls": 0 if exc.reason == "llm_fallback_not_configured" else 1,
                 },
                 total_started=request_started,
